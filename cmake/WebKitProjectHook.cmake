@@ -1,6 +1,8 @@
 # Pass this file to WebKit's CMake configure with CMAKE_PROJECT_INCLUDE.
-# It schedules Aurora's CMakeLists.txt at the end of WebKit's top-level
-# configure, after the WebKit framework targets and helper macros exist.
+# WebKit includes it from the top-level project() call, before its framework
+# targets and executable helper macros are defined. Include Aurora's separate
+# CMake file now; it defers only target creation/setup until WebKit's configure
+# ends. This avoids adding a CMake subdirectory from deferred execution.
 
 if (NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     return ()
@@ -34,9 +36,4 @@ if (_aurora_hook_already_registered)
 endif ()
 set_property(DIRECTORY PROPERTY AURORA_WEBKIT_PROJECT_HOOK_REGISTERED TRUE)
 
-cmake_language(DEFER
-    DIRECTORY "${CMAKE_SOURCE_DIR}"
-    CALL add_subdirectory
-        "${AURORA_SOURCE_DIR}"
-        "${CMAKE_BINARY_DIR}/Aurora"
-)
+include("${AURORA_SOURCE_DIR}/CMakeLists.txt")
