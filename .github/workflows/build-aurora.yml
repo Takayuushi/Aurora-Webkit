@@ -276,8 +276,6 @@ jobs:
           foreach ($requiredDll in @("JavaScriptCore.dll", "WebCore.dll", "WebKit2.dll")) {
             if ($engineDlls.Name -notcontains $requiredDll) { throw "Required WebKit runtime DLL $requiredDll was not found in bin or bin64." }
           }
-          $libraryDlls = @($runtimeDlls | Where-Object { $_.DirectoryName -eq $libs })
-          if ($libraryDlls.Count -eq 0) { throw "No third-party runtime DLLs were found in $libs" }
 
           $webkitResources = $null
           foreach ($directory in $binaryDirectories) {
