@@ -1,0 +1,343 @@
+name: build-aurora-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      webkit_sha:
+        description: "Optional WebKit commit SHA to build"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 720
+    env:
+      WEBKIT_DIR: D:\a\_temp\WebKit
+    steps:
+      - name: Checkout Aurora
+        uses: actions/checkout@v4
+
+      - name: Configure git line endings
+        shell: powershell
+        run: |
+          git config --global core.autocrlf input
+          git config --global core.longpaths true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (WinGet)
+        shell: powershell
+        run: |
+          $common = @(
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+            "--silent"
+          )
+          $machineScope = @("--scope=machine")
+          $packages = @(
+            "Git.Git",
+            "Kitware.CMake",
+            "Ninja-build.Ninja",
+            "RubyInstallerTeam.Ruby.3.2",
+            "ApacheFriends.Xampp.8.2",
+            "LLVM.LLVM"
+          )
+          foreach ($pkg in $packages) {
+            winget install @common @machineScope --id $pkg
+          }
+          winget install @common --id GnuWin32.Gperf
+
+      - name: Resolve WebKit SHA (remote)
+        id: webkit-sha
+        env:
+          WEBKIT_SHA_INPUT: ${{ github.event.inputs.webkit_sha }}
+        shell: powershell
+        run: |
+          $inputSha = $env:WEBKIT_SHA_INPUT
+          if (-not [string]::IsNullOrWhiteSpace($inputSha)) {
+            $sha = $inputSha.Trim()
+            if ($sha -notmatch '^[0-9a-fA-F]{40}$') {
+              throw "webkit_sha must be a full 40-character Git commit SHA."
+            }
+            $sha = $sha.ToLowerInvariant()
+          } else {
+            $remoteHead = git ls-remote https://github.com/WebKit/WebKit.git HEAD
+            if ($LASTEXITCODE -ne 0) { throw "Failed to query the WebKit repository." }
+            $sha = $remoteHead.Split("`t")[0].Trim()
+          }
+          if ($sha -notmatch '^[0-9a-fA-F]{40}$') { throw "Resolved WebKit revision is not a full 40-character Git commit SHA." }
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Cache WebKit source
+        id: cache-webkit-src
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WEBKIT_DIR }}
+          key: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          restore-keys: |
+            webkit-src-${{ runner.os }}-
+
+      - name: Clone WebKit
+        if: steps.cache-webkit-src.outputs.cache-hit != 'true'
+        env:
+          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
+        shell: powershell
+        run: |
+          if (-not (Test-Path (Join-Path $env:WEBKIT_DIR ".git"))) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $env:WEBKIT_DIR) | Out-Null
+            git -c core.longpaths=true clone --depth 1 --single-branch https://github.com/WebKit/WebKit.git $env:WEBKIT_DIR
+          }
+          git -C $env:WEBKIT_DIR fetch --depth 1 origin $env:WEBKIT_SHA
+          git -C $env:WEBKIT_DIR checkout --force $env:WEBKIT_SHA
+
+      - name: Verify WebKit checkout
+        env:
+          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
+        shell: powershell
+        run: |
+          $script = Join-Path $env:WEBKIT_DIR "Tools\Scripts\build-webkit"
+          if (-not (Test-Path $script)) {
+            throw "WebKit checkout missing build-webkit. Clone may be incomplete."
+          }
+          $actualSha = (git -C $env:WEBKIT_DIR rev-parse HEAD).Trim()
+          $expectedSha = $env:WEBKIT_SHA
+          if ($actualSha -ne $expectedSha) {
+            throw "WebKit checkout SHA mismatch. Expected $expectedSha, got $actualSha."
+          }
+
+      - name: Patch rewrite-compile-commands (Windows guard)
+        shell: powershell
+        run: |
+          $script = Join-Path $env:WEBKIT_DIR "Tools\Scripts\rewrite-compile-commands"
+          if (-not (Test-Path $script)) {
+            throw "rewrite-compile-commands not found in WebKit checkout."
+          }
+          $content = Get-Content -Raw $script
+          $old = "    parent_dir_1, parent_dir_2 = entry_file.rsplit(os.path.sep, maxsplit=4)[1:3]"
+          $new = "    parts = entry_file.rsplit(os.path.sep, maxsplit=4)`n    if len(parts) < 3:`n        continue`n    parent_dir_1, parent_dir_2 = parts[1:3]"
+          if ($content -match [regex]::Escape($old)) {
+            $content = $content.Replace($old, $new)
+            Set-Content -Path $script -Value $content -NoNewline
+          } else {
+            Write-Host "rewrite-compile-commands patch target not found; skipping patch."
+          }
+
+      - name: Cache WebKit Windows libraries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WEBKIT_DIR }}/WebKitLibraries/win
+          key: webkit-win-libs-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          restore-keys: |
+            webkit-win-libs-${{ runner.os }}-
+
+      - name: Cache WebKit build output
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WEBKIT_DIR }}/WebKitBuild
+          key: webkit-build-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-cmake-export-off-aurora-v1
+          restore-keys: |
+            webkit-build-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pywin32
+
+      - name: Build WebKit (Release, with Aurora in the same CMake graph)
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found. Install Visual Studio with Desktop C++ workload." }
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio with C++ tools not found." }
+
+          $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          $vcpkgRoot = Join-Path $vsInstall "VC\vcpkg"
+          if (-not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) { throw "Visual Studio vcpkg.exe not found under $vcpkgRoot" }
+
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $env:PATH = "C:\xampp\apache\bin;C:\xampp\perl\bin;C:\xampp\mysql\bin;C:\Program Files\CMake\bin;C:\Program Files\Ninja;C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;C:\Program Files\LLVM\bin;C:\Program Files (x86)\GnuWin32\bin;$env:PATH"
+          $env:PYTHON = "python"
+          $env:PYTHON3 = "python"
+          $env:CMAKE_EXPORT_COMPILE_COMMANDS = "OFF"
+          $env:WEBKIT_LIBRARIES = Join-Path $env:WEBKIT_DIR "WebKitLibraries\win"
+          $env:WEBKIT_OUTPUTDIR = Join-Path $env:WEBKIT_DIR "WebKitBuild"
+          $env:WEBKIT_TESTFONTS = Join-Path $env:WEBKIT_DIR "Tools\WebKitTestRunner\fonts"
+          $env:DUMPRENDERTREE_TEMP = $env:TEMP
+          $env:CC = "clang-cl"
+          $env:CXX = "clang-cl"
+          $env:PATH = "$env:WEBKIT_LIBRARIES\bin;$env:PATH"
+
+          # build-webkit manages its configuration cache under WebKitBuild\Release.
+          # Leave that cache intact here; build-webkit invalidates it when its arguments change.
+          $auroraRoot = $env:GITHUB_WORKSPACE
+          $auroraHook = Join-Path $auroraRoot "cmake\WebKitProjectHook.cmake"
+          if (-not (Test-Path $auroraHook)) { throw "Aurora CMake hook not found at $auroraHook" }
+          $cmakeArgs = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF -DCMAKE_PROJECT_INCLUDE:FILEPATH=$auroraHook -DAURORA_SOURCE_DIR:PATH=$auroraRoot"
+          cmd /c "call `"$vcvars`" && cd /d `"$env:WEBKIT_DIR`" && perl Tools\Scripts\build-webkit --release --cmakeargs=`"$cmakeArgs`""
+          if ($LASTEXITCODE -ne 0) { throw "build-webkit failed with exit code $LASTEXITCODE" }
+
+      - name: Build Aurora target from the configured WebKit graph
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio with C++ tools not found." }
+          $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          $vcpkgRoot = Join-Path $vsInstall "VC\vcpkg"
+          if (-not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) { throw "Visual Studio vcpkg.exe not found under $vcpkgRoot" }
+
+          # Each Actions step starts with a fresh process environment. Recreate
+          # the same tool and WebKit paths used by the WebKit build step.
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $env:PATH = "C:\xampp\apache\bin;C:\xampp\perl\bin;C:\xampp\mysql\bin;C:\Program Files\CMake\bin;C:\Program Files\Ninja;C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;C:\Program Files\LLVM\bin;C:\Program Files (x86)\GnuWin32\bin;$env:PATH"
+          $env:PYTHON = "python"
+          $env:PYTHON3 = "python"
+          $env:CMAKE_EXPORT_COMPILE_COMMANDS = "OFF"
+          $env:WEBKIT_LIBRARIES = Join-Path $env:WEBKIT_DIR "WebKitLibraries\win"
+          $env:WEBKIT_OUTPUTDIR = Join-Path $env:WEBKIT_DIR "WebKitBuild"
+          $env:WEBKIT_TESTFONTS = Join-Path $env:WEBKIT_DIR "Tools\WebKitTestRunner\fonts"
+          $env:DUMPRENDERTREE_TEMP = $env:TEMP
+          $env:CC = "clang-cl"
+          $env:CXX = "clang-cl"
+          $env:PATH = "$env:WEBKIT_LIBRARIES\bin;$env:PATH"
+
+          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
+          if (-not (Test-Path (Join-Path $buildDir "CMakeCache.txt"))) { throw "WebKit CMake build directory not found at $buildDir" }
+          cmd /c "call `"$vcvars`" && cmake --build `"$buildDir`" --target Aurora --config Release"
+          if ($LASTEXITCODE -ne 0) { throw "Building the Aurora target failed with exit code $LASTEXITCODE" }
+
+      - name: Package Aurora with matching WebKit runtime files
+        env:
+          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
+        shell: powershell
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $release = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
+          $bin64 = Join-Path $release "bin64"
+          $bin = Join-Path $release "bin"
+          $libs = Join-Path $env:WEBKIT_DIR "WebKitLibraries\win\bin"
+
+          $binaryDirectories = @($bin64, $bin) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+          if ($binaryDirectories.Count -eq 0) { throw "WebKit Release bin/bin64 directories were not found under $release" }
+
+          function Find-WebKitRuntimeFile([string]$name) {
+            foreach ($directory in $binaryDirectories) {
+              $candidate = Join-Path $directory $name
+              if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+            }
+            return $null
+          }
+
+          $versionText = @(
+            "WebKit SHA: $env:WEBKIT_SHA",
+            "Aurora SHA: ${{ github.sha }}",
+            "Build ref: $env:GITHUB_REF_NAME",
+            "Build time (UTC): $((Get-Date).ToUniversalTime().ToString("o"))"
+          ) -join "`r`n"
+
+          $auroraExe = $null
+          foreach ($candidate in @((Join-Path $bin64 "Aurora.exe"), (Join-Path $bin "Aurora.exe"))) {
+            if (Test-Path $candidate) { $auroraExe = $candidate; break }
+          }
+          if (-not $auroraExe) {
+            $found = Get-ChildItem -Path $release -Filter "Aurora.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $auroraExe = $found.FullName }
+          }
+          if (-not $auroraExe) { throw "Aurora.exe was not found under $release" }
+
+          $requiredHelpers = @("WebKitWebProcess.exe", "WebKitNetworkProcess.exe", "WebKitGPUProcess.exe")
+          $helperPaths = @{}
+          foreach ($helper in $requiredHelpers) {
+            $helperPath = Find-WebKitRuntimeFile $helper
+            if (-not $helperPath) { throw "Required WebKit helper process $helper was not found under $release" }
+            $helperPaths[$helper] = $helperPath
+          }
+          $runtimeDlls = @()
+          foreach ($directory in @($bin64, $bin, $libs)) {
+            if (Test-Path -LiteralPath $directory -PathType Container) {
+              $runtimeDlls += @(Get-ChildItem -LiteralPath $directory -Filter "*.dll" -File -ErrorAction Stop)
+            }
+          }
+          if ($runtimeDlls.Count -eq 0) { throw "No WebKit runtime DLLs were found in bin, bin64, or WebKitLibraries\win\bin." }
+          $engineDlls = @($runtimeDlls | Where-Object { $_.DirectoryName -in $binaryDirectories })
+          foreach ($requiredDll in @("JavaScriptCore.dll", "WebCore.dll", "WebKit2.dll")) {
+            if ($engineDlls.Name -notcontains $requiredDll) { throw "Required WebKit runtime DLL $requiredDll was not found in bin or bin64." }
+          }
+          $libraryDlls = @($runtimeDlls | Where-Object { $_.DirectoryName -eq $libs })
+          if ($libraryDlls.Count -eq 0) { throw "No third-party runtime DLLs were found in $libs" }
+
+          $webkitResources = $null
+          foreach ($directory in $binaryDirectories) {
+            $candidate = Join-Path $directory "WebKit.resources"
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $webkitResources = $candidate; break }
+          }
+          if (-not $webkitResources) { throw "Required WebKit.resources directory was not found under $release\bin or bin64." }
+          if (-not (Get-ChildItem -LiteralPath $webkitResources -File -Recurse -ErrorAction Stop | Select-Object -First 1)) {
+            throw "WebKit.resources exists but contains no files: $webkitResources"
+          }
+
+          $resources = Join-Path $release "Resources"
+          $hasAdditionalResources = $false
+          if (Test-Path -LiteralPath $resources -PathType Container) {
+            $hasAdditionalResources = [bool](Get-ChildItem -LiteralPath $resources -File -Recurse -ErrorAction Stop | Select-Object -First 1)
+          }
+
+          $pkg = Join-Path $out "Aurora"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          $versionPath = Join-Path $pkg "VERSION.txt"
+          $resOut = Join-Path $pkg "Resources"
+          $libOut = Join-Path $pkg "lib"
+          $shareOut = Join-Path $pkg "share"
+          New-Item -ItemType Directory -Force -Path $resOut | Out-Null
+          New-Item -ItemType Directory -Force -Path $libOut | Out-Null
+          New-Item -ItemType Directory -Force -Path $shareOut | Out-Null
+
+          Set-Content -Path $versionPath -Value $versionText -NoNewline
+          Copy-Item -LiteralPath $auroraExe -Destination $pkg -Force
+          foreach ($helperPath in $helperPaths.Values) {
+            Copy-Item -LiteralPath $helperPath -Destination $pkg -Force
+          }
+          foreach ($runtimeDll in ($runtimeDlls | Sort-Object FullName -Unique)) {
+            Copy-Item -LiteralPath $runtimeDll.FullName -Destination $pkg -Force
+          }
+          Copy-Item -LiteralPath $webkitResources -Destination (Join-Path $pkg "WebKit.resources") -Recurse -Force
+          if ($hasAdditionalResources) { Copy-Item (Join-Path $resources "*") $resOut -Recurse -Force }
+
+          $libDir = Join-Path $release "lib"
+          if (Test-Path $libDir) { Copy-Item (Join-Path $libDir "*") $libOut -Recurse -Force }
+          $shareDir = Join-Path $release "share"
+          if (Test-Path $shareDir) { Copy-Item (Join-Path $shareDir "*") $shareOut -Recurse -Force }
+          foreach ($directory in $binaryDirectories) {
+            Get-ChildItem -LiteralPath $directory -File -ErrorAction Stop | Where-Object { $_.Extension -in ".dat", ".pak" } | Copy-Item -Destination $pkg -Force
+          }
+
+          foreach ($requiredFile in @("Aurora.exe", "WebKitWebProcess.exe", "WebKitNetworkProcess.exe", "WebKitGPUProcess.exe", "JavaScriptCore.dll", "WebCore.dll", "WebKit2.dll")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $pkg $requiredFile) -PathType Leaf)) { throw "Required package file was not staged: $requiredFile" }
+          }
+          if (-not (Get-ChildItem -LiteralPath (Join-Path $pkg "WebKit.resources") -File -Recurse -ErrorAction Stop | Select-Object -First 1)) {
+            throw "WebKit.resources was not staged correctly."
+          }
+
+          $zipName = "Aurora-windows-x64-${env:GITHUB_REF_NAME}.zip"
+          if (-not $env:GITHUB_REF_NAME) { $zipName = "Aurora-windows-x64-${env:GITHUB_SHA}.zip" }
+          Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath (Join-Path $out $zipName) -Force
+
+      - name: Upload Aurora artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurora-windows-x64
+          path: ${{ github.workspace }}/dist/*.zip
+          if-no-files-found: error
