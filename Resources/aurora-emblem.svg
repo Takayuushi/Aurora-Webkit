@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+<title>Aurora emblem</title>
+<defs>
+  <radialGradient id="bg" cx="35%" cy="30%" r="85%">
+    <stop offset="0" stop-color="#78F0B1"/>
+    <stop offset=".36" stop-color="#45D5AE"/>
+    <stop offset=".72" stop-color="#20A9B8"/>
+    <stop offset="1" stop-color="#0B6A82"/>
+  </radialGradient>
+  <linearGradient id="r1" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0D8899" stop-opacity=".72"/>
+    <stop offset=".55" stop-color="#7DE7AA" stop-opacity=".65"/>
+    <stop offset="1" stop-color="#1A8A9D" stop-opacity=".40"/>
+  </linearGradient>
+  <linearGradient id="r2" x1="1" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#B4F59B" stop-opacity=".82"/>
+    <stop offset=".55" stop-color="#3EC7A5" stop-opacity=".62"/>
+    <stop offset="1" stop-color="#0E7390" stop-opacity=".46"/>
+  </linearGradient>
+  <clipPath id="clip"><circle cx="256" cy="256" r="240"/></clipPath>
+</defs>
+<circle cx="256" cy="256" r="240" fill="url(#bg)"/>
+<g clip-path="url(#clip)" fill="none" stroke-linecap="round">
+  <path d="M72 150 C155 83 233 74 327 111 C384 134 425 128 471 94" stroke="url(#r1)" stroke-width="42"/>
+  <path d="M52 204 C142 145 225 141 309 170 C372 192 430 184 492 141" stroke="#70E4B3" stroke-opacity=".55" stroke-width="34"/>
+  <path d="M36 263 C127 203 211 205 300 232 C372 254 438 241 502 204" stroke="#1C9EB4" stroke-opacity=".44" stroke-width="28"/>
+  <path d="M30 319 C124 262 207 270 296 296 C369 317 433 302 494 264" stroke="url(#r2)" stroke-width="34"/>
+  <path d="M53 376 C145 331 225 340 309 365 C374 384 425 369 472 339" stroke="#84E7A5" stroke-opacity=".50" stroke-width="28"/>
+</g>
+<circle cx="256" cy="256" r="240" fill="none" stroke="#0A607A" stroke-width="8" opacity=".48"/>
+<path d="M177 184h48v151c0 24 15 39 37 39 30 0 51-22 51-55V184h48v140c0 62-39 104-98 104-53 0-86-33-86-91V184z" fill="#fff"/>
+<circle cx="275" cy="220" r="24" fill="#7ADFAF"/>
+</svg>
