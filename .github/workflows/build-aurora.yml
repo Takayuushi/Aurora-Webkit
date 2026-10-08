@@ -141,7 +141,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.WEBKIT_DIR }}/WebKitBuild
-          key: webkit-build-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-cmake-export-off-aurora-v2-mse
+          key: webkit-build-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-cmake-export-off-aurora-v1
           restore-keys: |
             webkit-build-${{ runner.os }}-
 
@@ -182,7 +182,9 @@ jobs:
           $auroraRoot = $env:GITHUB_WORKSPACE
           $auroraHook = Join-Path $auroraRoot "cmake\WebKitProjectHook.cmake"
           if (-not (Test-Path $auroraHook)) { throw "Aurora CMake hook not found at $auroraHook" }
-          $cmakeArgs = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF -DCMAKE_PROJECT_INCLUDE:FILEPATH=$auroraHook -DAURORA_SOURCE_DIR:PATH=$auroraRoot -DENABLE_MEDIA_SOURCE=ON"
+          # Keep Media Source disabled: the Windows Media Foundation backend currently does not implement
+# MediaPlayerPrivateInterface::load(..., MediaSourcePrivateClient&), so enabling it breaks the build.
+$cmakeArgs = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF -DCMAKE_PROJECT_INCLUDE:FILEPATH=$auroraHook -DAURORA_SOURCE_DIR:PATH=$auroraRoot"
           cmd /c "call `"$vcvars`" && cd /d `"$env:WEBKIT_DIR`" && perl Tools\Scripts\build-webkit --release --cmakeargs=`"$cmakeArgs`""
           if ($LASTEXITCODE -ne 0) { throw "build-webkit failed with exit code $LASTEXITCODE" }
 
