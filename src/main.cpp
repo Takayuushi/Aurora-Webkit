@@ -15,7 +15,9 @@
 #include <WebKit/WKWebsiteDataStoreRef.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,6 +34,8 @@ constexpr UINT kCommandSidebar = 1004;
 constexpr UINT kCommandNewTab = 1005;
 constexpr UINT kCommandMenu = 1006;
 constexpr UINT kCommandAddress = 1007;
+constexpr UINT kCommandShare = 1009;
+constexpr UINT kCommandDownloads = 1010;
 constexpr UINT kCommandCloseTab = 1008;
 
 constexpr UINT kMenuNewTab = 2001;
@@ -359,8 +363,10 @@ void drawMenuIcon(HDC dc, RECT rect)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
-    for (int y : { rect.top + 11, rect.top + 17, rect.top + 23 })
-        LineTo(dc, x + 7, y);
+    for (int y : { rect.top + 11, rect.top + 17, rect.top + 23 }) {
+        MoveToEx(dc, x - 8, y, nullptr);
+        LineTo(dc, x + 8, y);
+    }
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
@@ -985,6 +991,12 @@ body {
         case kCommandMenu:
             showMenu();
             break;
+        case kCommandShare:
+            MessageBoxW(window, L"Share will be added in a later browser-services pass.", L"Aurora", MB_OK);
+            break;
+        case kCommandDownloads:
+            MessageBoxW(window, L"Downloads will be added in a later browser-services pass.", L"Aurora", MB_OK);
+            break;
         case kCommandAddress:
             SetFocus(addressBar);
             break;
@@ -1082,16 +1094,17 @@ body {
                 return handleHit(kCommandReload);
 
             RECT pill = addressPillRect();
-            int menuX = pill.right + gap;
-            if (point.x >= menuX + gap * 2 && point.x < menuX + button * 3 + gap * 2) {
-                int relative = point.x - (menuX + gap * 2);
-                int index = relative / (button + gap);
-                if (index == 0)
-                    return handleHit(kCommandMenu);
-                if (index == 1)
-                    return handleHit(kCommandMenu);
+            int buttonStart = pill.right + gap * 2;
+            RECT shareRect { buttonStart, tabH, buttonStart + button, tabH + toolbarH };
+            RECT downloadsRect { shareRect.right + gap, tabH, shareRect.right + gap + button, tabH + toolbarH };
+            RECT menuRect { downloadsRect.right + gap, tabH, downloadsRect.right + gap + button, tabH + toolbarH };
+
+            if (PtInRect(&shareRect, point))
+                return handleHit(kCommandShare);
+            if (PtInRect(&downloadsRect, point))
+                return handleHit(kCommandDownloads);
+            if (PtInRect(&menuRect, point))
                 return handleHit(kCommandMenu);
-            }
             return true;
         }
 
