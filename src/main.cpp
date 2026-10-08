@@ -17,6 +17,42 @@ constexpr wchar_t windowClassName[] = L"AuroraWindow";
 constexpr wchar_t windowTitle[] = L"Aurora";
 constexpr char initialURL[] = "https://www.google.com";
 
+void enableDpiAwareness()
+{
+    using SetProcessDpiAwarenessContextFunction = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (!user32)
+        return;
+
+    auto setProcessDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFunction>(
+        GetProcAddress(user32, "SetProcessDpiAwarenessContext")
+    );
+
+    if (setProcessDpiAwarenessContext && setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        return;
+
+    // Older Windows versions can still get correct system-DPI coordinates.
+    SetProcessDPIAware();
+}
+
+double windowScaleFactor(HWND window)
+{
+    UINT dpi = 96;
+
+    using GetDpiForWindowFunction = UINT (WINAPI*)(HWND);
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32) {
+        auto getDpiForWindow = reinterpret_cast<GetDpiForWindowFunction>(
+            GetProcAddress(user32, "GetDpiForWindow")
+        );
+        if (getDpiForWindow)
+            dpi = getDpiForWindow(window);
+    }
+
+    return static_cast<double>(dpi) / 96.0;
+}
+
 struct BrowserState {
     HWND window { nullptr };
 
@@ -69,6 +105,8 @@ struct BrowserState {
         WKPageRef page = WKViewGetPage(view.get());
         if (!page)
             return false;
+
+        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(parentWindow));
 
         auto url = adoptWK(WKURLCreateWithUTF8CString(initialURL));
         if (!url)
@@ -136,6 +174,17 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->resizeView();
         return 0;
 
+    case WM_DPICHANGED:
+        if (state) {
+            state->resizeView();
+            if (state->view) {
+                WKPageRef page = WKViewGetPage(state->view.get());
+                if (page)
+                    WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+            }
+        }
+        return 0;
+
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -149,6 +198,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    enableDpiAwareness();
+
     WNDCLASSEXW windowClass { };
     windowClass.cbSize = sizeof(windowClass);
     windowClass.lpfnWndProc = windowProcedure;
