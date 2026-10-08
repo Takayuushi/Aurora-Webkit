@@ -45,11 +45,19 @@ constexpr UINT kMenuZoomOut = 2007;
 constexpr UINT kMenuResetZoom = 2008;
 constexpr UINT kMenuAbout = 2009;
 constexpr UINT kMenuExit = 2010;
+constexpr UINT kCloseTabCommand = 2011;
 
 constexpr int kTabBarHeight = 38;
 constexpr int kToolbarHeight = 54;
 
 struct BrowserState;
+
+void didChangeIsLoading(const void*);
+void didChangeTitle(const void*);
+void didChangeActiveURL(const void*);
+void didChangeEstimatedProgress(const void*);
+void didChangeCanGoBack(const void*);
+void didChangeCanGoForward(const void*);
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -592,7 +600,8 @@ p { color:#5f7075; margin:0 0 28px; font-size:15px; }
             return;
         }
 
-        auto searchURL = std::wstring(L"https://www.google.com/search?q=") + std::wstring(percentEncode(cleaned).begin(), percentEncode(cleaned).end());
+        auto encodedQuery = percentEncode(cleaned);
+        auto searchURL = std::wstring(L"https://www.google.com/search?q=") + std::wstring(encodedQuery.begin(), encodedQuery.end());
         if (auto* tab = active())
             loadURL(*tab, searchURL);
     }
@@ -823,6 +832,9 @@ p { color:#5f7075; margin:0 0 28px; font-size:15px; }
         case kMenuExit:
             PostMessageW(window, WM_CLOSE, 0, 0);
             break;
+        case kCloseTabCommand:
+            closeActiveTab();
+            break;
         default:
             break;
         }
@@ -1047,7 +1059,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         { FCONTROL, 'L', kAddressBar },
         { FCONTROL, 'R', kReloadButton },
         { FCONTROL, 'T', kNewTabButton },
-        { FCONTROL, 'W', kMenuExit + 1 },
+        { FCONTROL, 'W', kCloseTabCommand },
         { FALT, VK_LEFT, kBackButton },
         { FALT, VK_RIGHT, kForwardButton }
     };
