@@ -1001,7 +1001,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_COMMAND:
-        if (state && HIWORD(wParam) == 0)
+        if (state && (HIWORD(wParam) == 0 || HIWORD(wParam) == BN_CLICKED))
             state->handleCommand(LOWORD(wParam));
         return 0;
 
