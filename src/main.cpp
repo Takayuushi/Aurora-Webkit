@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <windowsx.h>
 
 #include <WebKit/WKContext.h>
 #include <WebKit/WKContextConfigurationRef.h>
@@ -206,7 +207,7 @@ void drawAuroraMark(HDC dc, const RECT& rect, bool darkBackground)
 
     HBRUSH outerBrush = CreateSolidBrush(darkBackground ? RGB(22, 44, 64) : RGB(47, 184, 169));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, outerBrush));
-    Ellipse(dc, &circle);
+    Ellipse(dc, circle.left, circle.top, circle.right, circle.bottom);
     SelectObject(dc, oldBrush);
     DeleteObject(outerBrush);
 
