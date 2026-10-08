@@ -363,9 +363,6 @@ void drawMenuIcon(HDC dc, RECT rect)
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
-
-    // Redraw the left endpoints because LineTo starts from the current point.
-    oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 }
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
