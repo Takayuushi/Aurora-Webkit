@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER (WM_USER + 1)
+#endif
+
 namespace {
 
 constexpr wchar_t windowClassName[] = L"AuroraWindow";
@@ -586,17 +590,17 @@ struct BrowserState {
             if (!std::getline(stream, title))
                 title = url;
 
-            try {
-                VisitEntry entry;
-                entry.visits = std::stoll(countText);
-                entry.lastVisited = std::stoll(timeText);
-                entry.url = url;
-                entry.title = title;
-                if (!entry.url.empty())
-                    visits.push_back(std::move(entry));
-            } catch (...) {
-                // Ignore malformed history entries.
-            }
+            VisitEntry entry;
+            wchar_t* countEnd = nullptr;
+            wchar_t* timeEnd = nullptr;
+            entry.visits = std::wcstoll(countText.c_str(), &countEnd, 10);
+            entry.lastVisited = std::wcstoll(timeText.c_str(), &timeEnd, 10);
+            if (countEnd == countText.c_str() || timeEnd == timeText.c_str())
+                continue;
+            entry.url = url;
+            entry.title = title;
+            if (!entry.url.empty())
+                visits.push_back(std::move(entry));
         }
     }
 
@@ -1160,8 +1164,8 @@ search.addEventListener('keydown',e=>{
             addressBar,
             pill.left + scaleForDpi(window, 34),
             pill.top + scaleForDpi(window, 2),
-            std::max(scaleForDpi(window, 140), pill.right - pill.left - scaleForDpi(window, 68)),
-            std::max(scaleForDpi(window, 24), pill.bottom - pill.top - scaleForDpi(window, 4)),
+            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 68))),
+            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
             TRUE
         );
 
@@ -1176,7 +1180,7 @@ search.addEventListener('keydown',e=>{
                 0,
                 contentTop,
                 client.right,
-                std::max(0, client.bottom - contentTop),
+                std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 TRUE
             );
         }
@@ -1266,13 +1270,13 @@ search.addEventListener('keydown',e=>{
         case kMenuFindInPage:
             MessageBoxW(window, L"Find in Page will be added in the next page-services pass.", L"Aurora", MB_OK);
             break;
-        case kMenuBack:
+        case kCommandBack:
             back();
             break;
-        case kMenuForward:
+        case kCommandForward:
             forward();
             break;
-        case kMenuReload:
+        case kCommandReload:
             reloadOrStop();
             break;
         case kMenuZoomIn:
