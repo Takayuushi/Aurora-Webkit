@@ -41,6 +41,8 @@ constexpr UINT kCommandDownloads = 1010;
 constexpr UINT kCommandMinimize = 1011;
 constexpr UINT kCommandMaximize = 1012;
 constexpr UINT kCommandCloseWindow = 1013;
+constexpr UINT kCommandPrivacy = 1014;
+constexpr UINT kCommandReader = 1015;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -466,6 +468,59 @@ void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
     SelectObject(dc, oldBrush);
     DeleteObject(brush);
 }
+
+void drawShield(HDC dc, const RECT& rect)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    int cx = (rect.left + rect.right) / 2;
+    int top = rect.top + 7;
+    int bottom = rect.bottom - 7;
+
+    POINT outline[] = {
+        { cx, top },
+        { cx + 8, top + 4 },
+        { cx + 7, top + 10 },
+        { cx + 5, top + 16 },
+        { cx, bottom },
+        { cx - 5, top + 16 },
+        { cx - 7, top + 10 },
+        { cx - 8, top + 4 },
+        { cx, top }
+    };
+
+    Polyline(dc, outline, static_cast<int>(std::size(outline)));
+
+    MoveToEx(dc, cx, top + 8, nullptr);
+    LineTo(dc, cx, bottom - 5);
+
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawReader(HDC dc, const RECT& rect)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    int left = rect.left + 8;
+    int right = rect.right - 8;
+    int top = rect.top + 8;
+    int bottom = rect.bottom - 8;
+
+    RoundRect(dc, left, top, right, bottom, 5, 5);
+    MoveToEx(dc, left + 7, top + 8, nullptr);
+    LineTo(dc, right - 7, top + 8);
+    MoveToEx(dc, left + 7, top + 13, nullptr);
+    LineTo(dc, right - 7, top + 13);
+    MoveToEx(dc, left + 7, top + 18, nullptr);
+    LineTo(dc, right - 7, top + 18);
+
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 
@@ -1077,7 +1132,7 @@ search.addEventListener('keydown',e=>{
         int button = scaleForDpi(window, kToolbarButtonSize);
         int gap = scaleForDpi(window, kToolbarGap);
 
-        int leftControls = button * 3 + gap * 2;
+        int leftControls = button * 5 + gap * 4;
         int rightControls = button * 3 + gap * 4;
 
         int left = pad + leftControls + scaleForDpi(window, 14);
@@ -1148,6 +1203,12 @@ search.addEventListener('keydown',e=>{
             break;
         case kCommandSidebar:
             MessageBoxW(window, L"Sidebar is reserved for Bookmarks and History. Those panels will be added next.", L"Aurora", MB_OK);
+            break;
+        case kCommandPrivacy:
+            MessageBoxW(window, L"Privacy controls will be connected here in the privacy-services pass.", L"Privacy — Aurora", MB_OK);
+            break;
+        case kCommandReader:
+            MessageBoxW(window, L"Reader Mode will be connected here in the page-services pass.", L"Reader — Aurora", MB_OK);
             break;
         case kCommandNewTab:
             addTab(true);
@@ -1353,6 +1414,16 @@ search.addEventListener('keydown',e=>{
             handleCommand(kCommandSidebar);
             return true;
         }
+        x += button + gap;
+        if (point.x >= x && point.x < x + button) {
+            handleCommand(kCommandPrivacy);
+            return true;
+        }
+        x += button + gap;
+        if (point.x >= x && point.x < x + button) {
+            handleCommand(kCommandReader);
+            return true;
+        }
 
         RECT pill = addressPillRect();
         int rightStart = pill.right + gap * 2;
@@ -1503,6 +1574,14 @@ search.addEventListener('keydown',e=>{
         x += button + gap;
         RECT sidebarRect { x, titleH, x + button, titleH + toolbarH };
         drawSidebar(dc, sidebarRect);
+        x += button + gap;
+
+        RECT privacyRect { x, titleH, x + button, titleH + toolbarH };
+        drawShield(dc, privacyRect);
+        x += button + gap;
+
+        RECT readerRect { x, titleH, x + button, titleH + toolbarH };
+        drawReader(dc, readerRect);
 
         RECT pill = addressPillRect();
         HBRUSH pillBrush = CreateSolidBrush(RGB(255, 255, 255));
