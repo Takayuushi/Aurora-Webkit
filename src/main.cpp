@@ -44,15 +44,20 @@ constexpr UINT kCommandCloseWindow = 1013;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
-constexpr UINT kMenuBack = 2003;
-constexpr UINT kMenuForward = 2004;
-constexpr UINT kMenuReload = 2005;
-constexpr UINT kMenuZoomIn = 2006;
-constexpr UINT kMenuZoomOut = 2007;
-constexpr UINT kMenuResetZoom = 2008;
-constexpr UINT kMenuStartPage = 2009;
-constexpr UINT kMenuAbout = 2010;
-constexpr UINT kMenuQuit = 2011;
+constexpr UINT kMenuNewPrivateWindow = 2003;
+constexpr UINT kMenuHistory = 2004;
+constexpr UINT kMenuBookmarks = 2005;
+constexpr UINT kMenuDownloads = 2006;
+constexpr UINT kMenuSavePage = 2007;
+constexpr UINT kMenuPrint = 2008;
+constexpr UINT kMenuFindInPage = 2009;
+constexpr UINT kMenuZoomIn = 2010;
+constexpr UINT kMenuZoomOut = 2011;
+constexpr UINT kMenuResetZoom = 2012;
+constexpr UINT kMenuStartPage = 2013;
+constexpr UINT kMenuSettings = 2014;
+constexpr UINT kMenuAbout = 2015;
+constexpr UINT kMenuQuit = 2016;
 
 constexpr int kTitleBarHeight = 38;
 constexpr int kToolbarHeight = 52;
@@ -702,24 +707,41 @@ struct BrowserState {
         if (!menu)
             return;
 
-        AppendMenuW(menu, MF_STRING, kMenuNewTab, L"New Tab");
-        AppendMenuW(menu, MF_STRING, kMenuNewWindow, L"New Window");
+        AppendMenuW(menu, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
+        AppendMenuW(menu, MF_STRING, kMenuNewWindow, L"New Window\tCtrl+N");
+        AppendMenuW(menu, MF_STRING, kMenuNewPrivateWindow, L"New Private Window\tCtrl+Shift+P");
+
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kMenuBack, L"Back");
-        AppendMenuW(menu, MF_STRING, kMenuForward, L"Forward");
-        AppendMenuW(menu, MF_STRING, kMenuReload, L"Reload");
+
+        HMENU historyMenu = CreatePopupMenu();
+        AppendMenuW(historyMenu, MF_STRING, kMenuHistory, L"Show History\tCtrl+H");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(historyMenu), L"History");
+
+        HMENU bookmarksMenu = CreatePopupMenu();
+        AppendMenuW(bookmarksMenu, MF_STRING, kMenuBookmarks, L"Show Bookmarks\tCtrl+Shift+B");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarksMenu), L"Bookmarks");
+
+        AppendMenuW(menu, MF_STRING, kMenuDownloads, L"Downloads\tCtrl+I");
+
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+        AppendMenuW(menu, MF_STRING, kMenuSavePage, L"Save Page As...\tCtrl+S");
+        AppendMenuW(menu, MF_STRING, kMenuPrint, L"Print...\tCtrl+P");
+        AppendMenuW(menu, MF_STRING, kMenuFindInPage, L"Find in Page...\tCtrl+F");
 
         HMENU zoomMenu = CreatePopupMenu();
-        AppendMenuW(zoomMenu, MF_STRING, kMenuZoomIn, L"Zoom In");
         AppendMenuW(zoomMenu, MF_STRING, kMenuZoomOut, L"Zoom Out");
-        AppendMenuW(zoomMenu, MF_STRING, kMenuResetZoom, L"Reset Zoom");
+        AppendMenuW(zoomMenu, MF_STRING, kMenuResetZoom, L"Actual Size");
+        AppendMenuW(zoomMenu, MF_STRING, kMenuZoomIn, L"Zoom In");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(zoomMenu), L"Page Zoom");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuStartPage, L"Start Page");
+        AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"About Aurora");
+
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit Aurora");
+        AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit Aurora\tCtrl+Shift+Q");
     }
 
     void loadStartPage(TabState& tab)
@@ -1160,7 +1182,28 @@ search.addEventListener('keydown',e=>{
             addTab(true);
             break;
         case kMenuNewWindow:
-            MessageBoxW(window, L"New Window is planned for the next browser-core pass.", L"Aurora", MB_OK);
+            MessageBoxW(window, L"New Window will be enabled in the next browser-core pass.", L"Aurora", MB_OK);
+            break;
+        case kMenuNewPrivateWindow:
+            MessageBoxW(window, L"Private browsing is planned next. This entry is reserved for the private data-store implementation.", L"Aurora", MB_OK);
+            break;
+        case kMenuHistory:
+            MessageBoxW(window, L"History panel is planned next. Aurora already records recent HTTP/HTTPS visits locally.", L"History — Aurora", MB_OK);
+            break;
+        case kMenuBookmarks:
+            MessageBoxW(window, L"Bookmarks panel is planned next.", L"Bookmarks — Aurora", MB_OK);
+            break;
+        case kMenuDownloads:
+            MessageBoxW(window, L"Downloads panel is planned next.", L"Downloads — Aurora", MB_OK);
+            break;
+        case kMenuSavePage:
+            MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
+            break;
+        case kMenuPrint:
+            MessageBoxW(window, L"Printing will be connected to the Windows print pipeline in a later pass.", L"Aurora", MB_OK);
+            break;
+        case kMenuFindInPage:
+            MessageBoxW(window, L"Find in Page will be added in the next page-services pass.", L"Aurora", MB_OK);
             break;
         case kMenuBack:
             back();
@@ -1188,6 +1231,12 @@ search.addEventListener('keydown',e=>{
                 WKPageSetPageZoomFactor(WKViewGetPage(tab->view.get()), 1.0);
             break;
         case kMenuStartPage:
+            if (auto* tab = active())
+                loadStartPage(*tab);
+            break;
+        case kMenuSettings:
+            MessageBoxW(window, L"Aurora Settings will be added here. This will control appearance, privacy, search, and start-page behavior.", L"Settings — Aurora", MB_OK);
+            break;
             if (auto* tab = active())
                 loadStartPage(*tab);
             break;
@@ -1770,7 +1819,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         { FCONTROL, 'L', kCommandAddress },
         { FCONTROL, 'R', kCommandReload },
         { FCONTROL, 'T', kCommandNewTab },
+        { FCONTROL | FSHIFT, 'P', kMenuNewPrivateWindow },
         { FCONTROL, 'W', kCommandCloseTab },
+        { FCONTROL | FSHIFT, 'Q', kMenuQuit },
+        { FCONTROL, 'H', kMenuHistory },
+        { FCONTROL | FSHIFT, 'B', kMenuBookmarks },
+        { FCONTROL, 'S', kMenuSavePage },
+        { FCONTROL, 'P', kMenuPrint },
+        { FCONTROL, 'F', kMenuFindInPage },
         { FALT, VK_LEFT, kCommandBack },
         { FALT, VK_RIGHT, kCommandForward }
     };
