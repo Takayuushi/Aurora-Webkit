@@ -16,11 +16,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cwchar>
 #include <cstddef>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef EM_SETCUEBANNER
@@ -270,6 +273,7 @@ double windowScaleFactor(HWND window)
             if (value)
                 dpi = value;
         }
+        FreeLibrary(user32);
     }
 
     return static_cast<double>(dpi) / 96.0;
@@ -1814,7 +1818,9 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     case WM_COMMAND:
-        if (state)
+        // Menu items and accelerators arrive with lParam == 0. Ignore
+        // notifications emitted by child controls such as the address bar.
+        if (state && lParam == 0)
             state->handleCommand(LOWORD(wParam));
         return 0;
 
