@@ -1237,9 +1237,6 @@ search.addEventListener('keydown',e=>{
         case kMenuSettings:
             MessageBoxW(window, L"Aurora Settings will be added here. This will control appearance, privacy, search, and start-page behavior.", L"Settings — Aurora", MB_OK);
             break;
-            if (auto* tab = active())
-                loadStartPage(*tab);
-            break;
         case kMenuAbout:
             MessageBoxW(
                 window,
