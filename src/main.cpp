@@ -709,10 +709,21 @@ body {
         if (!tab)
             return;
 
-        if (cleaned.find(L"://") != std::wstring::npos
+        const bool explicitScheme =
+            cleaned.find(L"://") != std::wstring::npos
             || cleaned.rfind(L"about:", 0) == 0
             || cleaned.rfind(L"file:", 0) == 0
-            || cleaned.rfind(L"localhost", 0) == 0) {
+            || cleaned.rfind(L"localhost", 0) == 0
+            || cleaned.rfind(L"127.0.0.1", 0) == 0;
+
+        bool looksLikeHost = !explicitScheme
+            && cleaned.find_first_of(L" \t") == std::wstring::npos
+            && cleaned.find(L'.') != std::wstring::npos;
+
+        if (looksLikeHost) {
+            std::wstring url = L"https://" + cleaned;
+            loadURL(*tab, url);
+        } else if (explicitScheme) {
             loadURL(*tab, cleaned);
         } else {
             auto encoded = percentEncode(cleaned);
@@ -891,21 +902,32 @@ body {
         int toolbarTop = tabsTop;
         int contentTop = tabsTop + toolbarHeight();
 
-        int navX = scaleForDpi(window, kToolbarHorizontalPadding);
+        int leftPad = scaleForDpi(window, kToolbarHorizontalPadding);
         int button = scaleForDpi(window, kToolbarButtonSize);
         int gap = scaleForDpi(window, kToolbarGap);
+        int logoZone = scaleForDpi(window, 44);
 
-        int rightButtonCount = 3;
-        int rightWidth = button * rightButtonCount + gap * 2 + scaleForDpi(window, 20);
+        int tabsStart = leftPad + logoZone;
+        int plusWidth = button;
+        int tabCount = std::max(1, static_cast<int>(tabs.size()));
+        int availableForTabs = width - tabsStart - leftPad - plusWidth - gap * (tabCount + 1);
+        int tabWidth = std::clamp(
+            availableForTabs / tabCount,
+            scaleForDpi(window, kTabMinWidth),
+            scaleForDpi(window, kTabMaxWidth)
+        );
+        int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (tabWidth + gap);
 
-        int addressLeft = navX + button * 4 + gap * 3 + scaleForDpi(window, 18);
-        int addressRight = width - navX - rightWidth;
+        int rightIconCount = 3;
+        int rightWidth = button * rightIconCount + gap * 4;
+        int addressLeft = leftPad + button * 4 + gap * 3 + scaleForDpi(window, 16);
+        int addressRight = width - leftPad - rightWidth;
 
         MoveWindow(
             addressBar,
-            addressLeft + scaleForDpi(window, 28),
+            addressLeft + scaleForDpi(window, 32),
             toolbarTop + scaleForDpi(window, 8),
-            std::max(scaleForDpi(window, 180), addressRight - addressLeft - scaleForDpi(window, 56)),
+            std::max(scaleForDpi(window, 180), addressRight - addressLeft - scaleForDpi(window, 58)),
             scaleForDpi(window, 38),
             TRUE
         );
@@ -1062,20 +1084,36 @@ body {
         int button = MulDiv(kToolbarButtonSize, dpi, 96);
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int leftPad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
+        int logoZone = MulDiv(44, dpi, 96);
 
         if (point.y < tabH) {
-            int plusLeft = GetClientWidth(window) - leftPad - button;
-            if (point.x >= plusLeft && point.x <= plusLeft + button)
+            int tabsStart = leftPad + logoZone;
+            int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (
+                std::clamp(
+                    (GetClientWidth(window) - tabsStart - leftPad - button - gap * (static_cast<int>(tabs.size()) + 1))
+                        / std::max(1, static_cast<int>(tabs.size())),
+                    MulDiv(kTabMinWidth, dpi, 96),
+                    MulDiv(kTabMaxWidth, dpi, 96)
+                ) + gap
+            );
+
+            if (point.x >= plusLeft && point.x < plusLeft + button)
                 return handleHit(kCommandNewTab);
 
-            int available = std::max(1, plusLeft - leftPad - MulDiv(54, dpi, 96));
-            int tabWidth = std::clamp(available / std::max(1, static_cast<int>(tabs.size())), MulDiv(kTabMinWidth, dpi, 96), MulDiv(kTabMaxWidth, dpi, 96));
+            int tabCount = std::max(1, static_cast<int>(tabs.size()));
+            int available = GetClientWidth(window) - tabsStart - leftPad - button - gap * (tabCount + 1);
+            int tabWidth = std::clamp(
+                available / tabCount,
+                MulDiv(kTabMinWidth, dpi, 96),
+                MulDiv(kTabMaxWidth, dpi, 96)
+            );
 
             for (size_t i = 0; i < tabs.size(); ++i) {
-                int left = leftPad + MulDiv(46, dpi, 96) + static_cast<int>(i) * (tabWidth + gap);
+                int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
                 if (point.x >= left && point.x < left + tabWidth)
                     return handleTabHit(point, i, left, tabWidth);
             }
+
             return true;
         }
 
@@ -1105,6 +1143,7 @@ body {
                 return handleHit(kCommandDownloads);
             if (PtInRect(&menuRect, point))
                 return handleHit(kCommandMenu);
+
             return true;
         }
 
@@ -1152,17 +1191,18 @@ body {
         int button = MulDiv(kToolbarButtonSize, dpi, 96);
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int leftPad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
+        int logoZone = MulDiv(44, dpi, 96);
 
-        HBRUSH topBrush = CreateSolidBrush(RGB(242, 244, 245));
+        HBRUSH topBrush = CreateSolidBrush(RGB(245, 246, 247));
         FillRect(dc, &client, topBrush);
         DeleteObject(topBrush);
 
         RECT toolbar { 0, tabH, client.right, tabH + toolbarH };
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(232, 235, 237));
+        HBRUSH toolbarBrush = CreateSolidBrush(RGB(236, 238, 239));
         FillRect(dc, &toolbar, toolbarBrush);
         DeleteObject(toolbarBrush);
 
-        // Main Aurora emblem: our temporary replacement for Safari's app identity area.
+        // Aurora identity area and tab strip.
         RECT logoRect {
             leftPad,
             (tabH - MulDiv(kLogoSize, dpi, 96)) / 2,
@@ -1171,28 +1211,28 @@ body {
         };
         drawAuroraMark(dc, logoRect, false);
 
-        int plusLeft = client.right - leftPad - button;
-        RECT plusRect { plusLeft, 0, plusLeft + button, tabH };
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(35, 40, 43));
-        HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-        DrawTextW(dc, L"+", 1, &plusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, oldFont);
-
-        int available = std::max(1, plusLeft - leftPad - MulDiv(54, dpi, 96));
-        int tabWidth = std::clamp(available / std::max(1, static_cast<int>(tabs.size())), MulDiv(kTabMinWidth, dpi, 96), MulDiv(kTabMaxWidth, dpi, 96));
+        int tabsStart = leftPad + logoZone;
+        int plusWidth = button;
+        int tabCount = std::max(1, static_cast<int>(tabs.size()));
+        int available = client.right - tabsStart - leftPad - plusWidth - gap * (tabCount + 1);
+        int tabWidth = std::clamp(
+            available / tabCount,
+            MulDiv(kTabMinWidth, dpi, 96),
+            MulDiv(kTabMaxWidth, dpi, 96)
+        );
+        int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (tabWidth + gap);
 
         for (size_t i = 0; i < tabs.size(); ++i) {
-            int left = leftPad + MulDiv(46, dpi, 96) + static_cast<int>(i) * (tabWidth + gap);
+            int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
             RECT tabRect {
                 left,
-                MulDiv(5, dpi, 96),
+                MulDiv(4, dpi, 96),
                 left + tabWidth,
                 tabH - MulDiv(4, dpi, 96)
             };
 
-            HBRUSH brush = CreateSolidBrush(i == activeTab ? RGB(255, 255, 255) : RGB(229, 232, 234));
-            HPEN pen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(210, 215, 217) : RGB(225, 228, 229));
+            HBRUSH brush = CreateSolidBrush(i == activeTab ? RGB(255, 255, 255) : RGB(231, 233, 234));
+            HPEN pen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(213, 217, 219) : RGB(225, 228, 229));
             HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
             HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
             RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
@@ -1201,28 +1241,43 @@ body {
             DeleteObject(brush);
             DeleteObject(pen);
 
-            RECT tabIcon = tabRect;
-            int iconSize = MulDiv(20, dpi, 96);
-            tabIcon.left += MulDiv(10, dpi, 96);
-            tabIcon.top = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
-            tabIcon.right = tabIcon.left + iconSize;
-            tabIcon.bottom = tabIcon.top + iconSize;
+            RECT tabIcon {
+                tabRect.left + MulDiv(9, dpi, 96),
+                tabRect.top + MulDiv(7, dpi, 96),
+                tabRect.left + MulDiv(28, dpi, 96),
+                tabRect.top + MulDiv(26, dpi, 96)
+            };
             drawAuroraMark(dc, tabIcon, false);
 
             RECT titleRect = tabRect;
-            titleRect.left = tabIcon.right + MulDiv(8, dpi, 96);
-            titleRect.right -= MulDiv(30, dpi, 96);
-            SetTextColor(dc, RGB(45, 49, 52));
-            SelectObject(dc, uiFont);
+            titleRect.left = tabIcon.right + MulDiv(7, dpi, 96);
+            titleRect.right -= MulDiv(28, dpi, 96);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(42, 47, 50));
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
             DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dc, oldFont);
 
-            RECT closeRect = tabRect;
-            closeRect.left = tabRect.right - MulDiv(30, dpi, 96);
-            SetTextColor(dc, RGB(95, 100, 103));
+            RECT closeRect {
+                tabRect.right - MulDiv(28, dpi, 96),
+                tabRect.top,
+                tabRect.right - MulDiv(4, dpi, 96),
+                tabRect.bottom
+            };
+            SetTextColor(dc, RGB(88, 94, 97));
+            oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
             DrawTextW(dc, L"×", 1, &closeRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, oldFont);
         }
 
-        // Toolbar icon cells.
+        RECT plusRect { plusLeft, 0, plusLeft + button, tabH };
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(38, 43, 46));
+        HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
+        DrawTextW(dc, L"+", 1, &plusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, oldFont);
+
+        // Safari-inspired toolbar controls.
         int x = leftPad;
         RECT backRect { x, tabH, x + button, tabH + toolbarH };
         drawBackForwardIcon(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())));
@@ -1240,21 +1295,35 @@ body {
         RECT pill = addressPillRect();
         HBRUSH pillBrush = CreateSolidBrush(RGB(255, 255, 255));
         HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(204, 210, 213));
-        HBRUSH oldBrush2 = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
-        HPEN oldPen2 = static_cast<HPEN>(SelectObject(dc, pillPen));
-        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(20, dpi, 96), MulDiv(20, dpi, 96));
-        SelectObject(dc, oldBrush2);
-        SelectObject(dc, oldPen2);
+        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
+        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pillPen));
+        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(19, dpi, 96), MulDiv(19, dpi, 96));
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
 
-        RECT shareRect { pill.right + gap * 2, tabH, pill.right + gap * 2 + button, tabH + toolbarH };
+        // Search glyph inside the address field.
+        HPEN searchPen = CreatePen(PS_SOLID, 2, RGB(86, 93, 97));
+        oldPen = static_cast<HPEN>(SelectObject(dc, searchPen));
+        int searchCx = pill.left + MulDiv(20, dpi, 96);
+        int searchCy = (pill.top + pill.bottom) / 2 - MulDiv(2, dpi, 96);
+        Ellipse(dc, searchCx - MulDiv(6, dpi, 96), searchCy - MulDiv(6, dpi, 96),
+            searchCx + MulDiv(6, dpi, 96), searchCy + MulDiv(6, dpi, 96));
+        MoveToEx(dc, searchCx + MulDiv(4, dpi, 96), searchCy + MulDiv(4, dpi, 96), nullptr);
+        LineTo(dc, searchCx + MulDiv(9, dpi, 96), searchCy + MulDiv(9, dpi, 96));
+        SelectObject(dc, oldPen);
+        DeleteObject(searchPen);
+
+        int buttonStart = pill.right + gap * 2;
+        RECT shareRect { buttonStart, tabH, buttonStart + button, tabH + toolbarH };
         RECT downloadRect { shareRect.right + gap, tabH, shareRect.right + gap + button, tabH + toolbarH };
         RECT menuRect { downloadRect.right + gap, tabH, downloadRect.right + gap + button, tabH + toolbarH };
         drawShareIcon(dc, shareRect);
         drawDownloadIcon(dc, downloadRect);
         drawMenuIcon(dc, menuRect);
     }
+
 };
 
 LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1356,6 +1425,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_ERASEBKGND:
         return 1;
+
+    case WM_CTLCOLOREDIT:
+        if (state && reinterpret_cast<HWND>(lParam) == state->addressBar) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, RGB(35, 40, 43));
+            SetBkColor(dc, RGB(255, 255, 255));
+            static HBRUSH addressBrush = CreateSolidBrush(RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(addressBrush);
+        }
+        break;
 
     case WM_LBUTTONDOWN: {
         if (state) {
