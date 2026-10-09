@@ -1270,15 +1270,6 @@ search.addEventListener('keydown',e=>{
         case kMenuFindInPage:
             MessageBoxW(window, L"Find in Page will be added in the next page-services pass.", L"Aurora", MB_OK);
             break;
-        case kCommandBack:
-            back();
-            break;
-        case kCommandForward:
-            forward();
-            break;
-        case kCommandReload:
-            reloadOrStop();
-            break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
