@@ -1320,6 +1320,57 @@ search.addEventListener('keydown',e=>{
         closeTab(activeTab);
     }
 
+    bool topBarHasInteractiveHit(POINT point) const
+    {
+        int dpi = windowDpi(window);
+        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
+        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
+        int light = MulDiv(kTrafficLightSize, dpi, 96);
+        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
+        int button = MulDiv(kToolbarButtonSize, dpi, 96);
+        int gap = MulDiv(kToolbarGap, dpi, 96);
+
+        if (point.y < 0 || point.y >= titleH)
+            return false;
+
+        RECT closeRect { pad, (titleH - light) / 2, pad + light, (titleH + light) / 2 };
+        RECT minimizeRect {
+            pad + light + lightGap,
+            (titleH - light) / 2,
+            pad + light * 2 + lightGap,
+            (titleH + light) / 2
+        };
+        RECT maximizeRect {
+            pad + light * 2 + lightGap * 2,
+            (titleH - light) / 2,
+            pad + light * 3 + lightGap * 2,
+            (titleH + light) / 2
+        };
+
+        if (PtInRect(&closeRect, point) || PtInRect(&minimizeRect, point) || PtInRect(&maximizeRect, point))
+            return true;
+
+        int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
+        int plusLeft = GetClientWidth(window) - pad - button;
+        int tabCount = std::max(1, static_cast<int>(tabs.size()));
+        int available = plusLeft - tabsStart - pad - gap * (tabCount + 1);
+        int tabWidth = std::clamp(
+            available / tabCount,
+            MulDiv(kTabMinWidth, dpi, 96),
+            MulDiv(kTabMaxWidth, dpi, 96)
+        );
+
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
+            RECT tabRect { left, MulDiv(4, dpi, 96), left + tabWidth, titleH - MulDiv(4, dpi, 96) };
+            if (PtInRect(&tabRect, point))
+                return true;
+        }
+
+        RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
+        return PtInRect(&plusRect, point);
+    }
+
     bool handleTopBarHit(POINT point)
     {
         int dpi = windowDpi(window);
@@ -1795,9 +1846,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         int titleH = scaleForDpi(window, kTitleBarHeight);
         if (point.y < titleH) {
-            // Let tabs receive client clicks; drag only on unused title-bar space.
-            if (state && !state->handleTopBarHit(point))
+            // WM_NCHITTEST is queried during mouse movement/hover. It must
+            // never execute a browser command. Only unused title-bar space
+            // should become draggable.
+            if (state && !state->topBarHasInteractiveHit(point))
                 return HTCAPTION;
+            return HTCLIENT;
         }
 
         return HTCLIENT;
