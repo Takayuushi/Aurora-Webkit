@@ -1478,16 +1478,16 @@ search.addEventListener('keydown',e=>{
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
 
-        HBRUSH pageBrush = CreateSolidBrush(RGB(250, 250, 250));
+        HBRUSH pageBrush = CreateSolidBrush(RGB(249, 249, 250));
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(RGB(242, 243, 244));
+        HBRUSH titleBrush = CreateSolidBrush(RGB(239, 240, 241));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(234, 236, 237));
+        HBRUSH toolbarBrush = CreateSolidBrush(RGB(245, 246, 247));
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -1519,8 +1519,8 @@ search.addEventListener('keydown',e=>{
                 titleH - MulDiv(4, dpi, 96)
             };
 
-            HBRUSH tabBrush = CreateSolidBrush(i == activeTab ? RGB(255, 255, 255) : RGB(230, 232, 234));
-            HPEN tabPen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(210, 214, 216) : RGB(223, 226, 228));
+            HBRUSH tabBrush = CreateSolidBrush(i == activeTab ? RGB(250, 251, 251) : RGB(239, 240, 241));
+            HPEN tabPen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232));
             HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
             HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
             RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
@@ -1584,7 +1584,7 @@ search.addEventListener('keydown',e=>{
         drawReader(dc, readerRect);
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(RGB(255, 255, 255));
+        HBRUSH pillBrush = CreateSolidBrush(RGB(240, 242, 243));
         HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(208, 212, 214));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
@@ -1761,6 +1761,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_ERASEBKGND:
         return 1;
+
+    case WM_CTLCOLOREDIT:
+        if (state && reinterpret_cast<HWND>(lParam) == state->addressBar) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, RGB(45, 49, 52));
+            SetBkColor(dc, RGB(240, 242, 243));
+            static HBRUSH addressBrush = CreateSolidBrush(RGB(240, 242, 243));
+            return reinterpret_cast<LRESULT>(addressBrush);
+        }
+        break;
 
     case WM_NCHITTEST: {
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
