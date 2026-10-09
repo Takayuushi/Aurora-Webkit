@@ -68,16 +68,16 @@ constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
 
-constexpr int kTitleBarHeight = 38;
-constexpr int kToolbarHeight = 52;
+constexpr int kTitleBarHeight = 36;
+constexpr int kToolbarHeight = 46;
 constexpr int kToolbarHorizontalPadding = 12;
-constexpr int kToolbarButtonSize = 34;
-constexpr int kToolbarGap = 6;
-constexpr int kLogoSize = 22;
-constexpr int kTabMinWidth = 140;
-constexpr int kTabMaxWidth = 250;
-constexpr int kTrafficLightSize = 12;
-constexpr int kTrafficLightGap = 8;
+constexpr int kToolbarButtonSize = 30;
+constexpr int kToolbarGap = 5;
+constexpr int kLogoSize = 20;
+constexpr int kTabMinWidth = 126;
+constexpr int kTabMaxWidth = 220;
+constexpr int kTrafficLightSize = 11;
+constexpr int kTrafficLightGap = 7;
 constexpr int kResizeBorder = 6;
 
 struct BrowserState;
@@ -1140,10 +1140,10 @@ search.addEventListener('keydown',e=>{
         int button = scaleForDpi(window, kToolbarButtonSize);
         int gap = scaleForDpi(window, kToolbarGap);
 
-        int leftControls = button * 5 + gap * 4;
+        int leftControls = button * 3 + gap * 2;
         int rightControls = button * 3 + gap * 4;
 
-        int left = pad + leftControls + scaleForDpi(window, 14);
+        int left = pad + leftControls + scaleForDpi(window, 12);
         int right = client.right - pad - rightControls;
 
         return {
@@ -1168,7 +1168,7 @@ search.addEventListener('keydown',e=>{
             addressBar,
             pill.left + scaleForDpi(window, 34),
             pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 68))),
+            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 90))),
             std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
             TRUE
         );
@@ -1464,18 +1464,18 @@ search.addEventListener('keydown',e=>{
             handleCommand(kCommandSidebar);
             return true;
         }
-        x += button + gap;
-        if (point.x >= x && point.x < x + button) {
+
+        RECT pill = addressPillRect();
+        RECT privacyRect { pill.left, pill.top, pill.left + scaleForDpi(window, 30), pill.bottom };
+        RECT readerRect { pill.right - scaleForDpi(window, 58), pill.top, pill.right - scaleForDpi(window, 30), pill.bottom };
+        if (PtInRect(&privacyRect, point)) {
             handleCommand(kCommandPrivacy);
             return true;
         }
-        x += button + gap;
-        if (point.x >= x && point.x < x + button) {
+        if (PtInRect(&readerRect, point)) {
             handleCommand(kCommandReader);
             return true;
         }
-
-        RECT pill = addressPillRect();
         int rightStart = pill.right + gap * 2;
         RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
@@ -1532,12 +1532,12 @@ search.addEventListener('keydown',e=>{
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(RGB(239, 240, 241));
+        HBRUSH titleBrush = CreateSolidBrush(RGB(238, 239, 240));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(245, 246, 247));
+        HBRUSH toolbarBrush = CreateSolidBrush(RGB(242, 243, 244));
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -1624,17 +1624,9 @@ search.addEventListener('keydown',e=>{
         x += button + gap;
         RECT sidebarRect { x, titleH, x + button, titleH + toolbarH };
         drawSidebar(dc, sidebarRect);
-        x += button + gap;
-
-        RECT privacyRect { x, titleH, x + button, titleH + toolbarH };
-        drawShield(dc, privacyRect);
-        x += button + gap;
-
-        RECT readerRect { x, titleH, x + button, titleH + toolbarH };
-        drawReader(dc, readerRect);
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(RGB(240, 242, 243));
+        HBRUSH pillBrush = CreateSolidBrush(RGB(239, 241, 242));
         HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(208, 212, 214));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
@@ -1644,17 +1636,21 @@ search.addEventListener('keydown',e=>{
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
 
-        // Search glyph.
-        HPEN searchPen = CreatePen(PS_SOLID, 2, RGB(80, 87, 90));
+        // Compact smart-search/privacy/reader glyphs.
+        HPEN searchPen = CreatePen(PS_SOLID, 1, RGB(83, 88, 91));
         HPEN oldSearchPen = static_cast<HPEN>(SelectObject(dc, searchPen));
         int sx = pill.left + MulDiv(18, dpi, 96);
-        int sy = (pill.top + pill.bottom) / 2 - MulDiv(2, dpi, 96);
-        Ellipse(dc, sx - MulDiv(6, dpi, 96), sy - MulDiv(6, dpi, 96),
-            sx + MulDiv(6, dpi, 96), sy + MulDiv(6, dpi, 96));
-        MoveToEx(dc, sx + MulDiv(4, dpi, 96), sy + MulDiv(4, dpi, 96), nullptr);
-        LineTo(dc, sx + MulDiv(9, dpi, 96), sy + MulDiv(9, dpi, 96));
+        int sy = (pill.top + pill.bottom) / 2;
+        Ellipse(dc, sx - 5, sy - 5, sx + 5, sy + 5);
+        MoveToEx(dc, sx + 4, sy + 4, nullptr);
+        LineTo(dc, sx + 8, sy + 8);
         SelectObject(dc, oldSearchPen);
         DeleteObject(searchPen);
+
+        RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
+        drawShield(dc, privacyGlyph);
+        RECT readerGlyph { pill.right - MulDiv(58, dpi, 96), pill.top, pill.right - MulDiv(30, dpi, 96), pill.bottom };
+        drawReader(dc, readerGlyph);
 
         RECT reloadRect {
             pill.right - MulDiv(34, dpi, 96),
