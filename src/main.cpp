@@ -15,10 +15,11 @@
 #include <WebKit/WKWebsiteDataStoreRef.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
-#include <cmath>
+#include <fstream>
 #include <iterator>
-#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -34,9 +35,12 @@ constexpr UINT kCommandSidebar = 1004;
 constexpr UINT kCommandNewTab = 1005;
 constexpr UINT kCommandMenu = 1006;
 constexpr UINT kCommandAddress = 1007;
+constexpr UINT kCommandCloseTab = 1008;
 constexpr UINT kCommandShare = 1009;
 constexpr UINT kCommandDownloads = 1010;
-constexpr UINT kCommandCloseTab = 1008;
+constexpr UINT kCommandMinimize = 1011;
+constexpr UINT kCommandMaximize = 1012;
+constexpr UINT kCommandCloseWindow = 1013;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -46,17 +50,21 @@ constexpr UINT kMenuReload = 2005;
 constexpr UINT kMenuZoomIn = 2006;
 constexpr UINT kMenuZoomOut = 2007;
 constexpr UINT kMenuResetZoom = 2008;
-constexpr UINT kMenuAbout = 2009;
-constexpr UINT kMenuQuit = 2010;
+constexpr UINT kMenuStartPage = 2009;
+constexpr UINT kMenuAbout = 2010;
+constexpr UINT kMenuQuit = 2011;
 
-constexpr int kTabBarHeight = 40;
-constexpr int kToolbarHeight = 54;
-constexpr int kToolbarHorizontalPadding = 14;
-constexpr int kToolbarButtonSize = 36;
-constexpr int kToolbarGap = 7;
-constexpr int kLogoSize = 25;
-constexpr int kTabMinWidth = 150;
-constexpr int kTabMaxWidth = 260;
+constexpr int kTitleBarHeight = 38;
+constexpr int kToolbarHeight = 52;
+constexpr int kToolbarHorizontalPadding = 12;
+constexpr int kToolbarButtonSize = 34;
+constexpr int kToolbarGap = 6;
+constexpr int kLogoSize = 22;
+constexpr int kTabMinWidth = 140;
+constexpr int kTabMaxWidth = 250;
+constexpr int kTrafficLightSize = 12;
+constexpr int kTrafficLightGap = 8;
+constexpr int kResizeBorder = 6;
 
 struct BrowserState;
 struct TabState;
@@ -67,6 +75,13 @@ void didChangeActiveURL(const void*);
 void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
+
+struct VisitEntry {
+    std::wstring url;
+    std::wstring title;
+    long long visits { 0 };
+    long long lastVisited { 0 };
+};
 
 std::wstring createString(WKStringRef string)
 {
@@ -117,6 +132,20 @@ std::string toUTF8(const std::wstring& value)
     return result;
 }
 
+std::wstring fromUTF8(const std::string& value)
+{
+    if (value.empty())
+        return { };
+
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (length <= 0)
+        return { };
+
+    std::wstring result(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), length);
+    return result;
+}
+
 WKRetainPtr<WKURLRef> createWKURL(const std::wstring& value)
 {
     auto utf8 = toUTF8(value);
@@ -128,6 +157,7 @@ std::wstring percentEncode(const std::wstring& value)
     auto utf8 = toUTF8(value);
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string encoded;
+    encoded.reserve(utf8.size() * 3);
 
     for (unsigned char byte : utf8) {
         if ((byte >= 'a' && byte <= 'z')
@@ -146,35 +176,78 @@ std::wstring percentEncode(const std::wstring& value)
         encoded.push_back(hex[byte & 0x0F]);
     }
 
-    int length = MultiByteToWideChar(CP_UTF8, 0, encoded.data(), static_cast<int>(encoded.size()), nullptr, 0);
-    if (length <= 0)
-        return { };
+    return fromUTF8(encoded);
+}
 
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, encoded.data(), static_cast<int>(encoded.size()), result.data(), length);
+std::wstring htmlEscape(const std::wstring& value)
+{
+    std::wstring result;
+    result.reserve(value.size() + 16);
+
+    for (wchar_t ch : value) {
+        switch (ch) {
+        case L'&':
+            result += L"&amp;";
+            break;
+        case L'<':
+            result += L"&lt;";
+            break;
+        case L'>':
+            result += L"&gt;";
+            break;
+        case L'"':
+            result += L"&quot;";
+            break;
+        case L'\'':
+            result += L"&#39;";
+            break;
+        default:
+            result.push_back(ch);
+            break;
+        }
+    }
+
     return result;
 }
 
-void enableDpiAwareness()
+std::wstring applicationDataDirectory()
 {
-    using SetProcessDpiAwarenessContextFunction = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+    wchar_t buffer[MAX_PATH] { };
+    DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (!length || length >= std::size(buffer))
+        return L".";
 
-    HMODULE user32 = LoadLibraryW(L"user32.dll");
-    if (!user32)
-        return;
+    std::wstring directory(buffer, length);
+    directory += L"\\Aurora";
 
-    auto setProcessDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFunction>(
-        GetProcAddress(user32, "SetProcessDpiAwarenessContext")
-    );
-
-    if (setProcessDpiAwarenessContext && setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
-        return;
-
-    SetProcessDPIAware();
+    CreateDirectoryW(directory.c_str(), nullptr);
+    return directory;
 }
 
-UINT windowDpi(HWND window)
+std::wstring historyPath()
 {
+    return applicationDataDirectory() + L"\\history.tsv";
+}
+
+long long currentUnixTime()
+{
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+}
+
+void replaceTabsAndNewlines(std::wstring& value)
+{
+    for (auto& ch : value) {
+        if (ch == L'\t' || ch == L'\r' || ch == L'\n')
+            ch = L' ';
+    }
+}
+
+double windowScaleFactor(HWND window)
+{
+    UINT dpi = 96;
+
     using GetDpiForWindowFunction = UINT (WINAPI*)(HWND);
     HMODULE user32 = LoadLibraryW(L"user32.dll");
     if (user32) {
@@ -182,64 +255,76 @@ UINT windowDpi(HWND window)
             GetProcAddress(user32, "GetDpiForWindow")
         );
         if (getDpiForWindow) {
-            UINT dpi = getDpiForWindow(window);
-            if (dpi)
-                return dpi;
+            UINT value = getDpiForWindow(window);
+            if (value)
+                dpi = value;
         }
     }
 
-    HDC dc = GetDC(window);
-    UINT dpi = dc ? static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX)) : 96;
-    if (dc)
-        ReleaseDC(window, dc);
-    return dpi ? dpi : 96;
+    return static_cast<double>(dpi) / 96.0;
 }
 
 int scaleForDpi(HWND window, int logicalPixels)
 {
-    return MulDiv(logicalPixels, static_cast<int>(windowDpi(window)), 96);
+    return MulDiv(logicalPixels, static_cast<int>(windowScaleFactor(window) * 96.0), 96);
+}
+
+int windowDpi(HWND window)
+{
+    return static_cast<int>(windowScaleFactor(window) * 96.0);
 }
 
 void drawAuroraMark(HDC dc, const RECT& rect, bool darkBackground)
 {
-    RECT circle = rect;
-    int width = circle.right - circle.left;
-    int height = circle.bottom - circle.top;
-    int size = std::min(width, height);
-    circle.right = circle.left + size;
-    circle.bottom = circle.top + size;
+    int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
+    RECT circle {
+        rect.left,
+        rect.top,
+        rect.left + size,
+        rect.top + size
+    };
 
-    HBRUSH outerBrush = CreateSolidBrush(darkBackground ? RGB(22, 44, 64) : RGB(47, 184, 169));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, outerBrush));
+    HBRUSH background = CreateSolidBrush(darkBackground ? RGB(27, 48, 68) : RGB(53, 184, 168));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, background));
     Ellipse(dc, circle.left, circle.top, circle.right, circle.bottom);
     SelectObject(dc, oldBrush);
-    DeleteObject(outerBrush);
+    DeleteObject(background);
 
-    // Layered ribbon bands: an original Aurora placeholder mark, deliberately not based on
-    // any third-party browser logo.
-    HPEN tealPen = CreatePen(PS_SOLID, std::max(1, size / 8), darkBackground ? RGB(84, 230, 213) : RGB(17, 113, 132));
-    HPEN mintPen = CreatePen(PS_SOLID, std::max(1, size / 10), darkBackground ? RGB(165, 255, 184) : RGB(158, 239, 173));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tealPen));
+    HPEN teal = CreatePen(PS_SOLID, std::max(1, size / 10), darkBackground ? RGB(63, 222, 201) : RGB(19, 130, 149));
+    HPEN mint = CreatePen(PS_SOLID, std::max(1, size / 12), darkBackground ? RGB(174, 248, 178) : RGB(164, 239, 173));
 
-    int left = circle.left + size / 7;
-    int top = circle.top + size / 7;
-    int right = circle.right - size / 7;
-    int bottom = circle.bottom - size / 7;
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, teal));
+    Arc(
+        dc,
+        circle.left + size / 8,
+        circle.top + size / 8,
+        circle.right - size / 8,
+        circle.bottom - size / 8,
+        circle.right - size / 4,
+        circle.top + size / 4,
+        circle.left + size / 4,
+        circle.bottom - size / 5
+    );
 
-    Arc(dc, left, top, right, bottom, right, top + size / 4, left + size / 5, bottom);
-    SelectObject(dc, mintPen);
-    Arc(dc, left + size / 12, top + size / 7, right - size / 12, bottom - size / 8, right, top + size / 2, left, bottom - size / 3);
+    SelectObject(dc, mint);
+    Arc(
+        dc,
+        circle.left + size / 7,
+        circle.top + size / 5,
+        circle.right - size / 7,
+        circle.bottom - size / 8,
+        circle.right - size / 7,
+        circle.top + size / 3,
+        circle.left + size / 7,
+        circle.bottom - size / 3
+    );
 
     SelectObject(dc, oldPen);
-    DeleteObject(tealPen);
-    DeleteObject(mintPen);
+    DeleteObject(teal);
+    DeleteObject(mint);
 
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-
-    wchar_t mark[] = L"a";
     HFONT font = CreateFontW(
-        -std::max(12, size * 2 / 3),
+        -std::max(10, size * 2 / 3),
         0,
         0,
         0,
@@ -255,101 +340,97 @@ void drawAuroraMark(HDC dc, const RECT& rect, bool darkBackground)
         L"Segoe UI"
     );
     HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
-    DrawTextW(dc, mark, 1, &circle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(255, 255, 255));
+    DrawTextW(dc, L"a", 1, &circle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, oldFont);
     DeleteObject(font);
 }
 
-void drawBackForwardIcon(HDC dc, RECT rect, bool forward, bool enabled)
+void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, enabled ? RGB(35, 40, 43) : RGB(175, 180, 182));
+    HPEN pen = CreatePen(PS_SOLID, 2, enabled ? RGB(55, 60, 63) : RGB(171, 176, 179));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    POINT points[3] { };
 
-    int midY = (rect.top + rect.bottom) / 2;
-    int x = forward ? rect.right - 9 : rect.left + 9;
-    if (forward) {
-        points[0] = { x - 7, midY - 8 };
-        points[1] = { x + 2, midY };
-        points[2] = { x - 7, midY + 8 };
-    } else {
-        points[0] = { x + 7, midY - 8 };
-        points[1] = { x - 2, midY };
-        points[2] = { x + 7, midY + 8 };
-    }
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
 
-    MoveToEx(dc, points[0].x, points[0].y, nullptr);
-    LineTo(dc, points[1].x, points[1].y);
-    LineTo(dc, points[2].x, points[2].y);
+    MoveToEx(dc, cx + (forward ? -4 : 4), cy - 7, nullptr);
+    LineTo(dc, cx + (forward ? 4 : -4), cy);
+    LineTo(dc, cx + (forward ? -4 : 4), cy + 7);
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawReloadIcon(HDC dc, RECT rect, bool loading)
+void drawReload(HDC dc, const RECT& rect, bool loading)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(35, 40, 43));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
 
     if (loading) {
-        MoveToEx(dc, rect.left + 10, rect.top + 10, nullptr);
-        LineTo(dc, rect.right - 10, rect.bottom - 10);
-        MoveToEx(dc, rect.right - 10, rect.top + 10, nullptr);
-        LineTo(dc, rect.left + 10, rect.bottom - 10);
+        MoveToEx(dc, cx - 6, cy - 6, nullptr);
+        LineTo(dc, cx + 6, cy + 6);
+        MoveToEx(dc, cx + 6, cy - 6, nullptr);
+        LineTo(dc, cx - 6, cy + 6);
     } else {
-        Arc(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9, rect.right - 7, rect.top + 12, rect.right - 2, rect.bottom / 2);
-        MoveToEx(dc, rect.right - 7, rect.top + 12, nullptr);
-        LineTo(dc, rect.right - 1, rect.top + 12);
-        LineTo(dc, rect.right - 1, rect.top + 18);
+        Arc(dc, cx - 9, cy - 9, cx + 9, cy + 9, cx + 8, cy - 7, cx + 9, cy + 7);
+        MoveToEx(dc, cx + 8, cy - 7, nullptr);
+        LineTo(dc, cx + 1, cy - 7);
+        LineTo(dc, cx + 8, cy - 1);
     }
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawSidebarIcon(HDC dc, RECT rect)
+void drawSidebar(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(35, 40, 43));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    Rectangle(dc, rect.left + 8, rect.top + 8, rect.right - 8, rect.bottom - 8);
-    MoveToEx(dc, (rect.left + rect.right) / 2, rect.top + 8, nullptr);
-    LineTo(dc, (rect.left + rect.right) / 2, rect.bottom - 8);
+
+    Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
+    int splitX = rect.left + (rect.right - rect.left) / 2;
+    MoveToEx(dc, splitX, rect.top + 9, nullptr);
+    LineTo(dc, splitX, rect.bottom - 9);
+
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawShareIcon(HDC dc, RECT rect)
+void drawShare(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(35, 40, 43));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
-    MoveToEx(dc, x, rect.top + 10, nullptr);
-    LineTo(dc, x, rect.bottom - 10);
-    MoveToEx(dc, x, rect.top + 10, nullptr);
-    LineTo(dc, x - 6, rect.top + 16);
-    MoveToEx(dc, x, rect.top + 10, nullptr);
-    LineTo(dc, x + 6, rect.top + 16);
-    MoveToEx(dc, rect.left + 10, rect.bottom - 12, nullptr);
-    LineTo(dc, rect.right - 10, rect.bottom - 12);
-    Rectangle(dc, rect.left + 9, rect.top + 12, rect.right - 9, rect.bottom - 11);
+    MoveToEx(dc, x, rect.top + 9, nullptr);
+    LineTo(dc, x, rect.bottom - 9);
+    MoveToEx(dc, x, rect.top + 9, nullptr);
+    LineTo(dc, x - 6, rect.top + 15);
+    MoveToEx(dc, x, rect.top + 9, nullptr);
+    LineTo(dc, x + 6, rect.top + 15);
+    Rectangle(dc, rect.left + 9, rect.top + 13, rect.right - 9, rect.bottom - 8);
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawDownloadIcon(HDC dc, RECT rect)
+void drawDownload(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(35, 40, 43));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
     MoveToEx(dc, x, rect.top + 8, nullptr);
     LineTo(dc, x, rect.bottom - 13);
     MoveToEx(dc, x, rect.bottom - 13, nullptr);
-    LineTo(dc, x - 7, rect.bottom - 20);
+    LineTo(dc, x - 6, rect.bottom - 19);
     MoveToEx(dc, x, rect.bottom - 13, nullptr);
-    LineTo(dc, x + 7, rect.bottom - 20);
+    LineTo(dc, x + 6, rect.bottom - 19);
     MoveToEx(dc, rect.left + 9, rect.bottom - 8, nullptr);
     LineTo(dc, rect.right - 9, rect.bottom - 8);
 
@@ -357,13 +438,13 @@ void drawDownloadIcon(HDC dc, RECT rect)
     DeleteObject(pen);
 }
 
-void drawMenuIcon(HDC dc, RECT rect)
+void drawMenu(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(35, 40, 43));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
-    for (int y : { rect.top + 11, rect.top + 17, rect.top + 23 }) {
+    for (int y : { rect.top + 10, rect.top + 17, rect.top + 24 }) {
         MoveToEx(dc, x - 8, y, nullptr);
         LineTo(dc, x + 8, y);
     }
@@ -372,12 +453,23 @@ void drawMenuIcon(HDC dc, RECT rect)
     DeleteObject(pen);
 }
 
+void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
+{
+    HBRUSH brush = CreateSolidBrush(color);
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
+    Ellipse(dc, x, y, x + kTrafficLightSize, y + kTrafficLightSize);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+}
+
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
     BrowserState* browser { nullptr };
     WKRetainPtr<WKViewRef> view;
     std::wstring title { L"New Tab" };
+    std::wstring activeUrl;
+    std::wstring lastRecordedUrl;
 };
 
 struct BrowserState {
@@ -386,7 +478,7 @@ struct BrowserState {
     WNDPROC addressBarOriginalProcedure { nullptr };
 
     HFONT uiFont { nullptr };
-    HBRUSH windowBrush { nullptr };
+    HBRUSH addressBarBrush { nullptr };
     HMENU menu { nullptr };
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
@@ -397,16 +489,127 @@ struct BrowserState {
     WKRetainPtr<WKPageConfigurationRef> pageConfiguration;
 
     std::vector<std::unique_ptr<TabState>> tabs;
+    std::vector<VisitEntry> visits;
     size_t activeTab { 0 };
 
-    int tabHeight() const
+    int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
+    int toolbarHeight() const { return scaleForDpi(window, kToolbarHeight); }
+
+    TabState* active()
     {
-        return scaleForDpi(window, kTabBarHeight);
+        if (tabs.empty())
+            return nullptr;
+        if (activeTab >= tabs.size())
+            activeTab = tabs.size() - 1;
+        return tabs[activeTab].get();
     }
 
-    int toolbarHeight() const
+    void loadVisitData()
     {
-        return scaleForDpi(window, kToolbarHeight);
+        visits.clear();
+
+        std::wifstream file(historyPath());
+        std::wstring line;
+        while (std::getline(file, line)) {
+            std::wistringstream stream(line);
+            std::wstring countText;
+            std::wstring timeText;
+            std::wstring url;
+            std::wstring title;
+
+            if (!std::getline(stream, countText, L'\t'))
+                continue;
+            if (!std::getline(stream, timeText, L'\t'))
+                continue;
+            if (!std::getline(stream, url, L'\t'))
+                continue;
+            if (!std::getline(stream, title))
+                title = url;
+
+            try {
+                VisitEntry entry;
+                entry.visits = std::stoll(countText);
+                entry.lastVisited = std::stoll(timeText);
+                entry.url = url;
+                entry.title = title;
+                if (!entry.url.empty())
+                    visits.push_back(std::move(entry));
+            } catch (...) {
+                // Ignore malformed history entries.
+            }
+        }
+    }
+
+    void saveVisitData()
+    {
+        auto path = historyPath();
+        std::wofstream file(path, std::ios::trunc);
+        if (!file)
+            return;
+
+        for (const auto& entry : visits) {
+            std::wstring title = entry.title;
+            replaceTabsAndNewlines(title);
+            file << entry.visits << L'\t'
+                 << entry.lastVisited << L'\t'
+                 << entry.url << L'\t'
+                 << title << L'\n';
+        }
+    }
+
+    void recordVisit(const std::wstring& url, const std::wstring& title)
+    {
+        if (url.empty())
+            return;
+
+        if (!(url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0))
+            return;
+
+        auto found = std::find_if(visits.begin(), visits.end(), [&](const VisitEntry& entry) {
+            return entry.url == url;
+        });
+
+        const long long now = currentUnixTime();
+
+        if (found == visits.end()) {
+            VisitEntry entry;
+            entry.url = url;
+            entry.title = title.empty() ? url : title;
+            entry.visits = 1;
+            entry.lastVisited = now;
+            visits.push_back(std::move(entry));
+        } else {
+            found->visits++;
+            found->lastVisited = now;
+            if (!title.empty())
+                found->title = title;
+        }
+
+        std::sort(visits.begin(), visits.end(), [](const VisitEntry& a, const VisitEntry& b) {
+            if (a.visits != b.visits)
+                return a.visits > b.visits;
+            return a.lastVisited > b.lastVisited;
+        });
+
+        if (visits.size() > 64)
+            visits.resize(64);
+
+        saveVisitData();
+    }
+
+    std::vector<VisitEntry> frequentVisits(size_t maximum = 6) const
+    {
+        auto sorted = visits;
+        std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) {
+            if (a.visits != b.visits)
+                return a.visits > b.visits;
+            return a.lastVisited > b.lastVisited;
+        });
+
+        if (sorted.size() > maximum)
+            sorted.resize(maximum);
+
+        return sorted;
     }
 
     bool initialize(HWND parentWindow)
@@ -442,23 +645,13 @@ struct BrowserState {
         WKPageConfigurationSetPreferences(pageConfiguration.get(), preferences.get());
 
         uiFont = CreateFontW(
-            -12,
-            0,
-            0,
-            0,
-            FW_NORMAL,
-            FALSE,
-            FALSE,
-            FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE,
-            L"Segoe UI"
+            -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
         );
+        addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
-        windowBrush = CreateSolidBrush(RGB(255, 255, 255));
+        loadVisitData();
         createAddressBar();
         createMenu();
 
@@ -473,22 +666,12 @@ struct BrowserState {
     {
         if (addressBar && addressBarOriginalProcedure)
             SetWindowLongPtrW(addressBar, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(addressBarOriginalProcedure));
-
         if (uiFont)
             DeleteObject(uiFont);
-        if (windowBrush)
-            DeleteObject(windowBrush);
+        if (addressBarBrush)
+            DeleteObject(addressBarBrush);
         if (menu)
             DestroyMenu(menu);
-    }
-
-    TabState* active()
-    {
-        if (tabs.empty())
-            return nullptr;
-        if (activeTab >= tabs.size())
-            activeTab = tabs.size() - 1;
-        return tabs[activeTab].get();
     }
 
     void createAddressBar()
@@ -497,11 +680,8 @@ struct BrowserState {
             0,
             L"EDIT",
             L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_LEFT | ES_NOHIDESEL,
-            0,
-            0,
-            0,
-            0,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_LEFT,
+            0, 0, 0, 0,
             window,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandAddress)),
             GetModuleHandleW(nullptr),
@@ -509,6 +689,7 @@ struct BrowserState {
         );
 
         SendMessageW(addressBar, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
+        SendMessageW(addressBar, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Search or enter website address"));
         addressBarOriginalProcedure = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(addressBar, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(addressBarProcedure))
         );
@@ -528,13 +709,14 @@ struct BrowserState {
         AppendMenuW(menu, MF_STRING, kMenuForward, L"Forward");
         AppendMenuW(menu, MF_STRING, kMenuReload, L"Reload");
 
-        HMENU zoom = CreatePopupMenu();
-        AppendMenuW(zoom, MF_STRING, kMenuZoomIn, L"Zoom In");
-        AppendMenuW(zoom, MF_STRING, kMenuZoomOut, L"Zoom Out");
-        AppendMenuW(zoom, MF_STRING, kMenuResetZoom, L"Reset Zoom");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(zoom), L"Page Zoom");
+        HMENU zoomMenu = CreatePopupMenu();
+        AppendMenuW(zoomMenu, MF_STRING, kMenuZoomIn, L"Zoom In");
+        AppendMenuW(zoomMenu, MF_STRING, kMenuZoomOut, L"Zoom Out");
+        AppendMenuW(zoomMenu, MF_STRING, kMenuResetZoom, L"Reset Zoom");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(zoomMenu), L"Page Zoom");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kMenuStartPage, L"Start Page");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"About Aurora");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit Aurora");
@@ -542,7 +724,9 @@ struct BrowserState {
 
     void loadStartPage(TabState& tab)
     {
-        static constexpr char html[] = R"HTML(
+        auto frequent = frequentVisits(5);
+
+        std::string html = R"HTML(
 <!doctype html>
 <html>
 <head>
@@ -550,135 +734,137 @@ struct BrowserState {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light; }
-* { box-sizing: border-box; }
-html, body { margin:0; width:100%; min-height:100%; }
-body {
-    min-height:100vh;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    overflow:auto;
-    background:
-      radial-gradient(ellipse at 25% 18%, rgba(99,220,202,.48), transparent 38%),
-      radial-gradient(ellipse at 73% 22%, rgba(136,112,255,.38), transparent 40%),
-      radial-gradient(ellipse at 54% 80%, rgba(55,205,255,.22), transparent 44%),
-      linear-gradient(155deg,#091622 0%,#142746 45%,#25193f 72%,#07101d 100%);
-    color:#f5fbff;
+:root { font-family:"Segoe UI",Arial,sans-serif; color-scheme:dark; }
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;width:100%}
+body{
+ min-height:100vh;
+ color:#f7fbff;
+ background:
+   radial-gradient(ellipse at 22% 14%,rgba(53,183,170,.28),transparent 35%),
+   radial-gradient(ellipse at 76% 18%,rgba(94,88,193,.28),transparent 34%),
+   radial-gradient(ellipse at 55% 80%,rgba(28,122,190,.18),transparent 42%),
+   linear-gradient(145deg,#0b1722,#172b49 48%,#251e45 80%,#0a111d);
 }
-.scene { position:fixed; inset:0; overflow:hidden; }
-.glow { position:absolute; border-radius:50%; filter:blur(44px); opacity:.56; }
-.g1 { width:45vw; height:22vw; left:-10vw; top:4vh; background:rgba(67,225,183,.32); transform:rotate(-12deg); }
-.g2 { width:38vw; height:24vw; right:-8vw; top:10vh; background:rgba(136,104,255,.32); transform:rotate(18deg); }
-.g3 { width:50vw; height:20vw; left:25vw; bottom:-6vh; background:rgba(34,203,255,.20); transform:rotate(-4deg); }
-.content {
-    position:relative;
-    z-index:2;
-    width:min(930px, 90vw);
-    padding:52px 24px 42px;
-    text-align:center;
-}
-.logo {
-    width:88px;
-    height:88px;
-    margin:0 auto 22px;
-    filter:drop-shadow(0 18px 32px rgba(0,0,0,.22));
-}
-.logo svg { width:100%; height:100%; display:block; }
-.brand {
-    font-size:38px;
-    font-weight:500;
-    letter-spacing:.21em;
-    margin:0;
-}
-.tag {
-    margin-top:9px;
-    color:rgba(236,247,252,.72);
-    letter-spacing:.34em;
-    font-size:12px;
-}
-.search {
-    margin:35px auto 24px;
-    width:min(720px, 92vw);
-    height:54px;
-    padding:0 22px;
-    border:1px solid rgba(255,255,255,.35);
-    border-radius:28px;
-    background:rgba(255,255,255,.14);
-    color:#fff;
-    outline:none;
-    backdrop-filter:blur(18px);
-    box-shadow:0 16px 48px rgba(0,0,0,.18);
-    font-size:16px;
-}
-.search::placeholder { color:rgba(247,252,255,.66); }
-.tiles { display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin-top:14px; }
-.tile {
-    width:145px;
-    height:116px;
-    border:1px solid rgba(255,255,255,.22);
-    border-radius:18px;
-    background:rgba(255,255,255,.10);
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    justify-content:center;
-    gap:13px;
-    color:#eef6fb;
-    box-shadow:0 18px 40px rgba(0,0,0,.14);
-    backdrop-filter:blur(16px);
-}
-.tile .icon { width:34px; height:34px; border-radius:11px; display:grid; place-items:center; background:rgba(255,255,255,.16); font-size:18px; font-weight:600; }
-.tile span:last-child { font-size:14px; }
-.footer { margin-top:22px; color:rgba(240,249,252,.52); font-size:12px; }
+.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:52px 24px 46px}
+.brand{text-align:center}
+.logo{width:92px;height:92px;margin:0 auto 18px;filter:drop-shadow(0 16px 28px rgba(0,0,0,.25))}
+.logo svg{width:100%;height:100%}
+.wordmark{font-size:44px;font-weight:500;letter-spacing:.03em;line-height:1}
+.tag{margin-top:10px;font-size:11px;letter-spacing:.38em;color:rgba(233,244,249,.68)}
+.search{width:min(760px,90vw);height:56px;margin:34px auto 30px;padding:0 22px;border:1px solid rgba(255,255,255,.30);border-radius:29px;background:rgba(255,255,255,.10);backdrop-filter:blur(18px);color:#fff;outline:none;font-size:16px;box-shadow:0 16px 45px rgba(0,0,0,.16)}
+.search::placeholder{color:rgba(241,248,252,.64)}
+.section{width:min(920px,94vw);text-align:left;margin-bottom:13px;color:rgba(239,247,251,.78);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+.tiles{width:min(920px,94vw);display:flex;justify-content:center;flex-wrap:wrap;gap:14px}
+.tile{width:150px;min-height:118px;border-radius:18px;border:1px solid rgba(255,255,255,.20);background:rgba(255,255,255,.095);backdrop-filter:blur(17px);box-shadow:0 18px 40px rgba(0,0,0,.13);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;color:#f2f8fb;cursor:pointer;transition:transform .12s ease,background .12s ease}
+.tile:hover{transform:translateY(-2px);background:rgba(255,255,255,.145)}
+.icon{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:rgba(255,255,255,.14);font-weight:600;font-size:16px}
+.name{font-size:14px}
+.host{font-size:11px;color:rgba(237,247,251,.55);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.footer{margin-top:28px;color:rgba(235,246,250,.42);font-size:12px}
+@media(max-width:700px){.tile{width:136px}.page{padding-top:35px}.wordmark{font-size:36px}}
 </style>
 </head>
 <body>
-<div class="scene"><div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div></div>
-<div class="content">
+<div class="page">
+<div class="brand">
 <div class="logo">
-<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-label="Aurora">
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
 <defs>
-  <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#0d6f86"/><stop offset=".5" stop-color="#27cdb0"/><stop offset="1" stop-color="#8ef58b"/>
-  </linearGradient>
-  <linearGradient id="g2" x1="1" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#28b6d3"/><stop offset=".52" stop-color="#31d6af"/><stop offset="1" stop-color="#0b5475"/>
-  </linearGradient>
+<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#69e7a9"/><stop offset=".48" stop-color="#27c9ad"/><stop offset="1" stop-color="#0c6d86"/></linearGradient>
+<linearGradient id="g2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7de89e"/><stop offset=".6" stop-color="#35b9b2"/><stop offset="1" stop-color="#127994"/></linearGradient>
 </defs>
-<circle cx="50" cy="50" r="48" fill="url(#g1)"/>
-<path d="M12 48 C23 20, 60 8, 88 25 C66 24, 45 38, 32 61 C23 77, 15 73, 12 48Z" fill="url(#g2)" opacity=".84"/>
-<path d="M14 65 C31 43, 52 32, 82 39 C65 44, 52 56, 43 72 C35 86, 20 83, 14 65Z" fill="#8ceab0" opacity=".66"/>
-<path d="M19 26 C31 34, 42 39, 59 40 C72 41, 83 48, 88 59 C79 47, 62 45, 49 48 C34 51, 25 43, 19 26Z" fill="#13a9c5" opacity=".55"/>
-<text x="50" y="66" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="60" font-weight="700" fill="white">a</text>
+<circle cx="50" cy="50" r="48" fill="url(#g)"/>
+<path d="M11 42c15-24 38-34 65-28 8 2 15 5 22 11-22-3-41 8-53 27-10 16-24 16-34-10z" fill="url(#g2)" opacity=".82"/>
+<path d="M11 66c17-22 36-29 57-26 10 1 18 5 23 11-19 1-33 8-44 21-10 12-26 9-36-6z" fill="#91e7a8" opacity=".64"/>
+<text x="50" y="68" text-anchor="middle" font-family="Segoe UI,Arial" font-size="56" font-weight="700" fill="white">a</text>
 </svg>
 </div>
-<h1 class="brand">AURORA</h1>
+<div class="wordmark">aurora</div>
 <div class="tag">BROWSE BEYOND</div>
-<input class="search" placeholder="Search the web or enter an address">
-<div class="tiles">
-  <div class="tile"><div class="icon">▶</div><span>YouTube</span></div>
-  <div class="tile"><div class="icon">R</div><span>Reddit</span></div>
-  <div class="tile"><div class="icon">G</div><span>GitHub</span></div>
-  <div class="tile"><div class="icon">W</div><span>Wikipedia</span></div>
-  <div class="tile"><div class="icon">X</div><span>X</span></div>
-  <div class="tile"><div class="icon">+</div><span>Add Shortcut</span></div>
 </div>
-<div class="footer">Aurora is built independently with WebKit for Windows.</div>
+<input id="search" class="search" autofocus placeholder="Search the web or enter an address">
+<div class="section">)HTML";
+
+        html += frequent.empty() ? "Quick Access" : "Frequently Visited";
+        html += R"HTML(</div><div class="tiles">)HTML";
+
+        auto addTile = [&](const std::wstring& name, const std::wstring& url, const std::wstring& host) {
+            std::string safeName = toUTF8(htmlEscape(name));
+            std::string safeUrl = toUTF8(htmlEscape(url));
+            std::string safeHost = toUTF8(htmlEscape(host));
+
+            char letter = '?';
+            for (wchar_t ch : name) {
+                if ((ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z')) {
+                    letter = static_cast<char>(ch < 128 ? ch : '?');
+                    break;
+                }
+            }
+
+            html += "<div class=\"tile\" onclick=\"location.href='";
+            html += safeUrl;
+            html += "'\"><div class=\"icon\">";
+            html += letter;
+            html += "</div><div class=\"name\">";
+            html += safeName;
+            html += "</div><div class=\"host\">";
+            html += safeHost;
+            html += "</div></div>";
+        };
+
+        if (frequent.empty()) {
+            addTile(L"YouTube", L"https://www.youtube.com", L"youtube.com");
+            addTile(L"Reddit", L"https://www.reddit.com", L"reddit.com");
+            addTile(L"GitHub", L"https://github.com", L"github.com");
+            addTile(L"Wikipedia", L"https://www.wikipedia.org", L"wikipedia.org");
+            addTile(L"Google", L"https://www.google.com", L"google.com");
+        } else {
+            for (const auto& entry : frequent) {
+                std::wstring host = entry.url;
+                size_t start = host.find(L"://");
+                if (start != std::wstring::npos)
+                    host.erase(0, start + 3);
+                size_t slash = host.find(L'/');
+                if (slash != std::wstring::npos)
+                    host.erase(slash);
+                addTile(
+                    entry.title.empty() ? host : entry.title,
+                    entry.url,
+                    host
+                );
+            }
+        }
+
+        html += R"HTML(
+<div class="tile" onclick="alert('Custom shortcuts will be added in the next browser-services pass.')"><div class="icon">+</div><div class="name">Add Shortcut</div><div class="host">Custom</div></div>
 </div>
-</body>
-</html>
+<div class="footer">Frequently visited sites are stored locally by Aurora.</div>
+</div>
+<script>
+const search=document.getElementById('search');
+search.addEventListener('keydown',e=>{
+ if(e.key!=='Enter') return;
+ const value=search.value.trim();
+ if(!value) return;
+ if(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value) || /^www\./i.test(value) || /^[^ \t]+\.[^ \t]+$/.test(value))
+   location.href=value.includes('://')?value:'https://'+value;
+ else
+   location.href='https://www.google.com/search?q='+encodeURIComponent(value);
+});
+</script>
+</body></html>
 )HTML";
 
-        auto page = WKViewGetPage(tab.view.get());
-        auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html));
+        auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
         auto baseURL = createWKURL(L"about:blank");
-        WKPageLoadHTMLString(page, htmlString.get(), baseURL.get());
+        WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
 
         tab.title = L"New Tab";
+        tab.activeUrl.clear();
+        tab.lastRecordedUrl.clear();
         SetWindowTextW(addressBar, L"");
-        if (&tab == active())
-            SetWindowTextW(window, windowTitle);
+        SetWindowTextW(window, windowTitle);
     }
 
     void loadURL(TabState& tab, const std::wstring& value)
@@ -709,27 +895,22 @@ body {
         if (!tab)
             return;
 
-        const bool explicitScheme =
-            cleaned.find(L"://") != std::wstring::npos
+        bool hasScheme = cleaned.find(L"://") != std::wstring::npos
             || cleaned.rfind(L"about:", 0) == 0
             || cleaned.rfind(L"file:", 0) == 0
             || cleaned.rfind(L"localhost", 0) == 0
             || cleaned.rfind(L"127.0.0.1", 0) == 0;
 
-        bool looksLikeHost = !explicitScheme
+        bool bareHost = !hasScheme
             && cleaned.find_first_of(L" \t") == std::wstring::npos
-            && cleaned.find(L'.') != std::wstring::npos;
+            && (cleaned.rfind(L"www.", 0) == 0 || cleaned.find(L'.') != std::wstring::npos);
 
-        if (looksLikeHost) {
-            std::wstring url = L"https://" + cleaned;
-            loadURL(*tab, url);
-        } else if (explicitScheme) {
+        if (hasScheme)
             loadURL(*tab, cleaned);
-        } else {
-            auto encoded = percentEncode(cleaned);
-            auto searchURL = std::wstring(L"https://www.google.com/search?q=") + encoded;
-            loadURL(*tab, searchURL);
-        }
+        else if (bareHost)
+            loadURL(*tab, L"https://" + cleaned);
+        else
+            loadURL(*tab, L"https://www.google.com/search?q=" + percentEncode(cleaned));
 
         SetFocus(WKViewGetWindow(tab->view.get()));
     }
@@ -746,7 +927,7 @@ body {
 
         WKViewSetIsInWindow(tab->view.get(), true);
 
-        WKPageRef page = WKViewGetPage(tab->view.get());
+        auto page = WKViewGetPage(tab->view.get());
         if (!page)
             return false;
 
@@ -761,11 +942,10 @@ body {
         stateClient.didChangeCanGoForward = didChangeCanGoForward;
         WKPageSetPageStateClient(page, &stateClient.base);
 
-        WKPageSetCustomBackingScaleFactor(page, static_cast<double>(windowDpi(window)) / 96.0);
+        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
 
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
-
         if (select)
             activeTab = index;
 
@@ -782,23 +962,21 @@ body {
         activeTab = index;
 
         for (size_t i = 0; i < tabs.size(); ++i) {
-            if (!tabs[i]->view)
-                continue;
             HWND viewWindow = WKViewGetWindow(tabs[i]->view.get());
             if (viewWindow)
                 ShowWindow(viewWindow, i == activeTab ? SW_SHOW : SW_HIDE);
         }
 
-        if (auto* tab = active()) {
-            auto url = createString(adoptWK(WKPageCopyActiveURL(WKViewGetPage(tab->view.get()))).get());
-            if (url != L"about:blank")
-                SetWindowTextW(addressBar, url.c_str());
-            else
-                SetWindowTextW(addressBar, L"");
+        auto* tab = active();
+        if (!tab)
+            return;
 
-            SetFocus(WKViewGetWindow(tab->view.get()));
-        }
+        if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+            SetWindowTextW(addressBar, L"");
+        else
+            SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
+        SetFocus(WKViewGetWindow(tab->view.get()));
         resize();
         InvalidateRect(window, nullptr, TRUE);
     }
@@ -814,17 +992,13 @@ body {
         }
 
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
+
         if (activeTab >= tabs.size())
             activeTab = tabs.size() - 1;
         else if (activeTab > index)
             --activeTab;
 
         activateTab(activeTab);
-    }
-
-    void closeActiveTab()
-    {
-        closeTab(activeTab);
     }
 
     void back()
@@ -856,35 +1030,43 @@ body {
         }
     }
 
-    void updateTabTitle(TabState& tab)
+    void showMenu()
     {
-        auto page = WKViewGetPage(tab.view.get());
-        auto title = createString(adoptWK(WKPageCopyTitle(page)).get());
-        if (!title.empty())
-            tab.title = title;
-        else
-            tab.title = L"New Tab";
+        RECT client { };
+        GetClientRect(window, &client);
 
-        InvalidateRect(window, nullptr, TRUE);
+        int button = scaleForDpi(window, kToolbarButtonSize);
+        int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        POINT point {
+            client.right - pad - button / 2,
+            titleBarHeight() + toolbarHeight()
+        };
+        ClientToScreen(window, &point);
 
-        if (&tab == active()) {
-            std::wstring fullTitle = tab.title + L" — Aurora";
-            SetWindowTextW(window, fullTitle.c_str());
-        }
+        TrackPopupMenu(menu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
     }
 
-    void updateAddress(TabState& tab)
+    RECT addressPillRect() const
     {
-        if (&tab != active())
-            return;
+        RECT client { };
+        GetClientRect(window, &client);
 
-        auto page = WKViewGetPage(tab.view.get());
-        auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        int button = scaleForDpi(window, kToolbarButtonSize);
+        int gap = scaleForDpi(window, kToolbarGap);
 
-        if (url == L"about:blank")
-            SetWindowTextW(addressBar, L"");
-        else
-            SetWindowTextW(addressBar, url.c_str());
+        int leftControls = button * 3 + gap * 2;
+        int rightControls = button * 3 + gap * 4;
+
+        int left = pad + leftControls + scaleForDpi(window, 14);
+        int right = client.right - pad - rightControls;
+
+        return {
+            left,
+            titleBarHeight() + scaleForDpi(window, 7),
+            std::max(left + scaleForDpi(window, 220), right),
+            titleBarHeight() + toolbarHeight() - scaleForDpi(window, 7)
+        };
     }
 
     void resize() const
@@ -896,46 +1078,18 @@ body {
         if (!GetClientRect(window, &client))
             return;
 
-        int width = client.right - client.left;
-        int height = client.bottom - client.top;
-        int tabsTop = tabHeight();
-        int toolbarTop = tabsTop;
-        int contentTop = tabsTop + toolbarHeight();
-
-        int leftPad = scaleForDpi(window, kToolbarHorizontalPadding);
-        int button = scaleForDpi(window, kToolbarButtonSize);
-        int gap = scaleForDpi(window, kToolbarGap);
-        int logoZone = scaleForDpi(window, 44);
-
-        int tabsStart = leftPad + logoZone;
-        int plusWidth = button;
-        int tabCount = std::max(1, static_cast<int>(tabs.size()));
-        int availableForTabs = width - tabsStart - leftPad - plusWidth - gap * (tabCount + 1);
-        int tabWidth = std::clamp(
-            availableForTabs / tabCount,
-            scaleForDpi(window, kTabMinWidth),
-            scaleForDpi(window, kTabMaxWidth)
-        );
-        int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (tabWidth + gap);
-
-        int rightIconCount = 3;
-        int rightWidth = button * rightIconCount + gap * 4;
-        int addressLeft = leftPad + button * 4 + gap * 3 + scaleForDpi(window, 16);
-        int addressRight = width - leftPad - rightWidth;
-
+        RECT pill = addressPillRect();
         MoveWindow(
             addressBar,
-            addressLeft + scaleForDpi(window, 32),
-            toolbarTop + scaleForDpi(window, 8),
-            std::max(scaleForDpi(window, 180), addressRight - addressLeft - scaleForDpi(window, 58)),
-            scaleForDpi(window, 38),
+            pill.left + scaleForDpi(window, 34),
+            pill.top + scaleForDpi(window, 2),
+            std::max(scaleForDpi(window, 140), pill.right - pill.left - scaleForDpi(window, 68)),
+            std::max(scaleForDpi(window, 24), pill.bottom - pill.top - scaleForDpi(window, 4)),
             TRUE
         );
 
+        int contentTop = titleBarHeight() + toolbarHeight();
         for (const auto& tab : tabs) {
-            if (!tab->view)
-                continue;
-
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
@@ -944,8 +1098,8 @@ body {
                 viewWindow,
                 0,
                 contentTop,
-                width,
-                std::max(0, height - contentTop),
+                client.right,
+                std::max(0, client.bottom - contentTop),
                 TRUE
             );
         }
@@ -953,47 +1107,13 @@ body {
         InvalidateRect(window, nullptr, TRUE);
     }
 
-    RECT addressPillRect() const
-    {
-        RECT client { };
-        GetClientRect(window, &client);
-
-        int navX = scaleForDpi(window, kToolbarHorizontalPadding);
-        int button = scaleForDpi(window, kToolbarButtonSize);
-        int gap = scaleForDpi(window, kToolbarGap);
-        int rightButtonCount = 3;
-        int rightWidth = button * rightButtonCount + gap * 2 + scaleForDpi(window, 20);
-
-        int left = navX + button * 4 + gap * 3 + scaleForDpi(window, 18);
-        int right = client.right - navX - rightWidth;
-
-        return {
-            left,
-            tabHeight() + scaleForDpi(window, 6),
-            right,
-            tabHeight() + toolbarHeight() - scaleForDpi(window, 6)
-        };
-    }
-
-    void showMenu()
-    {
-        RECT client { };
-        GetClientRect(window, &client);
-        int button = scaleForDpi(window, kToolbarButtonSize);
-        int gap = scaleForDpi(window, kToolbarGap);
-        int navX = scaleForDpi(window, kToolbarHorizontalPadding);
-
-        POINT point {
-            client.right - navX - button / 2,
-            tabHeight() + toolbarHeight() - gap
-        };
-        ClientToScreen(window, &point);
-
-        TrackPopupMenu(menu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
-    }
-
     void handleCommand(UINT command)
     {
+        if (command >= 3000 && command < 3000 + tabs.size()) {
+            activateTab(command - 3000);
+            return;
+        }
+
         switch (command) {
         case kCommandBack:
             back();
@@ -1005,7 +1125,7 @@ body {
             reloadOrStop();
             break;
         case kCommandSidebar:
-            MessageBoxW(window, L"Sidebar UI placeholder. Bookmarks and history will be added here next.", L"Aurora", MB_OK);
+            MessageBoxW(window, L"Sidebar is reserved for Bookmarks and History. Those panels will be added next.", L"Aurora", MB_OK);
             break;
         case kCommandNewTab:
             addTab(true);
@@ -1013,26 +1133,35 @@ body {
         case kCommandMenu:
             showMenu();
             break;
-        case kCommandShare:
-            MessageBoxW(window, L"Share will be added in a later browser-services pass.", L"Aurora", MB_OK);
-            break;
-        case kCommandDownloads:
-            MessageBoxW(window, L"Downloads will be added in a later browser-services pass.", L"Aurora", MB_OK);
-            break;
         case kCommandAddress:
             SetFocus(addressBar);
+            SendMessageW(addressBar, EM_SETSEL, 0, -1);
             break;
         case kCommandCloseTab:
             closeActiveTab();
             break;
-
+        case kCommandShare:
+            MessageBoxW(window, L"Share is reserved for the next browser-services pass.", L"Aurora", MB_OK);
+            break;
+        case kCommandDownloads:
+            MessageBoxW(window, L"Downloads are reserved for the next browser-services pass.", L"Aurora", MB_OK);
+            break;
+        case kCommandMinimize:
+            ShowWindow(window, SW_MINIMIZE);
+            break;
+        case kCommandMaximize:
+            ShowWindow(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
+            resize();
+            break;
+        case kCommandCloseWindow:
+            PostMessageW(window, WM_CLOSE, 0, 0);
+            break;
         case kMenuNewTab:
             addTab(true);
             break;
-        case kMenuNewWindow: {
+        case kMenuNewWindow:
             MessageBoxW(window, L"New Window is planned for the next browser-core pass.", L"Aurora", MB_OK);
             break;
-        }
         case kMenuBack:
             back();
             break;
@@ -1058,10 +1187,14 @@ body {
             if (auto* tab = active())
                 WKPageSetPageZoomFactor(WKViewGetPage(tab->view.get()), 1.0);
             break;
+        case kMenuStartPage:
+            if (auto* tab = active())
+                loadStartPage(*tab);
+            break;
         case kMenuAbout:
             MessageBoxW(
                 window,
-                L"Aurora\n\nA WebKit browser for Windows.\n\nAurora branding is original and replaceable.",
+                L"Aurora\n\nA WebKit browser for Windows.\n\nSafari-inspired interface with original Aurora branding.",
                 L"About Aurora",
                 MB_OK | MB_ICONINFORMATION
             );
@@ -1076,32 +1209,54 @@ body {
         InvalidateRect(window, nullptr, TRUE);
     }
 
-    bool hitTest(POINT point)
+    void closeActiveTab()
     {
-        int dpi = static_cast<int>(windowDpi(window));
-        int tabH = MulDiv(kTabBarHeight, dpi, 96);
-        int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
-        int button = MulDiv(kToolbarButtonSize, dpi, 96);
-        int gap = MulDiv(kToolbarGap, dpi, 96);
-        int leftPad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
-        int logoZone = MulDiv(44, dpi, 96);
+        closeTab(activeTab);
+    }
 
-        if (point.y < tabH) {
-            int tabsStart = leftPad + logoZone;
-            int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (
-                std::clamp(
-                    (GetClientWidth(window) - tabsStart - leftPad - button - gap * (static_cast<int>(tabs.size()) + 1))
-                        / std::max(1, static_cast<int>(tabs.size())),
-                    MulDiv(kTabMinWidth, dpi, 96),
-                    MulDiv(kTabMaxWidth, dpi, 96)
-                ) + gap
-            );
+    bool handleTopBarHit(POINT point)
+    {
+        int dpi = windowDpi(window);
+        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
+        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
+        int light = MulDiv(kTrafficLightSize, dpi, 96);
+        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
 
-            if (point.x >= plusLeft && point.x < plusLeft + button)
-                return handleHit(kCommandNewTab);
+        if (point.y >= 0 && point.y < titleH) {
+            RECT closeRect { pad, (titleH - light) / 2, pad + light, (titleH + light) / 2 };
+            RECT minimizeRect {
+                pad + light + lightGap,
+                (titleH - light) / 2,
+                pad + light * 2 + lightGap,
+                (titleH + light) / 2
+            };
+            RECT maximizeRect {
+                pad + light * 2 + lightGap * 2,
+                (titleH - light) / 2,
+                pad + light * 3 + lightGap * 2,
+                (titleH + light) / 2
+            };
 
+            if (PtInRect(&closeRect, point)) {
+                handleCommand(kCommandCloseWindow);
+                return true;
+            }
+            if (PtInRect(&minimizeRect, point)) {
+                handleCommand(kCommandMinimize);
+                return true;
+            }
+            if (PtInRect(&maximizeRect, point)) {
+                handleCommand(kCommandMaximize);
+                return true;
+            }
+
+            int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
+            int button = MulDiv(kToolbarButtonSize, dpi, 96);
+            int plusGap = MulDiv(kToolbarGap, dpi, 96);
+
+            int plusLeft = GetClientWidth(window) - pad - button;
             int tabCount = std::max(1, static_cast<int>(tabs.size()));
-            int available = GetClientWidth(window) - tabsStart - leftPad - button - gap * (tabCount + 1);
+            int available = plusLeft - tabsStart - pad - plusGap * (tabCount + 1);
             int tabWidth = std::clamp(
                 available / tabCount,
                 MulDiv(kTabMinWidth, dpi, 96),
@@ -1109,45 +1264,82 @@ body {
             );
 
             for (size_t i = 0; i < tabs.size(); ++i) {
-                int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
+                int left = tabsStart + static_cast<int>(i) * (tabWidth + plusGap);
                 if (point.x >= left && point.x < left + tabWidth)
                     return handleTabHit(point, i, left, tabWidth);
             }
 
+            if (point.x >= plusLeft && point.x < plusLeft + button) {
+                handleCommand(kCommandNewTab);
+                return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    bool handleToolbarHit(POINT point)
+    {
+        int dpi = windowDpi(window);
+        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
+        int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
+        int button = MulDiv(kToolbarButtonSize, dpi, 96);
+        int gap = MulDiv(kToolbarGap, dpi, 96);
+        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
+
+        if (point.y < titleH || point.y >= titleH + toolbarH)
+            return false;
+
+        int x = pad;
+        if (point.x >= x && point.x < x + button) {
+            handleCommand(kCommandBack);
+            return true;
+        }
+        x += button + gap;
+        if (point.x >= x && point.x < x + button) {
+            handleCommand(kCommandForward);
+            return true;
+        }
+        x += button + gap;
+        if (point.x >= x && point.x < x + button) {
+            handleCommand(kCommandSidebar);
             return true;
         }
 
-        if (point.y < tabH + toolbarH) {
-            int x = leftPad;
-            if (hitRect(point, x, tabH, button, toolbarH, gap))
-                return handleHit(kCommandBack);
-            x += button + gap;
-            if (hitRect(point, x, tabH, button, toolbarH, gap))
-                return handleHit(kCommandForward);
-            x += button + gap;
-            if (hitRect(point, x, tabH, button, toolbarH, gap))
-                return handleHit(kCommandSidebar);
-            x += button + gap;
-            if (hitRect(point, x, tabH, button, toolbarH, gap))
-                return handleHit(kCommandReload);
+        RECT pill = addressPillRect();
+        int rightStart = pill.right + gap * 2;
+        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
+        RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
-            RECT pill = addressPillRect();
-            int buttonStart = pill.right + gap * 2;
-            RECT shareRect { buttonStart, tabH, buttonStart + button, tabH + toolbarH };
-            RECT downloadsRect { shareRect.right + gap, tabH, shareRect.right + gap + button, tabH + toolbarH };
-            RECT menuRect { downloadsRect.right + gap, tabH, downloadsRect.right + gap + button, tabH + toolbarH };
-
-            if (PtInRect(&shareRect, point))
-                return handleHit(kCommandShare);
-            if (PtInRect(&downloadsRect, point))
-                return handleHit(kCommandDownloads);
-            if (PtInRect(&menuRect, point))
-                return handleHit(kCommandMenu);
-
+        if (PtInRect(&shareRect, point)) {
+            handleCommand(kCommandShare);
+            return true;
+        }
+        if (PtInRect(&downloadsRect, point)) {
+            handleCommand(kCommandDownloads);
+            return true;
+        }
+        if (PtInRect(&menuRect, point)) {
+            handleCommand(kCommandMenu);
             return true;
         }
 
         return false;
+    }
+
+    bool handleTabHit(POINT point, size_t index, int left, int tabWidth)
+    {
+        int closeWidth = scaleForDpi(window, 28);
+        if (point.x >= left + tabWidth - closeWidth) {
+            closeTab(index);
+            return true;
+        }
+
+        activateTab(index);
+        return true;
     }
 
     static int GetClientWidth(HWND hwnd)
@@ -1157,70 +1349,49 @@ body {
         return rect.right;
     }
 
-    static bool hitRect(POINT point, int x, int y, int width, int toolbarHeight, int gap)
-    {
-        return point.x >= x && point.x <= x + width && point.y >= y + gap && point.y <= y + toolbarHeight - gap;
-    }
-
-    bool handleTabHit(POINT point, size_t index, int left, int tabWidth)
-    {
-        int closeZone = scaleForDpi(window, 28);
-        if (point.x > left + tabWidth - closeZone) {
-            closeTab(index);
-            return true;
-        }
-
-        activateTab(index);
-        return true;
-    }
-
-    bool handleHit(UINT command)
-    {
-        handleCommand(command);
-        return true;
-    }
-
     void paint(HDC dc)
     {
         RECT client { };
         GetClientRect(window, &client);
 
-        int dpi = static_cast<int>(windowDpi(window));
-        int tabH = MulDiv(kTabBarHeight, dpi, 96);
+        int dpi = windowDpi(window);
+        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
         int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
         int button = MulDiv(kToolbarButtonSize, dpi, 96);
         int gap = MulDiv(kToolbarGap, dpi, 96);
-        int leftPad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
-        int logoZone = MulDiv(44, dpi, 96);
+        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
 
-        HBRUSH topBrush = CreateSolidBrush(RGB(245, 246, 247));
-        FillRect(dc, &client, topBrush);
-        DeleteObject(topBrush);
+        HBRUSH pageBrush = CreateSolidBrush(RGB(250, 250, 250));
+        FillRect(dc, &client, pageBrush);
+        DeleteObject(pageBrush);
 
-        RECT toolbar { 0, tabH, client.right, tabH + toolbarH };
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(236, 238, 239));
-        FillRect(dc, &toolbar, toolbarBrush);
+        HBRUSH titleBrush = CreateSolidBrush(RGB(242, 243, 244));
+        RECT titleRect { 0, 0, client.right, titleH };
+        FillRect(dc, &titleRect, titleBrush);
+        DeleteObject(titleBrush);
+
+        HBRUSH toolbarBrush = CreateSolidBrush(RGB(234, 236, 237));
+        RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
+        FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
 
-        // Aurora identity area and tab strip.
-        RECT logoRect {
-            leftPad,
-            (tabH - MulDiv(kLogoSize, dpi, 96)) / 2,
-            leftPad + MulDiv(kLogoSize, dpi, 96),
-            (tabH + MulDiv(kLogoSize, dpi, 96)) / 2
-        };
-        drawAuroraMark(dc, logoRect, false);
+        int light = MulDiv(kTrafficLightSize, dpi, 96);
+        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
+        int lightY = (titleH - light) / 2;
 
-        int tabsStart = leftPad + logoZone;
-        int plusWidth = button;
+        drawTrafficLight(dc, pad, lightY, RGB(255, 95, 87));
+        drawTrafficLight(dc, pad + light + lightGap, lightY, RGB(255, 189, 46));
+        drawTrafficLight(dc, pad + light * 2 + lightGap * 2, lightY, RGB(39, 201, 63));
+
+        int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
+        int plusLeft = client.right - pad - button;
         int tabCount = std::max(1, static_cast<int>(tabs.size()));
-        int available = client.right - tabsStart - leftPad - plusWidth - gap * (tabCount + 1);
+        int available = plusLeft - tabsStart - pad - gap * (tabCount + 1);
         int tabWidth = std::clamp(
             available / tabCount,
             MulDiv(kTabMinWidth, dpi, 96),
             MulDiv(kTabMaxWidth, dpi, 96)
         );
-        int plusLeft = tabsStart + static_cast<int>(tabs.size()) * (tabWidth + gap);
 
         for (size_t i = 0; i < tabs.size(); ++i) {
             int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
@@ -1228,102 +1399,105 @@ body {
                 left,
                 MulDiv(4, dpi, 96),
                 left + tabWidth,
-                tabH - MulDiv(4, dpi, 96)
+                titleH - MulDiv(4, dpi, 96)
             };
 
-            HBRUSH brush = CreateSolidBrush(i == activeTab ? RGB(255, 255, 255) : RGB(231, 233, 234));
-            HPEN pen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(213, 217, 219) : RGB(225, 228, 229));
-            HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
-            HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-            RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
+            HBRUSH tabBrush = CreateSolidBrush(i == activeTab ? RGB(255, 255, 255) : RGB(230, 232, 234));
+            HPEN tabPen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(210, 214, 216) : RGB(223, 226, 228));
+            HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
+            HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
+            RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
             SelectObject(dc, oldBrush);
             SelectObject(dc, oldPen);
-            DeleteObject(brush);
-            DeleteObject(pen);
+            DeleteObject(tabBrush);
+            DeleteObject(tabPen);
 
-            RECT tabIcon {
+            RECT iconRect {
                 tabRect.left + MulDiv(9, dpi, 96),
                 tabRect.top + MulDiv(7, dpi, 96),
                 tabRect.left + MulDiv(28, dpi, 96),
                 tabRect.top + MulDiv(26, dpi, 96)
             };
-            drawAuroraMark(dc, tabIcon, false);
+            drawAuroraMark(dc, iconRect, false);
 
-            RECT titleRect = tabRect;
-            titleRect.left = tabIcon.right + MulDiv(7, dpi, 96);
-            titleRect.right -= MulDiv(28, dpi, 96);
+            RECT titleText = tabRect;
+            titleText.left = iconRect.right + MulDiv(7, dpi, 96);
+            titleText.right -= MulDiv(31, dpi, 96);
             SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(42, 47, 50));
+            SetTextColor(dc, RGB(45, 49, 52));
             HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-            DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SelectObject(dc, oldFont);
 
             RECT closeRect {
-                tabRect.right - MulDiv(28, dpi, 96),
+                tabRect.right - MulDiv(30, dpi, 96),
                 tabRect.top,
                 tabRect.right - MulDiv(4, dpi, 96),
                 tabRect.bottom
             };
-            SetTextColor(dc, RGB(88, 94, 97));
+            SetTextColor(dc, RGB(88, 93, 97));
             oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
             DrawTextW(dc, L"×", 1, &closeRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             SelectObject(dc, oldFont);
         }
 
-        RECT plusRect { plusLeft, 0, plusLeft + button, tabH };
+        RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(38, 43, 46));
+        SetTextColor(dc, RGB(45, 49, 52));
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
         DrawTextW(dc, L"+", 1, &plusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, oldFont);
 
-        // Safari-inspired toolbar controls.
-        int x = leftPad;
-        RECT backRect { x, tabH, x + button, tabH + toolbarH };
-        drawBackForwardIcon(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())));
+        int x = pad;
+        RECT backRect { x, titleH, x + button, titleH + toolbarH };
+        drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())));
         x += button + gap;
-        RECT forwardRect { x, tabH, x + button, tabH + toolbarH };
-        drawBackForwardIcon(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())));
+        RECT forwardRect { x, titleH, x + button, titleH + toolbarH };
+        drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())));
         x += button + gap;
-        RECT sidebarRect { x, tabH, x + button, tabH + toolbarH };
-        drawSidebarIcon(dc, sidebarRect);
-        x += button + gap;
-        RECT reloadRect { x, tabH, x + button, tabH + toolbarH };
-        bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
-        drawReloadIcon(dc, reloadRect, loading);
+        RECT sidebarRect { x, titleH, x + button, titleH + toolbarH };
+        drawSidebar(dc, sidebarRect);
 
         RECT pill = addressPillRect();
         HBRUSH pillBrush = CreateSolidBrush(RGB(255, 255, 255));
-        HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(204, 210, 213));
-        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
-        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pillPen));
+        HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(208, 212, 214));
+        HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
+        HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
         RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(19, dpi, 96), MulDiv(19, dpi, 96));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
+        SelectObject(dc, oldPillBrush);
+        SelectObject(dc, oldPillPen);
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
 
-        // Search glyph inside the address field.
-        HPEN searchPen = CreatePen(PS_SOLID, 2, RGB(86, 93, 97));
-        oldPen = static_cast<HPEN>(SelectObject(dc, searchPen));
-        int searchCx = pill.left + MulDiv(20, dpi, 96);
-        int searchCy = (pill.top + pill.bottom) / 2 - MulDiv(2, dpi, 96);
-        Ellipse(dc, searchCx - MulDiv(6, dpi, 96), searchCy - MulDiv(6, dpi, 96),
-            searchCx + MulDiv(6, dpi, 96), searchCy + MulDiv(6, dpi, 96));
-        MoveToEx(dc, searchCx + MulDiv(4, dpi, 96), searchCy + MulDiv(4, dpi, 96), nullptr);
-        LineTo(dc, searchCx + MulDiv(9, dpi, 96), searchCy + MulDiv(9, dpi, 96));
-        SelectObject(dc, oldPen);
+        // Search glyph.
+        HPEN searchPen = CreatePen(PS_SOLID, 2, RGB(80, 87, 90));
+        HPEN oldSearchPen = static_cast<HPEN>(SelectObject(dc, searchPen));
+        int sx = pill.left + MulDiv(18, dpi, 96);
+        int sy = (pill.top + pill.bottom) / 2 - MulDiv(2, dpi, 96);
+        Ellipse(dc, sx - MulDiv(6, dpi, 96), sy - MulDiv(6, dpi, 96),
+            sx + MulDiv(6, dpi, 96), sy + MulDiv(6, dpi, 96));
+        MoveToEx(dc, sx + MulDiv(4, dpi, 96), sy + MulDiv(4, dpi, 96), nullptr);
+        LineTo(dc, sx + MulDiv(9, dpi, 96), sy + MulDiv(9, dpi, 96));
+        SelectObject(dc, oldSearchPen);
         DeleteObject(searchPen);
 
-        int buttonStart = pill.right + gap * 2;
-        RECT shareRect { buttonStart, tabH, buttonStart + button, tabH + toolbarH };
-        RECT downloadRect { shareRect.right + gap, tabH, shareRect.right + gap + button, tabH + toolbarH };
-        RECT menuRect { downloadRect.right + gap, tabH, downloadRect.right + gap + button, tabH + toolbarH };
-        drawShareIcon(dc, shareRect);
-        drawDownloadIcon(dc, downloadRect);
-        drawMenuIcon(dc, menuRect);
-    }
+        RECT reloadRect {
+            pill.right - MulDiv(34, dpi, 96),
+            titleH,
+            pill.right,
+            titleH + toolbarH
+        };
+        bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
+        drawReload(dc, reloadRect, loading);
 
+        int rightStart = pill.right + gap * 2;
+        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
+        RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+        drawShare(dc, shareRect);
+        drawDownload(dc, downloadsRect);
+        drawMenu(dc, menuRect);
+    }
 };
 
 LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1359,15 +1533,52 @@ void didChangeIsLoading(const void* clientInfo)
 void didChangeTitle(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (tab && tab->browser)
-        tab->browser->updateTabTitle(*tab);
+    if (!tab || !tab->browser)
+        return;
+
+    auto page = WKViewGetPage(tab->view.get());
+    auto title = createString(adoptWK(WKPageCopyTitle(page)).get());
+    if (!title.empty())
+        tab->title = title;
+    else
+        tab->title = L"New Tab";
+
+    if (!tab->activeUrl.empty())
+        tab->browser->recordVisit(tab->activeUrl, tab->title);
+
+    InvalidateRect(tab->browser->window, nullptr, TRUE);
+    if (tab == tab->browser->active()) {
+        std::wstring titleText = tab->title + L" — Aurora";
+        SetWindowTextW(tab->browser->window, titleText.c_str());
+    }
 }
 
 void didChangeActiveURL(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (tab && tab->browser)
-        tab->browser->updateAddress(*tab);
+    if (!tab || !tab->browser)
+        return;
+
+    auto page = WKViewGetPage(tab->view.get());
+    auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+    tab->activeUrl = url;
+
+    if (tab == tab->browser->active()) {
+        if (url == L"about:blank" || url.empty())
+            SetWindowTextW(tab->browser->addressBar, L"");
+        else
+            SetWindowTextW(tab->browser->addressBar, url.c_str());
+    }
+
+    if (url.empty() || url == L"about:blank")
+        return;
+
+    if (url != tab->lastRecordedUrl && (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)) {
+        tab->browser->recordVisit(url, tab->title);
+        tab->lastRecordedUrl = url;
+    }
+
+    InvalidateRect(tab->browser->window, nullptr, TRUE);
 }
 
 void didChangeEstimatedProgress(const void* clientInfo)
@@ -1426,23 +1637,50 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_ERASEBKGND:
         return 1;
 
-    case WM_CTLCOLOREDIT:
-        if (state && reinterpret_cast<HWND>(lParam) == state->addressBar) {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, RGB(35, 40, 43));
-            SetBkColor(dc, RGB(255, 255, 255));
-            static HBRUSH addressBrush = CreateSolidBrush(RGB(255, 255, 255));
-            return reinterpret_cast<LRESULT>(addressBrush);
+    case WM_NCHITTEST: {
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(window, &point);
+
+        RECT client { };
+        GetClientRect(window, &client);
+
+        int border = scaleForDpi(window, kResizeBorder);
+        bool left = point.x < border;
+        bool right = point.x >= client.right - border;
+        bool top = point.y < border;
+        bool bottom = point.y >= client.bottom - border;
+
+        if (left && top) return HTTOPLEFT;
+        if (right && top) return HTTOPRIGHT;
+        if (left && bottom) return HTBOTTOMLEFT;
+        if (right && bottom) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+
+        int titleH = scaleForDpi(window, kTitleBarHeight);
+        if (point.y < titleH) {
+            // Let tabs receive client clicks; drag only on unused title-bar space.
+            if (state && !state->handleTopBarHit(point))
+                return HTCAPTION;
         }
-        break;
+
+        return HTCLIENT;
+    }
 
     case WM_LBUTTONDOWN: {
-        if (state) {
-            POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            if (state->hitTest(point))
-                return 0;
-        }
-        break;
+        if (!state)
+            break;
+
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        if (state->handleTopBarHit(point))
+            return 0;
+        if (state->handleToolbarHit(point))
+            return 0;
+
+        return DefWindowProcW(window, message, wParam, lParam);
     }
 
     case WM_COMMAND:
@@ -1458,15 +1696,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_DPICHANGED:
         if (state) {
             for (auto& tab : state->tabs) {
-                if (!tab->view)
-                    continue;
                 auto page = WKViewGetPage(tab->view.get());
                 if (page)
-                    WKPageSetCustomBackingScaleFactor(page, static_cast<double>(windowDpi(window)) / 96.0);
+                    WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
             }
             state->resize();
         }
         return 0;
+
+    case WM_GETMINMAXINFO: {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+        info->ptMinTrackSize.x = 780;
+        info->ptMinTrackSize.y = 520;
+        return 0;
+    }
 
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -1475,13 +1718,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     default:
         return DefWindowProcW(window, message, wParam, lParam);
     }
+
+    return DefWindowProcW(window, message, wParam, lParam);
 }
 
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
-    enableDpiAwareness();
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSEXW windowClass { };
     windowClass.cbSize = sizeof(windowClass);
@@ -1499,10 +1744,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     BrowserState browserState;
 
     HWND window = CreateWindowExW(
-        0,
+        WS_EX_APPWINDOW,
         windowClassName,
         windowTitle,
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1280,
@@ -1518,6 +1763,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         return 1;
     }
 
+    ShowWindow(window, showCommand == SW_MAXIMIZE ? SW_MAXIMIZE : SW_SHOWNORMAL);
+    UpdateWindow(window);
+
     ACCEL accelerators[] = {
         { FCONTROL, 'L', kCommandAddress },
         { FCONTROL, 'R', kCommandReload },
@@ -1528,9 +1776,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     };
 
     HACCEL acceleratorTable = CreateAcceleratorTableW(accelerators, static_cast<int>(std::size(accelerators)));
-
-    ShowWindow(window, showCommand);
-    UpdateWindow(window);
 
     MSG message { };
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
