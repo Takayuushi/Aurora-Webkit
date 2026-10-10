@@ -1707,13 +1707,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             return;
         }
 
-        if (command >= 6000 && command < 6000 + downloads.size()) {
-            size_t index = command - 6000;
-            if (index < downloads.size())
-                showFileInFolder(downloads[index].path);
-            return;
-        }
-
         if (command >= 3000 && command < 3000 + tabs.size()) {
             activateTab(command - 3000);
             return;
