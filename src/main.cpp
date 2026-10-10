@@ -151,7 +151,11 @@ struct SavedPage {
 struct DownloadEntry {
     std::wstring filename;
     std::wstring path;
+    long long bytesWritten { 0 };
+    long long totalBytes { 0 };
+    bool finished { false };
     bool failed { false };
+    WKDownloadRef download { nullptr };
 };
 
 std::wstring createString(WKStringRef string)
@@ -2352,7 +2356,7 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
     tab->browser->loadURL(*tab, fallback);
 }
 
-WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRef response, WKStringRef suggestedFilename, const void* clientInfo)
+WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLResponseRef response, WKStringRef suggestedFilename, const void* clientInfo)
 {
     std::wstring filename = createString(suggestedFilename);
 
@@ -2378,7 +2382,7 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRe
 
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (browser) {
-        browser->downloads.push_back({ filename, path, false });
+        browser->downloads.push_back({ filename, path, 0, 0, false, false, download });
         if (browser->downloads.size() > 32)
             browser->downloads.erase(browser->downloads.begin());
         InvalidateRect(browser->window, nullptr, TRUE);
