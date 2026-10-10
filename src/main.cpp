@@ -1404,19 +1404,21 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         if (downloads.empty()) {
             AppendMenuW(downloadsMenu, MF_GRAYED | MF_STRING, 5998, L"No downloads yet");
         } else {
-            size_t first = downloads.size() > 8 ? downloads.size() - 8 : 0;
+            size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
             for (size_t i = downloads.size(); i-- > first;) {
-                std::wstring label = downloads[i].failed ? L"Failed — " : L"";
-                label += downloads[i].filename;
-                label += L"  —  Show in Folder";
+                const auto& item = downloads[i];
+                std::wstring label = item.failed ? L"Failed — " : (item.finished ? L"Downloaded — " : L"Downloading — ");
+                label += item.filename;
+                if (!item.finished && !item.failed && item.totalBytes > 0) {
+                    long long percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
+                    label += L"  " + std::to_wstring(percent) + L"%";
+                }
                 AppendMenuW(downloadsMenu, MF_STRING, 6000 + static_cast<UINT>(i), label.c_str());
             }
-            AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(downloadsMenu, MF_STRING, 5999, L"Show Latest in Folder");
         }
 
         AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(downloadsMenu, MF_STRING, 5997, L"Open Downloads Folder");
+        AppendMenuW(downloadsMenu, MF_STRING, 5996, L"Show All Downloads");
 
         RECT client { };
         GetClientRect(window, &client);
