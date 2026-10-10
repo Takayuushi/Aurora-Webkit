@@ -89,11 +89,11 @@ constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
 
-constexpr int kTitleBarHeight = 25;
-constexpr int kToolbarHeight = 36;
+constexpr int kTitleBarHeight = 23;
+constexpr int kToolbarHeight = 33;
 constexpr int kToolbarHorizontalPadding = 12;
-constexpr int kToolbarButtonSize = 30;
-constexpr int kToolbarGap = 5;
+constexpr int kToolbarButtonSize = 24;
+constexpr int kToolbarGap = 4;
 constexpr int kLogoSize = 17;
 constexpr int kTabMinWidth = 126;
 constexpr int kTabMaxWidth = 220;
@@ -146,7 +146,13 @@ struct SavedPage {
     std::wstring url;
     std::wstring title;
     long long added { 0 };
-};
+
+
+struct DownloadEntry {
+    std::wstring filename;
+    std::wstring path;
+    bool failed { false };
+};};
 
 std::wstring createString(WKStringRef string)
 {
@@ -447,7 +453,7 @@ void drawAuroraMark(HDC dc, const RECT& rect, bool darkBackground)
 
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, enabled ? RGB(55, 60, 63) : RGB(171, 176, 179));
+    HPEN pen = CreatePen(PS_SOLID, 1, enabled ? RGB(55, 60, 63) : RGB(171, 176, 179));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
@@ -463,7 +469,7 @@ void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
 
 void drawReload(HDC dc, const RECT& rect, bool loading)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
@@ -487,7 +493,7 @@ void drawReload(HDC dc, const RECT& rect, bool loading)
 
 void drawSidebar(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
@@ -501,7 +507,7 @@ void drawSidebar(HDC dc, const RECT& rect)
 
 void drawShare(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
@@ -519,7 +525,7 @@ void drawShare(HDC dc, const RECT& rect)
 
 void drawDownload(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
@@ -559,17 +565,17 @@ void drawPageMenu(HDC dc, const RECT& rect)
 
 void drawMenu(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH brush = CreateSolidBrush(RGB(55, 60, 63));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
 
     int x = (rect.left + rect.right) / 2;
-    for (int y : { rect.top + 10, rect.top + 17, rect.top + 24 }) {
-        MoveToEx(dc, x - 8, y, nullptr);
-        LineTo(dc, x + 8, y);
-    }
+    int y = (rect.top + rect.bottom) / 2;
+    Ellipse(dc, x - 2, y - 8, x + 2, y - 4);
+    Ellipse(dc, x - 2, y - 2, x + 2, y + 2);
+    Ellipse(dc, x - 2, y + 4, x + 2, y + 8);
 
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
 }
 
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
@@ -687,6 +693,8 @@ struct BrowserState {
     std::vector<SavedPage> bookmarks;
     std::vector<SavedPage> readingList;
     std::vector<std::wstring> extensionScripts;
+    std::vector<std::unique_ptr<TabState>> retiredTabs;
+    std::vector<DownloadEntry> downloads;
     size_t activeTab { 0 };
 
     int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
@@ -1275,6 +1283,10 @@ search.addEventListener('keydown',e=>{
             tabs[index]->favicon = nullptr;
         }
 
+        auto closingTab = std::move(tabs[index]);
+        if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
+            ShowWindow(viewWindow, SW_HIDE);
+        retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
 
         if (activeTab >= tabs.size())
