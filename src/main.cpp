@@ -27,8 +27,11 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <urlmon.h>
 
 #ifndef EM_SETCUEBANNER
 #define EM_SETCUEBANNER (WM_USER + 1)
@@ -54,6 +57,7 @@ constexpr UINT kCommandMaximize = 1012;
 constexpr UINT kCommandCloseWindow = 1013;
 constexpr UINT kCommandPrivacy = 1014;
 constexpr UINT kCommandReader = 1015;
+constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -72,16 +76,16 @@ constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
 
-constexpr int kTitleBarHeight = 29;
-constexpr int kToolbarHeight = 38;
+constexpr int kTitleBarHeight = 27;
+constexpr int kToolbarHeight = 36;
 constexpr int kToolbarHorizontalPadding = 12;
-constexpr int kToolbarButtonSize = 28;
+constexpr int kToolbarButtonSize = 27;
 constexpr int kToolbarGap = 4;
-constexpr int kLogoSize = 18;
+constexpr int kLogoSize = 17;
 constexpr int kTabMinWidth = 126;
 constexpr int kTabMaxWidth = 220;
-constexpr int kTrafficLightSize = 10;
-constexpr int kTrafficLightGap = 7;
+constexpr int kTrafficLightSize = 12;
+constexpr int kTrafficLightGap = 8;
 constexpr int kResizeBorder = 4;
 
 struct BrowserState;
@@ -93,6 +97,26 @@ void didChangeActiveURL(const void*);
 void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
+
+struct FaviconResult {
+    std::wstring url;
+    HICON icon { nullptr };
+};
+
+std::wstring faviconURLForPage(const std::wstring& pageURL)
+{
+    size_t scheme = pageURL.find(L"://");
+    if (scheme == std::wstring::npos)
+        return { };
+
+    size_t hostStart = scheme + 3;
+    size_t hostEnd = pageURL.find_first_of(L"/?#", hostStart);
+    std::wstring host = pageURL.substr(hostStart, hostEnd == std::wstring::npos ? std::wstring::npos : hostEnd - hostStart);
+    if (host.empty())
+        return { };
+
+    return L"https://" + host + L"/favicon.ico";
+}
 
 struct VisitEntry {
     std::wstring url;
@@ -570,6 +594,7 @@ struct TabState {
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
     std::wstring lastRecordedUrl;
+    HICON favicon { nullptr };
 };
 
 struct BrowserState {
@@ -1695,6 +1720,34 @@ search.addEventListener('keydown',e=>{
         drawMenu(dc, menuRect);
     }
 };
+
+void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
+{
+    if (!browser || pageURL.empty())
+        return;
+
+    const std::wstring faviconURL = faviconURLForPage(pageURL);
+    if (faviconURL.empty())
+        return;
+
+    HWND window = browser->window;
+    std::thread([window, pageURL, faviconURL] {
+        wchar_t cacheFile[MAX_PATH] { };
+        HRESULT hr = URLDownloadToCacheFileW(nullptr, faviconURL.c_str(), cacheFile, MAX_PATH, 0, nullptr);
+        if (FAILED(hr) || !cacheFile[0] || !IsWindow(window))
+            return;
+
+        HICON icon = static_cast<HICON>(LoadImageW(nullptr, cacheFile, IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+        if (!icon)
+            return;
+
+        auto* result = new FaviconResult { pageURL, icon };
+        if (!PostMessageW(window, WM_AURORA_FAVICON_READY, 0, reinterpret_cast<LPARAM>(result))) {
+            DestroyIcon(icon);
+            delete result;
+        }
+    }).detach();
+}
 
 LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
