@@ -786,6 +786,49 @@ struct BrowserState {
         return sorted;
     }
 
+    void loadSavedPages(const std::wstring& path, std::vector<SavedPage>& pages)
+    {
+        pages.clear();
+        std::wifstream file(path);
+        std::wstring line;
+
+        while (std::getline(file, line)) {
+            std::wistringstream stream(line);
+            std::wstring addedText;
+            std::wstring url;
+            std::wstring title;
+
+            if (!std::getline(stream, addedText, L'\t'))
+                continue;
+            if (!std::getline(stream, url, L'\t'))
+                continue;
+            if (!std::getline(stream, title))
+                title = url;
+
+            wchar_t* end = nullptr;
+            long long added = std::wcstoll(addedText.c_str(), &end, 10);
+            if (end == addedText.c_str() || url.empty())
+                continue;
+
+            pages.push_back({ url, title.empty() ? url : title, added });
+        }
+    }
+
+    void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
+    {
+        std::wofstream file(path, std::ios::trunc);
+        if (!file)
+            return;
+
+        for (const auto& page : pages) {
+            std::wstring url = page.url;
+            std::wstring title = page.title;
+            replaceTabsAndNewlines(url);
+            replaceTabsAndNewlines(title);
+            file << page.added << L'\t' << url << L'\t' << title << L'\n';
+        }
+    }
+
     bool initialize(HWND parentWindow)
     {
         window = parentWindow;
