@@ -2509,8 +2509,14 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     if (!browser)
         return;
 
-    if (!browser->downloads.empty())
-        browser->downloads.back().failed = true;
+    for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
+        if (it->download == download) {
+            it->failed = true;
+            break;
+        }
+    }
+
+    InvalidateRect(browser->window, nullptr, TRUE);
 
     std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
     MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
