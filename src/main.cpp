@@ -1521,7 +1521,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             break;
         case kCommandReader:
             if (auto* tab = active()) {
-                auto js = adoptWK(WKStringCreateWithUTF8CString("(function(){const s=document.createElement(\'style\');s.textContent=\'body{background:#f7f3ea!important;color:#252525!important;font-family:Georgia,Times New Roman,serif!important;font-size:20px!important;line-height:1.75!important}main,article,[role=main]{max-width:760px!important;margin:40px auto!important;padding:0 24px!important}\';document.head.appendChild(s);})()"));
+                auto js = adoptWK(WKStringCreateWithUTF8CString("(function(){const id=\'aurora-reader-mode\';const old=document.getElementById(id);if(old){old.remove();return;}const s=document.createElement(\'style\');s.id=id;s.textContent=\'body{background:#f7f3ea!important;color:#252525!important;font-family:Georgia,Times New Roman,serif!important;font-size:20px!important;line-height:1.75!important}main,article,[role=main]{max-width:760px!important;margin:40px auto!important;padding:0 24px!important}\';document.head.appendChild(s);})()"));
                 WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), js.get(), nullptr, nullptr);
             }
             break;
@@ -1579,7 +1579,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             loadReadingListPage();
             break;
         case kMenuDownloads:
-            loadReadingListPage();
+            {
+                std::wstring folder = downloadsDirectory();
+                if (!folder.empty())
+                    ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
             break;
         case kMenuSavePage:
             MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
