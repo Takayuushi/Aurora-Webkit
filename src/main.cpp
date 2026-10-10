@@ -1151,9 +1151,13 @@ search.addEventListener('keydown',e=>{
             loadURL(*tab, cleaned);
         else if (bareHost) {
             tab->fallbackURL.clear();
-            if (cleaned.rfind(L"www.", 0) != 0)
-                tab->fallbackURL = L"https://www." + cleaned;
-            loadURL(*tab, L"https://" + cleaned);
+
+            if (cleaned.rfind(L"www.", 0) == 0) {
+                loadURL(*tab, L"https://" + cleaned);
+            } else {
+                tab->fallbackURL = L"https://" + cleaned;
+                loadURL(*tab, L"https://www." + cleaned);
+            }
         }
         else
             loadURL(*tab, L"https://www.google.com/search?q=" + percentEncode(cleaned));
