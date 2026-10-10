@@ -1294,10 +1294,6 @@ search.addEventListener('keydown',e=>{
         if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
             ShowWindow(viewWindow, SW_HIDE);
         retiredTabs.push_back(std::move(closingTab));
-        auto closingTab = std::move(tabs[index]);
-        if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
-            ShowWindow(viewWindow, SW_HIDE);
-        retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
 
         if (activeTab >= tabs.size())
