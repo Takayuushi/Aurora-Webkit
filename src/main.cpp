@@ -1380,6 +1380,49 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             loadLocalHTML(*tab, savedPagesHTML("Reading List", readingList));
     }
 
+    void showFileInFolder(const std::wstring& path)
+    {
+        if (path.empty())
+            return;
+
+        std::wstring arguments = L"/select,\"" + path + L"\"";
+        ShellExecuteW(window, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+
+    void showDownloadsMenu()
+    {
+        HMENU downloadsMenu = CreatePopupMenu();
+        if (!downloadsMenu)
+            return;
+
+        if (downloads.empty()) {
+            AppendMenuW(downloadsMenu, MF_GRAYED | MF_STRING, 5998, L"No downloads yet");
+        } else {
+            size_t first = downloads.size() > 8 ? downloads.size() - 8 : 0;
+            for (size_t i = downloads.size(); i-- > first;) {
+                std::wstring label = downloads[i].failed ? L"Failed — " : L"";
+                label += downloads[i].filename;
+                label += L"  —  Show in Folder";
+                AppendMenuW(downloadsMenu, MF_STRING, 6000 + static_cast<UINT>(i), label.c_str());
+            }
+            AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(downloadsMenu, MF_STRING, 5999, L"Show Latest in Folder");
+        }
+
+        AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(downloadsMenu, MF_STRING, 5997, L"Open Downloads Folder");
+
+        RECT client { };
+        GetClientRect(window, &client);
+        POINT point {
+            client.right - scaleForDpi(window, kToolbarHorizontalPadding) - scaleForDpi(window, kToolbarButtonSize) / 2,
+            titleBarHeight() + toolbarHeight()
+        };
+        ClientToScreen(window, &point);
+        TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        DestroyMenu(downloadsMenu);
+    }
+
     void loadHistoryPage()
     {
         auto* tab = active();
@@ -1574,6 +1617,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
     void handleCommand(UINT command)
     {
+        if (command >= 6000 && command < 6000 + downloads.size()) {
+            size_t index = command - 6000;
+            if (index < downloads.size())
+                showFileInFolder(downloads[index].path);
+            return;
+        }
+
         if (command >= 3000 && command < 3000 + tabs.size()) {
             activateTab(command - 3000);
             return;
@@ -1695,6 +1745,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
                 L"About Aurora",
                 MB_OK | MB_ICONINFORMATION
             );
+            break;
+        case 5997: {
+            std::wstring folder = downloadsDirectory();
+            if (!folder.empty())
+                ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            break;
+        }
+        case 5999:
+            if (!downloads.empty())
+                showFileInFolder(downloads.back().path);
             break;
         case kMenuQuit:
             PostMessageW(window, WM_CLOSE, 0, 0);
@@ -2126,7 +2186,7 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
     tab->browser->loadURL(*tab, fallback);
 }
 
-WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRef response, WKStringRef suggestedFilename, const void*)
+WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRef response, WKStringRef suggestedFilename, const void* clientInfo)
 {
     std::wstring filename = createString(suggestedFilename);
 
@@ -2149,6 +2209,15 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRe
         return nullptr;
 
     std::wstring path = folder + L"\\" + filename;
+
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (browser) {
+        browser->downloads.push_back({ filename, path, false });
+        if (browser->downloads.size() > 32)
+            browser->downloads.erase(browser->downloads.begin());
+        InvalidateRect(browser->window, nullptr, TRUE);
+    }
+
     std::string utf8 = toUTF8(path);
     return WKStringCreateWithUTF8CString(utf8.c_str());
 }
@@ -2162,6 +2231,9 @@ void downloadDidFailWithError(WKDownloadRef, WKErrorRef error, WKDataRef, const 
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (!browser)
         return;
+
+    if (!browser->downloads.empty())
+        browser->downloads.back().failed = true;
 
     std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
     MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
