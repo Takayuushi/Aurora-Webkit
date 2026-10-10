@@ -41,6 +41,7 @@ function(_aurora_finish_webkit_target)
 
     set(Aurora_PRIVATE_LIBRARIES
         user32
+        shell32
         urlmon
     )
 
