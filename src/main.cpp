@@ -114,7 +114,6 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
-void didFinishNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
