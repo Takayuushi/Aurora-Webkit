@@ -1512,6 +1512,27 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
     void showMenu()
     {
+        if (bookmarksMenu) {
+            auto* tab = active();
+            bool bookmarked = tab && !tab->activeUrl.empty()
+                && std::any_of(bookmarks.begin(), bookmarks.end(), [&](const SavedPage& page) {
+                    return page.url == tab->activeUrl;
+                });
+
+            ModifyMenuW(
+                bookmarksMenu,
+                kMenuAddBookmark,
+                MF_BYCOMMAND | MF_STRING,
+                kMenuAddBookmark,
+                bookmarked ? L"Remove Bookmark	Ctrl+D" : L"Bookmark This Page	Ctrl+D"
+            );
+            CheckMenuItem(
+                bookmarksMenu,
+                kMenuAddBookmark,
+                MF_BYCOMMAND | (bookmarked ? MF_CHECKED : MF_UNCHECKED)
+            );
+        }
+
         RECT client { };
         GetClientRect(window, &client);
 
@@ -1633,6 +1654,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             return;
         }
 
+        if (command >= 6000 && command < 6000 + downloads.size()) {
+            size_t index = command - 6000;
+            if (index < downloads.size())
+                showFileInFolder(downloads[index].path);
+            return;
+        }
+
         if (command >= 3000 && command < 3000 + tabs.size()) {
             activateTab(command - 3000);
             return;
@@ -1715,7 +1743,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             loadReadingListPage();
             break;
         case kMenuDownloads:
-            showDownloadsMenu();
+            loadDownloadsPage();
+            break;
+        case 5996:
+            loadDownloadsPage();
             break;
         case kMenuSavePage:
             MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
@@ -2478,8 +2509,22 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef download, const void*
 void didChangeIsLoading(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (tab && tab->browser)
-        InvalidateRect(tab->browser->window, nullptr, TRUE);
+    if (!tab || !tab->browser)
+        return;
+
+    auto page = WKViewGetPage(tab->view.get());
+    if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        if (!url.empty()
+            && (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)
+            && url != tab->lastRecordedUrl) {
+            tab->activeUrl = url;
+            tab->browser->recordVisit(url, tab->title.empty() ? url : tab->title);
+            tab->lastRecordedUrl = url;
+        }
+    }
+
+    InvalidateRect(tab->browser->window, nullptr, TRUE);
 }
 
 void didChangeTitle(const void* clientInfo)
