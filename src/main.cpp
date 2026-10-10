@@ -76,8 +76,8 @@ constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
 
-constexpr int kTitleBarHeight = 24;
-constexpr int kToolbarHeight = 34;
+constexpr int kTitleBarHeight = 22;
+constexpr int kToolbarHeight = 32;
 constexpr int kToolbarHorizontalPadding = 12;
 constexpr int kToolbarButtonSize = 27;
 constexpr int kToolbarGap = 4;
@@ -535,29 +535,21 @@ void drawClose(HDC dc, const RECT& rect)
 
 void drawShield(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(67, 72, 75));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
-    int top = rect.top + 7;
-    int bottom = rect.bottom - 7;
-
+    int cy = (rect.top + rect.bottom) / 2;
     POINT outline[] = {
-        { cx, top },
-        { cx + 8, top + 4 },
-        { cx + 7, top + 10 },
-        { cx + 5, top + 16 },
-        { cx, bottom },
-        { cx - 5, top + 16 },
-        { cx - 7, top + 10 },
-        { cx - 8, top + 4 },
-        { cx, top }
+        { cx, cy - 7 },
+        { cx + 6, cy - 4 },
+        { cx + 5, cy + 2 },
+        { cx, cy + 7 },
+        { cx - 5, cy + 2 },
+        { cx - 6, cy - 4 },
+        { cx, cy - 7 }
     };
-
     Polyline(dc, outline, static_cast<int>(std::size(outline)));
-
-    MoveToEx(dc, cx, top + 8, nullptr);
-    LineTo(dc, cx, bottom - 5);
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
@@ -565,21 +557,18 @@ void drawShield(HDC dc, const RECT& rect)
 
 void drawReader(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(67, 72, 75));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
-    int left = rect.left + 8;
-    int right = rect.right - 8;
-    int top = rect.top + 8;
-    int bottom = rect.bottom - 8;
-
-    RoundRect(dc, left, top, right, bottom, 5, 5);
-    MoveToEx(dc, left + 7, top + 8, nullptr);
-    LineTo(dc, right - 7, top + 8);
-    MoveToEx(dc, left + 7, top + 13, nullptr);
-    LineTo(dc, right - 7, top + 13);
-    MoveToEx(dc, left + 7, top + 18, nullptr);
-    LineTo(dc, right - 7, top + 18);
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
+    RoundRect(dc, cx - 7, cy - 7, cx + 7, cy + 7, 3, 3);
+    MoveToEx(dc, cx - 4, cy - 3, nullptr);
+    LineTo(dc, cx + 4, cy - 3);
+    MoveToEx(dc, cx - 4, cy, nullptr);
+    LineTo(dc, cx + 4, cy);
+    MoveToEx(dc, cx - 4, cy + 3, nullptr);
+    LineTo(dc, cx + 4, cy + 3);
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
@@ -1687,11 +1676,11 @@ search.addEventListener('keydown',e=>{
         drawSidebar(dc, sidebarRect);
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(RGB(239, 241, 242));
+        HBRUSH pillBrush = CreateSolidBrush(RGB(245, 246, 247));
         HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(208, 212, 214));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
-        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(19, dpi, 96), MulDiv(19, dpi, 96));
+        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
         SelectObject(dc, oldPillBrush);
         SelectObject(dc, oldPillPen);
         DeleteObject(pillBrush);
