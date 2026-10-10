@@ -146,13 +146,13 @@ struct SavedPage {
     std::wstring url;
     std::wstring title;
     long long added { 0 };
-
+};
 
 struct DownloadEntry {
     std::wstring filename;
     std::wstring path;
     bool failed { false };
-};};
+};
 
 std::wstring createString(WKStringRef string)
 {
@@ -680,6 +680,7 @@ struct BrowserState {
     HFONT uiFont { nullptr };
     HBRUSH addressBarBrush { nullptr };
     HMENU menu { nullptr };
+    HMENU bookmarksMenu { nullptr };
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
     WKRetainPtr<WKWebsiteDataStoreRef> websiteDataStore;
@@ -963,7 +964,7 @@ struct BrowserState {
         AppendMenuW(historyMenu, MF_STRING, kMenuClearHistory, L"Clear History");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(historyMenu), L"History");
 
-        HMENU bookmarksMenu = CreatePopupMenu();
+        bookmarksMenu = CreatePopupMenu();
         AppendMenuW(bookmarksMenu, MF_STRING, kMenuAddBookmark, L"Bookmark This Page\tCtrl+D");
         AppendMenuW(bookmarksMenu, MF_STRING, kMenuBookmarks, L"Show Bookmarks\tCtrl+Shift+B");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarksMenu), L"Bookmarks");
@@ -1287,6 +1288,10 @@ search.addEventListener('keydown',e=>{
         if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
             ShowWindow(viewWindow, SW_HIDE);
         retiredTabs.push_back(std::move(closingTab));
+        auto closingTab = std::move(tabs[index]);
+        if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
+            ShowWindow(viewWindow, SW_HIDE);
+        retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
 
         if (activeTab >= tabs.size())
@@ -1480,7 +1485,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         int gap = scaleForDpi(window, kToolbarGap);
 
         int leftControls = button * 3 + gap * 2;
-        int rightControls = button * 5 + gap * 6;
+        int rightControls = button * 3 + gap * 4;
 
         int left = pad + leftControls + scaleForDpi(window, 12);
         int right = client.right - pad - rightControls;
@@ -1505,9 +1510,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         RECT pill = addressPillRect();
         MoveWindow(
             addressBar,
-            pill.left + scaleForDpi(window, 34),
+            pill.left + scaleForDpi(window, 30),
             pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 90))),
+            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
             std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
             TRUE
         );
@@ -1613,7 +1618,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Share is reserved for the next browser-services pass.", L"Aurora", MB_OK);
             break;
         case kCommandDownloads:
-            { std::wstring folder = downloadsDirectory(); if (!folder.empty()) ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
+            showDownloadsMenu();
             break;
         case kCommandMinimize:
             ShowWindow(window, SW_MINIMIZE);
@@ -1649,11 +1654,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             loadReadingListPage();
             break;
         case kMenuDownloads:
-            {
-                std::wstring folder = downloadsDirectory();
-                if (!folder.empty())
-                    ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
+            showDownloadsMenu();
             break;
         case kMenuSavePage:
             MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
@@ -1770,18 +1771,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
 
         if (point.y >= 0 && point.y < titleH) {
-            RECT closeRect { pad, (titleH - light) / 2, pad + light, (titleH + light) / 2 };
+            int controlHit = scaleForDpi(window, 20);
+            int controlY = (titleH - controlHit) / 2;
+            RECT closeRect { pad - scaleForDpi(window, 2), controlY, pad - scaleForDpi(window, 2) + controlHit, controlY + controlHit };
             RECT minimizeRect {
-                pad + light + lightGap,
-                (titleH - light) / 2,
-                pad + light * 2 + lightGap,
-                (titleH + light) / 2
+                pad + light + lightGap - scaleForDpi(window, 2),
+                controlY,
+                pad + light + lightGap - scaleForDpi(window, 2) + controlHit,
+                controlY + controlHit
             };
             RECT maximizeRect {
-                pad + light * 2 + lightGap * 2,
-                (titleH - light) / 2,
-                pad + light * 3 + lightGap * 2,
-                (titleH + light) / 2
+                pad + light * 2 + lightGap * 2 - scaleForDpi(window, 2),
+                controlY,
+                pad + light * 2 + lightGap * 2 - scaleForDpi(window, 2) + controlHit,
+                controlY + controlHit
             };
 
             if (PtInRect(&closeRect, point)) {
@@ -1857,19 +1860,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
         RECT pill = addressPillRect();
         RECT privacyRect { pill.left, pill.top, pill.left + scaleForDpi(window, 30), pill.bottom };
-        RECT readerRect { pill.right - scaleForDpi(window, 58), pill.top, pill.right - scaleForDpi(window, 30), pill.bottom };
         if (PtInRect(&privacyRect, point)) {
             handleCommand(kCommandPrivacy);
             return true;
         }
-        if (PtInRect(&readerRect, point)) {
-            handleCommand(kCommandReader);
+        RECT reloadRect { pill.right - scaleForDpi(window, 32), pill.top, pill.right, pill.bottom };
+        if (PtInRect(&reloadRect, point)) {
+            handleCommand(kCommandReload);
             return true;
         }
+
         int rightStart = pill.right + gap * 2;
-        RECT pageMenuRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
-        RECT reloadRect { pageMenuRect.right + gap, titleH, pageMenuRect.right + gap + button, titleH + toolbarH };
-        RECT shareRect { reloadRect.right + gap, titleH, reloadRect.right + gap + button, titleH + toolbarH };
+        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
@@ -2047,20 +2049,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
         RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
         drawShield(dc, privacyGlyph);
-        RECT readerGlyph { pill.right - MulDiv(58, dpi, 96), pill.top, pill.right - MulDiv(30, dpi, 96), pill.bottom };
-        drawReader(dc, readerGlyph);
-
         bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
+        RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
+        drawReload(dc, reloadRect, loading);
 
         int rightStart = pill.right + gap * 2;
-        RECT pageMenuRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
-        RECT reloadRect { pageMenuRect.right + gap, titleH, pageMenuRect.right + gap + button, titleH + toolbarH };
-        RECT shareRect { reloadRect.right + gap, titleH, reloadRect.right + gap + button, titleH + toolbarH };
+        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
-        drawPageMenu(dc, pageMenuRect);
-        drawReload(dc, reloadRect, loading);
         drawShare(dc, shareRect);
         drawDownload(dc, downloadsRect);
         drawMenu(dc, menuRect);
@@ -2225,7 +2222,13 @@ void didChangeTitle(const void* clientInfo)
     else
         tab->title = L"New Tab";
 
-    // History is recorded once per URL change by didChangeActiveURL().
+    if (!tab->activeUrl.empty()
+        && (tab->activeUrl.rfind(L"http://", 0) == 0 || tab->activeUrl.rfind(L"https://", 0) == 0)
+        && tab->activeUrl != tab->lastRecordedUrl) {
+        tab->browser->recordVisit(tab->activeUrl, tab->title);
+        tab->lastRecordedUrl = tab->activeUrl;
+    }
+
     InvalidateRect(tab->browser->window, nullptr, TRUE);
     if (tab == tab->browser->active()) {
         std::wstring titleText = tab->title + L" — Aurora";
