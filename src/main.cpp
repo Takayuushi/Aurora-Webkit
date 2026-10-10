@@ -681,6 +681,8 @@ struct BrowserState {
     HBRUSH addressBarBrush { nullptr };
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
+    bool sidebarOpen { false };
+    int sidebarSection { 0 };
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
     WKRetainPtr<WKWebsiteDataStoreRef> websiteDataStore;
@@ -1561,6 +1563,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         );
 
         int contentTop = titleBarHeight() + toolbarHeight();
+        int contentLeft = sidebarOpen ? scaleForDpi(window, 286) : 0;
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
@@ -1568,9 +1571,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
             MoveWindow(
                 viewWindow,
-                0,
+                contentLeft,
                 contentTop,
-                client.right,
+                std::max<int>(0, static_cast<int>(client.right - contentLeft)),
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 TRUE
             );
@@ -1640,7 +1643,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             reloadOrStop();
             break;
         case kCommandSidebar:
-            MessageBoxW(window, L"Sidebar is reserved for Bookmarks and History. Those panels will be added next.", L"Aurora", MB_OK);
+            sidebarOpen = !sidebarOpen;
+            resize();
+            InvalidateRect(window, nullptr, TRUE);
             break;
         case kCommandPrivacy:
             MessageBoxW(window, L"Privacy controls will be connected here in the privacy-services pass.", L"Privacy — Aurora", MB_OK);
@@ -1978,6 +1983,173 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         return rect.right;
     }
 
+    void drawSidebarPanel(HDC dc)
+    {
+        if (!sidebarOpen)
+            return;
+
+        int width = scaleForDpi(window, 286);
+        int top = titleBarHeight() + toolbarHeight();
+        RECT client { };
+        GetClientRect(window, &client);
+
+        RECT panel { 0, top, width, client.bottom };
+        HBRUSH brush = CreateSolidBrush(RGB(247, 248, 249));
+        FillRect(dc, &panel, brush);
+        DeleteObject(brush);
+
+        HPEN divider = CreatePen(PS_SOLID, 1, RGB(220, 223, 225));
+        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
+        MoveToEx(dc, width - 1, top, nullptr);
+        LineTo(dc, width - 1, client.bottom);
+        SelectObject(dc, oldPen);
+        DeleteObject(divider);
+
+        int dpi = windowDpi(window);
+        HFONT font = CreateFontW(-MulDiv(15, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
+        SetBkMode(dc, TRANSPARENT);
+
+        RECT heading { scaleForDpi(window, 18), top + scaleForDpi(window, 14),
+            width - scaleForDpi(window, 54), top + scaleForDpi(window, 44) };
+        SetTextColor(dc, RGB(35, 39, 42));
+        const wchar_t* headingText = sidebarSection == 0 ? L"Bookmarks" : (sidebarSection == 1 ? L"Reading List" : L"History");
+        DrawTextW(dc, headingText, -1, &heading, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        RECT closeRect { width - scaleForDpi(window, 48), top + scaleForDpi(window, 10),
+            width - scaleForDpi(window, 10), top + scaleForDpi(window, 44) };
+        drawClose(dc, closeRect);
+
+        RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
+            width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
+        int part = (selector.right - selector.left) / 3;
+        for (int i = 0; i < 3; ++i) {
+            RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
+            if (i == sidebarSection) {
+                HBRUSH selected = CreateSolidBrush(RGB(229, 232, 235));
+                FillRect(dc, &r, selected);
+                DeleteObject(selected);
+            }
+            SetTextColor(dc, i == sidebarSection ? RGB(35, 39, 42) : RGB(115, 120, 124));
+            const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
+            DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        int rowTop = top + scaleForDpi(window, 100);
+        int rowHeight = scaleForDpi(window, 62);
+        size_t count = sidebarSection == 0 ? bookmarks.size() : (sidebarSection == 1 ? readingList.size() : visits.size());
+
+        if (!count) {
+            RECT empty { scaleForDpi(window, 18), rowTop, width - scaleForDpi(window, 18), rowTop + scaleForDpi(window, 42) };
+            SetTextColor(dc, RGB(125, 130, 134));
+            const wchar_t* emptyText = sidebarSection == 0 ? L"No bookmarks yet." : (sidebarSection == 1 ? L"No saved pages yet." : L"No browsing history.");
+            DrawTextW(dc, emptyText, -1, &empty, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        } else {
+            SetTextColor(dc, RGB(42, 46, 49));
+            if (sidebarSection == 0) {
+                for (size_t i = 0; i < std::min<size_t>(10, bookmarks.size()); ++i) {
+                    int y = rowTop + static_cast<int>(i) * rowHeight;
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    SetTextColor(dc, RGB(126, 131, 135));
+                    DrawTextW(dc, bookmarks[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SetTextColor(dc, RGB(42, 46, 49));
+                }
+            } else if (sidebarSection == 1) {
+                for (size_t i = 0; i < std::min<size_t>(10, readingList.size()); ++i) {
+                    int y = rowTop + static_cast<int>(i) * rowHeight;
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    SetTextColor(dc, RGB(126, 131, 135));
+                    DrawTextW(dc, readingList[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SetTextColor(dc, RGB(42, 46, 49));
+                }
+            } else {
+                auto sorted = visits;
+                std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
+                for (size_t i = 0; i < std::min<size_t>(10, sorted.size()); ++i) {
+                    int y = rowTop + static_cast<int>(i) * rowHeight;
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    SetTextColor(dc, RGB(126, 131, 135));
+                    DrawTextW(dc, sorted[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SetTextColor(dc, RGB(42, 46, 49));
+                }
+            }
+        }
+
+        SelectObject(dc, oldFont);
+        DeleteObject(font);
+    }
+
+    bool handleSidebarHit(POINT point)
+    {
+        if (!sidebarOpen)
+            return false;
+
+        int width = scaleForDpi(window, 286);
+        int top = titleBarHeight() + toolbarHeight();
+        if (point.x < 0 || point.x >= width || point.y < top)
+            return false;
+
+        RECT closeRect { width - scaleForDpi(window, 52), top + scaleForDpi(window, 8),
+            width - scaleForDpi(window, 6), top + scaleForDpi(window, 48) };
+        if (PtInRect(&closeRect, point)) {
+            sidebarOpen = false;
+            resize();
+            InvalidateRect(window, nullptr, TRUE);
+            return true;
+        }
+
+        RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
+            width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
+        int part = (selector.right - selector.left) / 3;
+        for (int i = 0; i < 3; ++i) {
+            RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
+            if (PtInRect(&r, point)) {
+                sidebarSection = i;
+                InvalidateRect(window, nullptr, TRUE);
+                return true;
+            }
+        }
+
+        int rowTop = top + scaleForDpi(window, 100);
+        int rowHeight = scaleForDpi(window, 62);
+        int index = (point.y - rowTop) / rowHeight;
+        if (index < 0)
+            return true;
+
+        auto* tab = active();
+        if (!tab)
+            return true;
+
+        if (sidebarSection == 0 && static_cast<size_t>(index) < bookmarks.size()) {
+            loadURL(*tab, bookmarks[static_cast<size_t>(index)].url);
+            return true;
+        }
+
+        if (sidebarSection == 1 && static_cast<size_t>(index) < readingList.size()) {
+            loadURL(*tab, readingList[static_cast<size_t>(index)].url);
+            return true;
+        }
+
+        if (sidebarSection == 2) {
+            auto sorted = visits;
+            std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
+            if (static_cast<size_t>(index) < sorted.size()) {
+                loadURL(*tab, sorted[static_cast<size_t>(index)].url);
+                return true;
+            }
+        }
+
+        return true;
+    }
+
     void paint(HDC dc)
     {
         RECT client { };
@@ -2003,6 +2175,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
+
+        drawSidebarPanel(dc);
 
         int light = MulDiv(kTrafficLightSize, dpi, 96);
         int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
@@ -2459,6 +2633,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state->handleTopBarHit(point))
             return 0;
         if (state->handleToolbarHit(point))
+            return 0;
+        if (state->handleSidebarHit(point))
             return 0;
 
         return DefWindowProcW(window, message, wParam, lParam);
