@@ -1386,6 +1386,59 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             loadLocalHTML(*tab, savedPagesHTML("Reading List", readingList));
     }
 
+    void loadDownloadsPage()
+    {
+        auto* tab = active();
+        if (!tab)
+            return;
+
+        std::string html = "<!doctype html><html><head><meta charset='utf-8'><title>Aurora Downloads</title>"
+            "<style>body{margin:0;background:#f5f6f7;color:#202428;font-family:Segoe UI,Arial,sans-serif}"
+            ".wrap{max-width:980px;margin:auto;padding:52px 32px}"
+            "h1{font-size:30px;font-weight:500;margin:0 0 24px}"
+            ".item{background:#fff;border:1px solid #e1e4e6;border-radius:12px;padding:16px 18px;margin:10px 0}"
+            ".name{font-size:15px;font-weight:500}.path{font-size:12px;color:#73777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".meta{font-size:12px;color:#666;margin-top:10px}.bar{height:6px;background:#e2e5e7;border-radius:3px;overflow:hidden;margin-top:8px}.fill{height:100%;background:#6b91c8}"
+            ".empty{color:#777}</style></head><body><main class='wrap'><h1>Downloads</h1>";
+
+        if (downloads.empty()) {
+            html += "<div class='empty'>No downloads yet.</div>";
+        } else {
+            for (const auto& item : downloads) {
+                long long percent = 0;
+                if (item.totalBytes > 0)
+                    percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
+
+                html += "<section class='item'><div class='name'>";
+                html += toUTF8(htmlEscape(item.filename));
+                html += "</div><div class='path'>";
+                html += toUTF8(htmlEscape(item.path));
+                html += "</div>";
+
+                if (item.failed)
+                    html += "<div class='meta'>Download failed.</div>";
+                else if (item.finished)
+                    html += "<div class='meta'>Downloaded.</div>";
+                else {
+                    html += "<div class='meta'>Downloading";
+                    if (item.totalBytes > 0)
+                        html += " — " + std::to_string(percent) + "%";
+                    html += "</div><div class='bar'><div class='fill' style='width:";
+                    html += std::to_string(percent);
+                    html += "%'></div></div>";
+                }
+
+                html += "</section>";
+            }
+        }
+
+        html += "</main></body></html>";
+        loadLocalHTML(*tab, html);
+        tab->activeUrl = L"about:downloads";
+        tab->title = L"Downloads";
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
     void showFileInFolder(const std::wstring& path)
     {
         if (path.empty())
