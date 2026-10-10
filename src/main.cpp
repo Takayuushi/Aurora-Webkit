@@ -869,6 +869,8 @@ struct BrowserState {
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
         loadVisitData();
+        loadSavedPages(bookmarksPath(), bookmarks);
+        loadSavedPages(readingListPath(), readingList);
         createAddressBar();
         createMenu();
 
@@ -1271,6 +1273,134 @@ search.addEventListener('keydown',e=>{
             else
                 WKPageReload(page);
         }
+    }
+
+    void loadLocalHTML(TabState& tab, const std::string& html)
+    {
+        auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
+        auto baseURL = createWKURL(L"about:blank");
+        WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
+    }
+
+    std::string savedPagesHTML(const char* heading, const std::vector<SavedPage>& pages)
+    {
+        std::string html = R"HTML(
+<!doctype html><html><head><meta charset="utf-8"><title>Aurora</title>
+<style>
+body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans-serif}
+.wrap{max-width:980px;margin:auto;padding:54px 32px}
+.item{padding:16px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
+.name{font-size:15px}.url{font-size:12px;color:#70777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{padding:22px;color:#777}
+</style></head><body><main class="wrap"><h1>)HTML";
+        html += heading;
+        html += R"HTML(</h1>)HTML";
+
+        if (pages.empty()) {
+            html += "<div class=\"empty\">Nothing here yet.</div>";
+        } else {
+            for (const auto& page : pages) {
+                html += "<a class=\"item\" href=\"" + toUTF8(htmlEscape(page.url)) + "\"><div class=\"name\">";
+                html += toUTF8(htmlEscape(page.title.empty() ? page.url : page.title));
+                html += "</div><div class=\"url\">";
+                html += toUTF8(htmlEscape(page.url));
+                html += "</div></a>";
+            }
+        }
+
+        html += R"HTML(</main></body></html>)HTML";
+        return html;
+    }
+
+    void loadBookmarksPage()
+    {
+        if (auto* tab = active())
+            loadLocalHTML(*tab, savedPagesHTML("Bookmarks", bookmarks));
+    }
+
+    void loadReadingListPage()
+    {
+        if (auto* tab = active())
+            loadLocalHTML(*tab, savedPagesHTML("Reading List", readingList));
+    }
+
+    void loadHistoryPage()
+    {
+        auto* tab = active();
+        if (!tab)
+            return;
+
+        auto sorted = visits;
+        std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) {
+            return a.lastVisited > b.lastVisited;
+        });
+
+        std::string html = R"HTML(
+<!doctype html><html><head><meta charset="utf-8"><title>Aurora History</title>
+<style>
+body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans-serif}
+.item{padding:15px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:8px 0}
+.name{font-size:15px}.meta{font-size:12px;color:#73777d;margin-top:5px}
+.item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#777}
+</style></head><body><main style="max-width:980px;margin:auto;padding:54px 32px"><h1>History</h1>)HTML";
+
+        if (sorted.empty()) {
+            html += "<div class=\"empty\">No browsing history.</div>";
+        } else {
+            for (const auto& entry : sorted) {
+                html += "<div class=\"item\"><a href=\"" + toUTF8(htmlEscape(entry.url)) + "\"><div class=\"name\">";
+                html += toUTF8(htmlEscape(entry.title.empty() ? entry.url : entry.title));
+                html += "</div><div class=\"meta\">Visited " + std::to_string(entry.visits);
+                html += entry.visits == 1 ? " time" : " times";
+                html += "</div></a></div>";
+            }
+        }
+
+        html += "</main></body></html>";
+        loadLocalHTML(*tab, html);
+    }
+
+    void toggleBookmark()
+    {
+        auto* tab = active();
+        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+            return;
+
+        auto found = std::find_if(bookmarks.begin(), bookmarks.end(), [&](const SavedPage& page) {
+            return page.url == tab->activeUrl;
+        });
+
+        if (found != bookmarks.end())
+            bookmarks.erase(found);
+        else
+            bookmarks.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
+
+        saveSavedPages(bookmarksPath(), bookmarks);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void addReadingList()
+    {
+        auto* tab = active();
+        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+            return;
+
+        auto found = std::find_if(readingList.begin(), readingList.end(), [&](const SavedPage& page) {
+            return page.url == tab->activeUrl;
+        });
+
+        if (found == readingList.end())
+            readingList.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
+
+        saveSavedPages(readingListPath(), readingList);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void clearHistory()
+    {
+        visits.clear();
+        saveVisitData();
+        loadHistoryPage();
     }
 
     void showMenu()
