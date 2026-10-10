@@ -89,11 +89,11 @@ constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
 
-constexpr int kTitleBarHeight = 22;
-constexpr int kToolbarHeight = 32;
+constexpr int kTitleBarHeight = 25;
+constexpr int kToolbarHeight = 36;
 constexpr int kToolbarHorizontalPadding = 12;
-constexpr int kToolbarButtonSize = 27;
-constexpr int kToolbarGap = 4;
+constexpr int kToolbarButtonSize = 30;
+constexpr int kToolbarGap = 5;
 constexpr int kLogoSize = 17;
 constexpr int kTabMinWidth = 126;
 constexpr int kTabMaxWidth = 220;
@@ -536,6 +536,27 @@ void drawDownload(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
+void drawPageMenu(HDC dc, const RECT& rect)
+{
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    int left = rect.left + 8;
+    int top = rect.top + 7;
+    int right = rect.right - 8;
+    int bottom = rect.bottom - 7;
+
+    RoundRect(dc, left, top, right, bottom, 2, 2);
+    int lineX = left + 4;
+    for (int y : { top + 5, top + 9, top + 13 }) {
+        MoveToEx(dc, lineX, y, nullptr);
+        LineTo(dc, right - 4, y);
+    }
+
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
 void drawMenu(HDC dc, const RECT& rect)
 {
     HPEN pen = CreatePen(PS_SOLID, 2, RGB(55, 60, 63));
@@ -646,6 +667,8 @@ struct TabState {
 struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
+    bool customMaximized { false };
+    RECT restoredWindowRect { };
     WNDPROC addressBarOriginalProcedure { nullptr };
 
     HFONT uiFont { nullptr };
@@ -1445,7 +1468,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         int gap = scaleForDpi(window, kToolbarGap);
 
         int leftControls = button * 3 + gap * 2;
-        int rightControls = button * 3 + gap * 4;
+        int rightControls = button * 5 + gap * 6;
 
         int left = pad + leftControls + scaleForDpi(window, 12);
         int right = client.right - pad - rightControls;
@@ -1494,6 +1517,42 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         }
 
         InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void toggleMaximizeWindow()
+    {
+        if (!customMaximized) {
+            GetWindowRect(window, &restoredWindowRect);
+
+            HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO info { };
+            info.cbSize = sizeof(info);
+            if (monitor && GetMonitorInfoW(monitor, &info)) {
+                SetWindowPos(
+                    window,
+                    HWND_TOP,
+                    info.rcWork.left,
+                    info.rcWork.top,
+                    info.rcWork.right - info.rcWork.left,
+                    info.rcWork.bottom - info.rcWork.top,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+                );
+                customMaximized = true;
+            }
+        } else {
+            SetWindowPos(
+                window,
+                HWND_TOP,
+                restoredWindowRect.left,
+                restoredWindowRect.top,
+                restoredWindowRect.right - restoredWindowRect.left,
+                restoredWindowRect.bottom - restoredWindowRect.top,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+            );
+            customMaximized = false;
+        }
+
+        resize();
     }
 
     void handleCommand(UINT command)
@@ -1548,8 +1607,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             ShowWindow(window, SW_MINIMIZE);
             break;
         case kCommandMaximize:
-            ShowWindow(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
-            resize();
+            toggleMaximizeWindow();
             break;
         case kCommandCloseWindow:
             PostMessageW(window, WM_CLOSE, 0, 0);
@@ -1797,10 +1855,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             return true;
         }
         int rightStart = pill.right + gap * 2;
-        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT pageMenuRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT reloadRect { pageMenuRect.right + gap, titleH, pageMenuRect.right + gap + button, titleH + toolbarH };
+        RECT shareRect { reloadRect.right + gap, titleH, reloadRect.right + gap + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
+        if (PtInRect(&pageMenuRect, point)) {
+            handleCommand(kCommandMenu);
+            return true;
+        }
+        if (PtInRect(&reloadRect, point)) {
+            handleCommand(kCommandReload);
+            return true;
+        }
         if (PtInRect(&shareRect, point)) {
             handleCommand(kCommandShare);
             return true;
@@ -1970,19 +2038,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         RECT readerGlyph { pill.right - MulDiv(58, dpi, 96), pill.top, pill.right - MulDiv(30, dpi, 96), pill.bottom };
         drawReader(dc, readerGlyph);
 
-        RECT reloadRect {
-            pill.right - MulDiv(34, dpi, 96),
-            titleH,
-            pill.right,
-            titleH + toolbarH
-        };
         bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
-        drawReload(dc, reloadRect, loading);
 
         int rightStart = pill.right + gap * 2;
-        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT pageMenuRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
+        RECT reloadRect { pageMenuRect.right + gap, titleH, pageMenuRect.right + gap + button, titleH + toolbarH };
+        RECT shareRect { reloadRect.right + gap, titleH, reloadRect.right + gap + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+
+        drawPageMenu(dc, pageMenuRect);
+        drawReload(dc, reloadRect, loading);
         drawShare(dc, shareRect);
         drawDownload(dc, downloadsRect);
         drawMenu(dc, menuRect);
