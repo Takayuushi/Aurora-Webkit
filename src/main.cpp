@@ -2392,11 +2392,39 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
     return WKStringCreateWithUTF8CString(utf8.c_str());
 }
 
-void downloadDidFinish(WKDownloadRef, const void*)
+void downloadDidWriteData(WKDownloadRef download, long long, long long totalBytesWritten, long long totalBytesExpectedToWrite, const void* clientInfo)
 {
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser)
+        return;
+
+    for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
+        if (it->download == download) {
+            it->bytesWritten = totalBytesWritten;
+            it->totalBytes = totalBytesExpectedToWrite;
+            InvalidateRect(browser->window, nullptr, TRUE);
+            return;
+        }
+    }
 }
 
-void downloadDidFailWithError(WKDownloadRef, WKErrorRef error, WKDataRef, const void* clientInfo)
+void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
+{
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser)
+        return;
+
+    for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
+        if (it->download == download) {
+            it->finished = true;
+            break;
+        }
+    }
+
+    InvalidateRect(browser->window, nullptr, TRUE);
+}
+
+void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRef, const void* clientInfo)
 {
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (!browser)
@@ -2418,6 +2446,7 @@ void installDownloadClient(WKDownloadRef download, BrowserState* browser)
     client.base.version = 0;
     client.base.clientInfo = browser;
     client.decideDestinationWithResponse = downloadDecideDestinationWithResponse;
+    client.didWriteData = downloadDidWriteData;
     client.didFinish = downloadDidFinish;
     client.didFailWithError = downloadDidFailWithError;
     WKDownloadSetClient(download, &client.base);
