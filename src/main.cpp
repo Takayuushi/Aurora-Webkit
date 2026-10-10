@@ -2147,9 +2147,7 @@ void didChangeTitle(const void* clientInfo)
     else
         tab->title = L"New Tab";
 
-    if (!tab->activeUrl.empty())
-        tab->browser->recordVisit(tab->activeUrl, tab->title);
-
+    // History is recorded once per URL change by didChangeActiveURL().
     InvalidateRect(tab->browser->window, nullptr, TRUE);
     if (tab == tab->browser->active()) {
         std::wstring titleText = tab->title + L" — Aurora";
