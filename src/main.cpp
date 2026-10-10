@@ -1940,14 +1940,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
-        if (PtInRect(&pageMenuRect, point)) {
-            handleCommand(kCommandMenu);
-            return true;
-        }
-        if (PtInRect(&reloadRect, point)) {
-            handleCommand(kCommandReload);
-            return true;
-        }
         if (PtInRect(&shareRect, point)) {
             handleCommand(kCommandShare);
             return true;
