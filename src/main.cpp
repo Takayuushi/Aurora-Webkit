@@ -1,6 +1,10 @@
 #include <windows.h>
 #include <windowsx.h>
 
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+
 #include <WebKit/WKContext.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
@@ -68,17 +72,17 @@ constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
 
-constexpr int kTitleBarHeight = 36;
-constexpr int kToolbarHeight = 46;
+constexpr int kTitleBarHeight = 29;
+constexpr int kToolbarHeight = 38;
 constexpr int kToolbarHorizontalPadding = 12;
-constexpr int kToolbarButtonSize = 30;
-constexpr int kToolbarGap = 5;
-constexpr int kLogoSize = 20;
+constexpr int kToolbarButtonSize = 28;
+constexpr int kToolbarGap = 4;
+constexpr int kLogoSize = 18;
 constexpr int kTabMinWidth = 126;
 constexpr int kTabMaxWidth = 220;
-constexpr int kTrafficLightSize = 11;
+constexpr int kTrafficLightSize = 10;
 constexpr int kTrafficLightGap = 7;
-constexpr int kResizeBorder = 6;
+constexpr int kResizeBorder = 4;
 
 struct BrowserState;
 struct TabState;
@@ -475,6 +479,34 @@ void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
     Ellipse(dc, x, y, x + kTrafficLightSize, y + kTrafficLightSize);
     SelectObject(dc, oldBrush);
     DeleteObject(brush);
+}
+
+void drawPlus(HDC dc, const RECT& rect)
+{
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 74, 77));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
+    MoveToEx(dc, cx - 5, cy, nullptr);
+    LineTo(dc, cx + 5, cy);
+    MoveToEx(dc, cx, cy - 5, nullptr);
+    LineTo(dc, cx, cy + 5);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawClose(HDC dc, const RECT& rect)
+{
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(105, 109, 112));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
+    MoveToEx(dc, cx - 3, cy - 3, nullptr);
+    LineTo(dc, cx + 3, cy + 3);
+    MoveToEx(dc, cx + 3, cy - 3, nullptr);
+    LineTo(dc, cx - 3, cy + 3);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
 }
 
 void drawShield(HDC dc, const RECT& rect)
@@ -1532,12 +1564,12 @@ search.addEventListener('keydown',e=>{
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(RGB(238, 239, 240));
+        HBRUSH titleBrush = CreateSolidBrush(RGB(241, 242, 243));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(242, 243, 244));
+        HBRUSH toolbarBrush = CreateSolidBrush(RGB(246, 247, 248));
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -1564,16 +1596,16 @@ search.addEventListener('keydown',e=>{
             int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
             RECT tabRect {
                 left,
-                MulDiv(4, dpi, 96),
+                MulDiv(3, dpi, 96),
                 left + tabWidth,
-                titleH - MulDiv(4, dpi, 96)
+                titleH - MulDiv(3, dpi, 96)
             };
 
             HBRUSH tabBrush = CreateSolidBrush(i == activeTab ? RGB(250, 251, 251) : RGB(239, 240, 241));
             HPEN tabPen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232));
             HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
             HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
-            RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
+            RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(8, dpi, 96), MulDiv(8, dpi, 96));
             SelectObject(dc, oldBrush);
             SelectObject(dc, oldPen);
             DeleteObject(tabBrush);
@@ -1602,18 +1634,11 @@ search.addEventListener('keydown',e=>{
                 tabRect.right - MulDiv(4, dpi, 96),
                 tabRect.bottom
             };
-            SetTextColor(dc, RGB(88, 93, 97));
-            oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-            DrawTextW(dc, L"×", 1, &closeRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            SelectObject(dc, oldFont);
+            drawClose(dc, closeRect);
         }
 
         RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(45, 49, 52));
-        HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-        DrawTextW(dc, L"+", 1, &plusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, oldFont);
+        drawPlus(dc, plusRect);
 
         int x = pad;
         RECT backRect { x, titleH, x + button, titleH + toolbarH };
@@ -1947,6 +1972,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     if (!window) {
         MessageBoxW(nullptr, L"Could not create the Aurora window.", windowTitle, MB_OK | MB_ICONERROR);
         return 1;
+    }
+
+    // Prevent the Windows DWM accent color from appearing as a bright top border
+    // around Aurora's custom light window chrome.
+    if (HMODULE dwmapi = LoadLibraryW(L"dwmapi.dll")) {
+        using DwmSetWindowAttributeFunction = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+        auto setWindowAttribute = reinterpret_cast<DwmSetWindowAttributeFunction>(
+            GetProcAddress(dwmapi, "DwmSetWindowAttribute")
+        );
+        if (setWindowAttribute) {
+            DWORD borderColor = RGB(241, 242, 243);
+            setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
+        }
+        FreeLibrary(dwmapi);
     }
 
     ShowWindow(window, showCommand == SW_MAXIMIZE ? SW_MAXIMIZE : SW_SHOWNORMAL);
