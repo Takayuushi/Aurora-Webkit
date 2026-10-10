@@ -1098,8 +1098,12 @@ search.addEventListener('keydown',e=>{
 
         if (hasScheme)
             loadURL(*tab, cleaned);
-        else if (bareHost)
+        else if (bareHost) {
+            tab->fallbackURL.clear();
+            if (cleaned.rfind(L"www.", 0) != 0)
+                tab->fallbackURL = L"https://www." + cleaned;
             loadURL(*tab, L"https://" + cleaned);
+        }
         else
             loadURL(*tab, L"https://www.google.com/search?q=" + percentEncode(cleaned));
 
