@@ -76,8 +76,8 @@ constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
 
-constexpr int kTitleBarHeight = 27;
-constexpr int kToolbarHeight = 36;
+constexpr int kTitleBarHeight = 24;
+constexpr int kToolbarHeight = 34;
 constexpr int kToolbarHorizontalPadding = 12;
 constexpr int kToolbarButtonSize = 27;
 constexpr int kToolbarGap = 4;
@@ -595,6 +595,7 @@ struct TabState {
     std::wstring activeUrl;
     std::wstring lastRecordedUrl;
     HICON favicon { nullptr };
+    std::wstring faviconRequestURL;
 };
 
 struct BrowserState {
@@ -1133,6 +1134,11 @@ search.addEventListener('keydown',e=>{
             return;
         }
 
+        if (tabs[index]->favicon) {
+            DestroyIcon(tabs[index]->favicon);
+            tabs[index]->favicon = nullptr;
+        }
+
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
 
         if (activeTab >= tabs.size())
@@ -1636,16 +1642,21 @@ search.addEventListener('keydown',e=>{
             DeleteObject(tabBrush);
             DeleteObject(tabPen);
 
+            int iconSize = MulDiv(16, dpi, 96);
+            int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
             RECT iconRect {
                 tabRect.left + MulDiv(9, dpi, 96),
-                tabRect.top + MulDiv(7, dpi, 96),
-                tabRect.left + MulDiv(28, dpi, 96),
-                tabRect.top + MulDiv(26, dpi, 96)
+                iconTop,
+                tabRect.left + MulDiv(9, dpi, 96) + iconSize,
+                iconTop + iconSize
             };
-            drawAuroraMark(dc, iconRect, false);
+            if (tabs[i]->favicon)
+                DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+            else
+                drawAuroraMark(dc, iconRect, false);
 
             RECT titleText = tabRect;
-            titleText.left = iconRect.right + MulDiv(7, dpi, 96);
+            titleText.left = iconRect.right + MulDiv(6, dpi, 96);
             titleText.right -= MulDiv(31, dpi, 96);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(45, 49, 52));
@@ -1654,9 +1665,9 @@ search.addEventListener('keydown',e=>{
             SelectObject(dc, oldFont);
 
             RECT closeRect {
-                tabRect.right - MulDiv(30, dpi, 96),
+                tabRect.right - MulDiv(26, dpi, 96),
                 tabRect.top,
-                tabRect.right - MulDiv(4, dpi, 96),
+                tabRect.right - MulDiv(2, dpi, 96),
                 tabRect.bottom
             };
             drawClose(dc, closeRect);
@@ -1810,6 +1821,14 @@ void didChangeActiveURL(const void* clientInfo)
 
     auto page = WKViewGetPage(tab->view.get());
     auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+
+    if (tab->activeUrl != url) {
+        if (tab->favicon) {
+            DestroyIcon(tab->favicon);
+            tab->favicon = nullptr;
+        }
+        tab->faviconRequestURL.clear();
+    }
     tab->activeUrl = url;
 
     if (tab == tab->browser->active()) {
@@ -1821,6 +1840,11 @@ void didChangeActiveURL(const void* clientInfo)
 
     if (url.empty() || url == L"about:blank")
         return;
+
+    if ((url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) && tab->faviconRequestURL != url) {
+        tab->faviconRequestURL = url;
+        requestFavicon(tab->browser, url);
+    }
 
     if (url != tab->lastRecordedUrl && (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)) {
         tab->browser->recordVisit(url, tab->title);
@@ -1945,6 +1969,25 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return DefWindowProcW(window, message, wParam, lParam);
     }
 
+    case WM_AURORA_FAVICON_READY:
+        if (state && lParam) {
+            auto* result = reinterpret_cast<FaviconResult*>(lParam);
+            for (auto& tab : state->tabs) {
+                if (tab->activeUrl != result->url)
+                    continue;
+                if (tab->favicon)
+                    DestroyIcon(tab->favicon);
+                tab->favicon = result->icon;
+                result->icon = nullptr;
+                break;
+            }
+            if (result->icon)
+                DestroyIcon(result->icon);
+            delete result;
+            InvalidateRect(window, nullptr, TRUE);
+        }
+        return 0;
+
     case WM_COMMAND:
         // Menu items and accelerators arrive with lParam == 0. Ignore
         // notifications emitted by child controls such as the address bar.
@@ -1976,6 +2019,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     case WM_DESTROY:
+        if (state) {
+            for (auto& tab : state->tabs) {
+                if (tab->favicon) {
+                    DestroyIcon(tab->favicon);
+                    tab->favicon = nullptr;
+                }
+            }
+        }
         PostQuitMessage(0);
         return 0;
 
