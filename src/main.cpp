@@ -1504,7 +1504,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Privacy controls will be connected here in the privacy-services pass.", L"Privacy — Aurora", MB_OK);
             break;
         case kCommandReader:
-            MessageBoxW(window, L"Reader Mode will be connected here in the page-services pass.", L"Reader — Aurora", MB_OK);
+            if (auto* tab = active()) {
+                auto js = adoptWK(WKStringCreateWithUTF8CString("(function(){const s=document.createElement(\'style\');s.textContent=\'body{background:#f7f3ea!important;color:#252525!important;font-family:Georgia,Times New Roman,serif!important;font-size:20px!important;line-height:1.75!important}main,article,[role=main]{max-width:760px!important;margin:40px auto!important;padding:0 24px!important}\';document.head.appendChild(s);})()"));
+                WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), js.get(), nullptr, nullptr);
+            }
             break;
         case kCommandNewTab:
             addTab(true);
@@ -1523,7 +1526,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Share is reserved for the next browser-services pass.", L"Aurora", MB_OK);
             break;
         case kCommandDownloads:
-            MessageBoxW(window, L"Downloads are reserved for the next browser-services pass.", L"Aurora", MB_OK);
+            { std::wstring folder = downloadsDirectory(); if (!folder.empty()) ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
             break;
         case kCommandMinimize:
             ShowWindow(window, SW_MINIMIZE);
@@ -1545,13 +1548,22 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Private browsing is planned next. This entry is reserved for the private data-store implementation.", L"Aurora", MB_OK);
             break;
         case kMenuHistory:
-            MessageBoxW(window, L"History panel is planned next. Aurora already records recent HTTP/HTTPS visits locally.", L"History — Aurora", MB_OK);
+            loadHistoryPage();
+            break;
+        case kMenuClearHistory:
+            clearHistory();
+            break;
+        case kMenuAddBookmark:
+            toggleBookmark();
             break;
         case kMenuBookmarks:
-            MessageBoxW(window, L"Bookmarks panel is planned next.", L"Bookmarks — Aurora", MB_OK);
+            loadBookmarksPage();
+            break;
+        case kMenuReadingList:
+            loadReadingListPage();
             break;
         case kMenuDownloads:
-            MessageBoxW(window, L"Downloads panel is planned next.", L"Downloads — Aurora", MB_OK);
+            loadReadingListPage();
             break;
         case kMenuSavePage:
             MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
