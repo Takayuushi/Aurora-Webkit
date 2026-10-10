@@ -2044,6 +2044,82 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
     tab->browser->loadURL(*tab, fallback);
 }
 
+WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef, WKURLResponseRef response, WKStringRef suggestedFilename, const void*)
+{
+    std::wstring filename = createString(suggestedFilename);
+
+    if (filename.empty()) {
+        auto responseURL = adoptWK(WKURLResponseCopyURL(response));
+        filename = createString(adoptWK(WKURLCopyHostName(responseURL.get())).get());
+    }
+
+    if (filename.empty())
+        filename = L"download";
+
+    for (auto& ch : filename) {
+        if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+            ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
+            ch = L'_';
+    }
+
+    std::wstring folder = downloadsDirectory();
+    if (folder.empty())
+        return nullptr;
+
+    std::wstring path = folder + L"\\" + filename;
+    std::string utf8 = toUTF8(path);
+    return WKStringCreateWithUTF8CString(utf8.c_str());
+}
+
+void downloadDidFinish(WKDownloadRef, const void*)
+{
+}
+
+void downloadDidFailWithError(WKDownloadRef, WKErrorRef error, WKDataRef, const void* clientInfo)
+{
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser)
+        return;
+
+    std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
+    MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+}
+
+void installDownloadClient(WKDownloadRef download, BrowserState* browser)
+{
+    if (!download || !browser)
+        return;
+
+    WKDownloadClientV0 client { };
+    client.base.version = 0;
+    client.base.clientInfo = browser;
+    client.decideDestinationWithResponse = downloadDecideDestinationWithResponse;
+    client.didFinish = downloadDidFinish;
+    client.didFailWithError = downloadDidFailWithError;
+    WKDownloadSetClient(download, &client.base);
+}
+
+void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef download, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab)
+        installDownloadClient(download, tab->browser);
+}
+
+void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef download, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab)
+        installDownloadClient(download, tab->browser);
+}
+
+void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef download, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab)
+        installDownloadClient(download, tab->browser);
+}
+
 void didChangeIsLoading(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
