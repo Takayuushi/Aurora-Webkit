@@ -933,13 +933,16 @@ struct BrowserState {
 
         HMENU historyMenu = CreatePopupMenu();
         AppendMenuW(historyMenu, MF_STRING, kMenuHistory, L"Show History\tCtrl+H");
+        AppendMenuW(historyMenu, MF_STRING, kMenuClearHistory, L"Clear History");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(historyMenu), L"History");
 
         HMENU bookmarksMenu = CreatePopupMenu();
+        AppendMenuW(bookmarksMenu, MF_STRING, kMenuAddBookmark, L"Bookmark This Page\tCtrl+D");
         AppendMenuW(bookmarksMenu, MF_STRING, kMenuBookmarks, L"Show Bookmarks\tCtrl+Shift+B");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarksMenu), L"Bookmarks");
 
         AppendMenuW(menu, MF_STRING, kMenuDownloads, L"Downloads\tCtrl+I");
+        AppendMenuW(menu, MF_STRING, kMenuReadingList, L"Reading List\tCtrl+Shift+D");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -2441,6 +2444,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         { FCONTROL | FSHIFT, 'Q', kMenuQuit },
         { FCONTROL, 'H', kMenuHistory },
         { FCONTROL | FSHIFT, 'B', kMenuBookmarks },
+        { FCONTROL, 'D', kMenuAddBookmark },
+        { FCONTROL | FSHIFT, 'D', kMenuReadingList },
         { FCONTROL, 'S', kMenuSavePage },
         { FCONTROL, 'P', kMenuPrint },
         { FCONTROL, 'F', kMenuFindInPage },
