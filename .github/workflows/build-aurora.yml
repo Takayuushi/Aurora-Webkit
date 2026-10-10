@@ -130,6 +130,7 @@ jobs:
           }
 
       - name: Cache WebKit Windows libraries
+        id: cache-webkit-libs
         uses: actions/cache@v4
         with:
           path: ${{ env.WEBKIT_DIR }}/WebKitLibraries/win
@@ -138,6 +139,7 @@ jobs:
             webkit-win-libs-${{ runner.os }}-
 
       - name: Cache WebKit build output
+        id: cache-webkit-build
         uses: actions/cache@v4
         with:
           path: ${{ env.WEBKIT_DIR }}/WebKitBuild
@@ -152,6 +154,7 @@ jobs:
           python -m pip install pywin32
 
       - name: Build WebKit (Release, with Aurora in the same CMake graph)
+        if: steps.cache-webkit-build.outputs.cache-hit != 'true' || steps.cache-webkit-libs.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
