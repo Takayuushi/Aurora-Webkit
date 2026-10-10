@@ -110,6 +110,10 @@ void didChangeActiveURL(const void*);
 void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
+void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void*);
+void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
+void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
+void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void didFinishNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
@@ -1171,6 +1175,15 @@ search.addEventListener('keydown',e=>{
         if (!page)
             return false;
 
+        WKPageNavigationClientV3 navigationClient { };
+        navigationClient.base.version = 3;
+        navigationClient.base.clientInfo = tab.get();
+        navigationClient.didFailProvisionalNavigation = didFailProvisionalNavigation;
+        navigationClient.navigationActionDidBecomeDownload = navigationActionDidBecomeDownload;
+        navigationClient.navigationResponseDidBecomeDownload = navigationResponseDidBecomeDownload;
+        navigationClient.contextMenuDidCreateDownload = contextMenuDidCreateDownload;
+        WKPageSetPageNavigationClient(page, &navigationClient.base);
+
         WKPageStateClientV0 stateClient { };
         stateClient.base.version = 0;
         stateClient.base.clientInfo = tab.get();
@@ -2018,6 +2031,17 @@ LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, L
         return CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
 
     return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (!tab || !tab->browser || tab->fallbackURL.empty())
+        return;
+
+    auto fallback = tab->fallbackURL;
+    tab->fallbackURL.clear();
+    tab->browser->loadURL(*tab, fallback);
 }
 
 void didChangeIsLoading(const void* clientInfo)
