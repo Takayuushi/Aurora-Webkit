@@ -6,6 +6,12 @@
 #endif
 
 #include <WebKit/WKContext.h>
+#include <WebKit/WKDownloadClient.h>
+#include <WebKit/WKDownloadRef.h>
+#include <WebKit/WKNavigationActionRef.h>
+#include <WebKit/WKNavigationResponseRef.h>
+#include <WebKit/WKPageNavigationClient.h>
+#include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
 #include <WebKit/WKPageConfigurationRef.h>
@@ -27,10 +33,13 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <ctime>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <shlobj.h>
+#include <shellapi.h>
 #include <urlmon.h>
 
 #ifndef EM_SETCUEBANNER
@@ -75,6 +84,10 @@ constexpr UINT kMenuStartPage = 2013;
 constexpr UINT kMenuSettings = 2014;
 constexpr UINT kMenuAbout = 2015;
 constexpr UINT kMenuQuit = 2016;
+constexpr UINT kMenuAddBookmark = 2017;
+constexpr UINT kMenuReadingList = 2018;
+constexpr UINT kMenuClearHistory = 2019;
+constexpr UINT kMenuExtensions = 2020;
 
 constexpr int kTitleBarHeight = 22;
 constexpr int kToolbarHeight = 32;
@@ -97,6 +110,10 @@ void didChangeActiveURL(const void*);
 void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
+void didFinishNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
+void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
+void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
+void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 
 struct FaviconResult {
     std::wstring url;
@@ -123,6 +140,12 @@ struct VisitEntry {
     std::wstring title;
     long long visits { 0 };
     long long lastVisited { 0 };
+};
+
+struct SavedPage {
+    std::wstring url;
+    std::wstring title;
+    long long added { 0 };
 };
 
 std::wstring createString(WKStringRef string)
@@ -269,6 +292,38 @@ std::wstring applicationDataDirectory()
 std::wstring historyPath()
 {
     return applicationDataDirectory() + L"\\history.tsv";
+}
+
+std::wstring bookmarksPath()
+{
+    return applicationDataDirectory() + L"\\bookmarks.tsv";
+}
+
+std::wstring readingListPath()
+{
+    return applicationDataDirectory() + L"\\reading-list.tsv";
+}
+
+std::wstring extensionsPath()
+{
+    return applicationDataDirectory() + L"\\extensions";
+}
+
+std::wstring downloadsDirectory()
+{
+    PWSTR rawPath = nullptr;
+    std::wstring result;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, KF_FLAG_DEFAULT, nullptr, &rawPath)) && rawPath) {
+        result = rawPath;
+        CoTaskMemFree(rawPath);
+    }
+    if (result.empty()) {
+        wchar_t profile[MAX_PATH] { };
+        DWORD length = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+        if (length && length < MAX_PATH)
+            result = std::wstring(profile, length) + L"\\Downloads";
+    }
+    return result;
 }
 
 long long currentUnixTime()
@@ -583,6 +638,7 @@ struct TabState {
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
     std::wstring lastRecordedUrl;
+    std::wstring fallbackURL;
     HICON favicon { nullptr };
     std::wstring faviconRequestURL;
 };
@@ -605,6 +661,9 @@ struct BrowserState {
 
     std::vector<std::unique_ptr<TabState>> tabs;
     std::vector<VisitEntry> visits;
+    std::vector<SavedPage> bookmarks;
+    std::vector<SavedPage> readingList;
+    std::vector<std::wstring> extensionScripts;
     size_t activeTab { 0 };
 
     int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
