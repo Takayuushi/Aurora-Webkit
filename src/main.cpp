@@ -14,6 +14,7 @@
 #include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
+#include <WebKit/WKFindOptions.h>
 #include <WebKit/WKPageConfigurationRef.h>
 #include <WebKit/WKPageStateClient.h>
 #include <WebKit/WKPreferencesRef.h>
@@ -89,6 +90,9 @@ constexpr UINT kMenuAddBookmark = 2017;
 constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
+constexpr UINT kFindPrevious = 2101;
+constexpr UINT kFindNext = 2102;
+constexpr UINT kFindClose = 2103;
 constexpr UINT kMenuThemeLight = 2030;
 constexpr UINT kMenuThemeDark = 2031;
 constexpr UINT kMenuThemeSystem = 2032;
@@ -624,6 +628,7 @@ void drawReader(HDC dc, const RECT& rect)
 
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -656,6 +661,12 @@ struct BrowserState {
     bool customMaximized { false };
     RECT restoredWindowRect { };
     WNDPROC addressBarOriginalProcedure { nullptr };
+    WNDPROC findEditOriginalProcedure { nullptr };
+    HWND findEdit { nullptr };
+    HWND findPreviousButton { nullptr };
+    HWND findNextButton { nullptr };
+    HWND findCloseButton { nullptr };
+    bool findBarVisible { false };
 
     HFONT uiFont { nullptr };
     HBRUSH addressBarBrush { nullptr };
