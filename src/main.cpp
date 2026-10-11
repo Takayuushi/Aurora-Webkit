@@ -14,6 +14,8 @@
 #include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
+#include <WebKit/WKData.h>
+#include "WKPagePrivate.h"
 #include <WebKit/WKFindOptions.h>
 #include <WebKit/WKPageConfigurationRef.h>
 #include <WebKit/WKPageStateClient.h>
@@ -43,6 +45,7 @@
 
 #include <shlobj.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <winreg.h>
 #include <urlmon.h>
 
@@ -129,7 +132,7 @@ struct BrowserState;
 struct TabState;
 
 int gLiveBrowserWindows = 0;
-bool openNewBrowserWindow(BrowserState*);
+bool openNewBrowserWindow(BrowserState*, bool privateMode = false);
 
 void didChangeIsLoading(const void*);
 void didChangeTitle(const void*);
@@ -142,6 +145,8 @@ void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownl
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*);
+void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
+void printPageCountCompleted(WKRect*, uint32_t, double, WKErrorRef, void*);
 
 struct FaviconResult {
     std::wstring url;
@@ -174,6 +179,14 @@ struct SavedPage {
     std::wstring url;
     std::wstring title;
     long long added { 0 };
+};
+
+struct SavePageRequest {
+    HWND owner { nullptr };
+    std::wstring path;
+    WKPageRef page { nullptr };
+    WKFrameRef frame { nullptr };
+    WKPrintInfo printInfo { 1.0f, 595.0f, 842.0f };
 };
 
 struct DownloadEntry {
@@ -687,6 +700,7 @@ struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
     bool windowCounted { false };
+    bool privateBrowsing { false };
     bool customMaximized { false };
     RECT restoredWindowRect { };
     WNDPROC addressBarOriginalProcedure { nullptr };
@@ -839,6 +853,8 @@ struct BrowserState {
     void loadVisitData()
     {
         visits.clear();
+        if (privateBrowsing)
+            return;
         std::ifstream file(historyPath(), std::ios::binary);
         std::string line;
         while (std::getline(file, line)) {
@@ -860,7 +876,9 @@ struct BrowserState {
             } catch (...) {
                 continue;
             }
-        }\n    }\n    void saveVisitData()
+        }
+    }
+    void saveVisitData()
     {
         std::ofstream file(historyPath(), std::ios::binary | std::ios::trunc);
         if (!file)
@@ -872,9 +890,11 @@ struct BrowserState {
             replaceTabsAndNewlines(title);
             file << entry.visits << '\t' << entry.lastVisited << '\t'
                  << toUTF8(url) << '\t' << toUTF8(title) << '\n';
-        }\n    }\n    void recordVisit(const std::wstring& url, const std::wstring& title)
+        }
+    }
+    void recordVisit(const std::wstring& url, const std::wstring& title)
     {
-        if (url.empty())
+        if (privateBrowsing || url.empty())
             return;
 
         if (!(url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0))
@@ -914,7 +934,7 @@ struct BrowserState {
 
     void updateVisitTitle(const std::wstring& url, const std::wstring& title)
     {
-        if (url.empty() || title.empty())
+        if (privateBrowsing || url.empty() || title.empty())
             return;
         auto found = std::find_if(visits.begin(), visits.end(), [&](const VisitEntry& entry) {
             return entry.url == url;
@@ -965,7 +985,9 @@ struct BrowserState {
             } catch (...) {
                 continue;
             }
-        }\n    }\n    void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
+        }
+    }
+    void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         if (!file)
@@ -976,15 +998,20 @@ struct BrowserState {
             replaceTabsAndNewlines(url);
             replaceTabsAndNewlines(title);
             file << page.added << '\t' << toUTF8(url) << '\t' << toUTF8(title) << '\n';
-        }\n    }\n    bool initialize(HWND parentWindow)
+        }
+    }
+    bool initialize(HWND parentWindow)
     {
         window = parentWindow;
 
-        websiteDataStoreConfiguration = adoptWK(WKWebsiteDataStoreConfigurationCreate());
-        if (!websiteDataStoreConfiguration)
-            return false;
-
-        websiteDataStore = adoptWK(WKWebsiteDataStoreCreateWithConfiguration(websiteDataStoreConfiguration.get()));
+        if (privateBrowsing) {
+            websiteDataStore = adoptWK(WKWebsiteDataStoreCreateNonPersistentDataStore());
+        } else {
+            websiteDataStoreConfiguration = adoptWK(WKWebsiteDataStoreConfigurationCreate());
+            if (!websiteDataStoreConfiguration)
+                return false;
+            websiteDataStore = adoptWK(WKWebsiteDataStoreCreateWithConfiguration(websiteDataStoreConfiguration.get()));
+        }
         if (!websiteDataStore)
             return false;
 
@@ -1709,7 +1736,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     void clearHistory()
     {
         visits.clear();
-        saveVisitData();
+        if (!privateBrowsing)
+            saveVisitData();
         loadHistoryPage();
     }
 
@@ -2002,7 +2030,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openNewBrowserWindow(this);
             break;
         case kMenuNewPrivateWindow:
-            MessageBoxW(window, L"Private browsing is planned next. This entry is reserved for the private data-store implementation.", L"Aurora", MB_OK);
+            openNewBrowserWindow(this, true);
             break;
         case kMenuHistory:
             if (addTab(true))
