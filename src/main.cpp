@@ -128,6 +128,9 @@ constexpr int kResizeBorder = 4;
 struct BrowserState;
 struct TabState;
 
+int gLiveBrowserWindows = 0;
+bool openNewBrowserWindow(BrowserState*);
+
 void didChangeIsLoading(const void*);
 void didChangeTitle(const void*);
 void didChangeActiveURL(const void*);
@@ -683,6 +686,7 @@ bool windowsPrefersDarkMode()
 struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
+    bool windowCounted { false };
     bool customMaximized { false };
     RECT restoredWindowRect { };
     WNDPROC addressBarOriginalProcedure { nullptr };
@@ -1995,7 +1999,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             addTab(true);
             break;
         case kMenuNewWindow:
-            MessageBoxW(window, L"New Window will be enabled in the next browser-core pass.", L"Aurora", MB_OK);
+            openNewBrowserWindow(this);
             break;
         case kMenuNewPrivateWindow:
             MessageBoxW(window, L"Private browsing is planned next. This entry is reserved for the private data-store implementation.", L"Aurora", MB_OK);
@@ -2736,6 +2740,34 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 };
 
+std::vector<std::unique_ptr<BrowserState>> gAdditionalBrowserWindows;
+
+bool openNewBrowserWindow(BrowserState*)
+{
+    auto browser = std::make_unique<BrowserState>();
+    HWND window = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        windowClassName,
+        windowTitle,
+        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        1280,
+        840,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        browser.get()
+    );
+    if (!window)
+        return false;
+
+    gAdditionalBrowserWindows.push_back(std::move(browser));
+    ShowWindow(window, SW_SHOWNORMAL);
+    UpdateWindow(window);
+    return true;
+}
+
 struct SettingsDialogState {
     BrowserState* browser { nullptr };
     HWND themeCombo { nullptr };
@@ -3300,6 +3332,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         state->window = window;
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        if (!state->windowCounted) {
+            state->windowCounted = true;
+            ++gLiveBrowserWindows;
+        }
         return TRUE;
     }
 
@@ -3452,8 +3488,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     tab->favicon = nullptr;
                 }
             }
+            if (state->windowCounted) {
+                state->windowCounted = false;
+                --gLiveBrowserWindows;
+            }
         }
-        PostQuitMessage(0);
+        if (gLiveBrowserWindows <= 0)
+            PostQuitMessage(0);
         return 0;
 
     default:
@@ -3543,7 +3584,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     MSG message { };
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        if (!TranslateAcceleratorW(window, acceleratorTable, &message)) {
+        bool acceleratorHandled = TranslateAcceleratorW(window, acceleratorTable, &message) != 0;
+        if (!acceleratorHandled) {
+            for (const auto& browser : gAdditionalBrowserWindows) {
+                if (browser && browser->window
+                    && TranslateAcceleratorW(browser->window, acceleratorTable, &message)) {
+                    acceleratorHandled = true;
+                    break;
+                }
+            }
+        }
+        if (!acceleratorHandled) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
