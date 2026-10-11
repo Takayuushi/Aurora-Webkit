@@ -1244,7 +1244,10 @@ search.addEventListener('keydown',e=>{
             activeTab = index;
 
         loadStartPage(*tabs[index]);
-        resize();
+        if (select)
+            activateTab(index);
+        else
+            resize();
         return true;
     }
 
@@ -1651,11 +1654,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
                 contentTop,
                 std::max<int>(0, static_cast<int>(client.right - contentLeft)),
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
-                TRUE
+                FALSE
             );
         }
 
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void toggleMaximizeWindow()
@@ -1770,7 +1773,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Private browsing is planned next. This entry is reserved for the private data-store implementation.", L"Aurora", MB_OK);
             break;
         case kMenuHistory:
-            loadHistoryPage();
+            if (addTab(true))
+                loadHistoryPage();
             break;
         case kMenuClearHistory:
             clearHistory();
@@ -1779,16 +1783,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             toggleBookmark();
             break;
         case kMenuBookmarks:
-            loadBookmarksPage();
+            if (addTab(true))
+                loadBookmarksPage();
             break;
         case kMenuReadingList:
-            loadReadingListPage();
+            if (addTab(true))
+                loadReadingListPage();
             break;
         case kMenuDownloads:
-            loadDownloadsPage();
+            if (addTab(true))
+                loadDownloadsPage();
             break;
         case 5996:
-            loadDownloadsPage();
+            if (addTab(true))
+                loadDownloadsPage();
             break;
         case kMenuSavePage:
             MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
