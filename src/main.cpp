@@ -2339,17 +2339,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!sidebarOpen)
             return;
 
+        const bool dark = darkTheme();
         int width = scaleForDpi(window, 286);
         int top = titleBarHeight() + toolbarHeight();
         RECT client { };
         GetClientRect(window, &client);
 
         RECT panel { 0, top, width, client.bottom };
-        HBRUSH brush = CreateSolidBrush(RGB(247, 248, 249));
+        HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
         FillRect(dc, &panel, brush);
         DeleteObject(brush);
 
-        HPEN divider = CreatePen(PS_SOLID, 1, RGB(220, 223, 225));
+        HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
         MoveToEx(dc, width - 1, top, nullptr);
         LineTo(dc, width - 1, client.bottom);
@@ -2365,13 +2366,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT heading { scaleForDpi(window, 18), top + scaleForDpi(window, 14),
             width - scaleForDpi(window, 54), top + scaleForDpi(window, 44) };
-        SetTextColor(dc, RGB(35, 39, 42));
+        SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(35, 39, 42));
         const wchar_t* headingText = sidebarSection == 0 ? L"Bookmarks" : (sidebarSection == 1 ? L"Reading List" : L"History");
         DrawTextW(dc, headingText, -1, &heading, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         RECT closeRect { width - scaleForDpi(window, 48), top + scaleForDpi(window, 10),
             width - scaleForDpi(window, 10), top + scaleForDpi(window, 44) };
-        drawClose(dc, closeRect);
+        drawClose(dc, closeRect, dark);
 
         RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
             width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
@@ -2379,11 +2380,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (int i = 0; i < 3; ++i) {
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (i == sidebarSection) {
-                HBRUSH selected = CreateSolidBrush(RGB(229, 232, 235));
+                HBRUSH selected = CreateSolidBrush(dark ? RGB(73, 73, 77) : RGB(229, 232, 235));
                 FillRect(dc, &r, selected);
                 DeleteObject(selected);
             }
-            SetTextColor(dc, i == sidebarSection ? RGB(35, 39, 42) : RGB(115, 120, 124));
+            SetTextColor(dc, i == sidebarSection ? (dark ? RGB(245, 245, 247) : RGB(35, 39, 42)) : (dark ? RGB(160, 160, 165) : RGB(115, 120, 124)));
             const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
             DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
@@ -2394,18 +2395,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         if (!count) {
             RECT empty { scaleForDpi(window, 18), rowTop, width - scaleForDpi(window, 18), rowTop + scaleForDpi(window, 42) };
-            SetTextColor(dc, RGB(125, 130, 134));
+            SetTextColor(dc, dark ? RGB(160, 160, 165) : RGB(125, 130, 134));
             const wchar_t* emptyText = sidebarSection == 0 ? L"No bookmarks yet." : (sidebarSection == 1 ? L"No saved pages yet." : L"No browsing history.");
             DrawTextW(dc, emptyText, -1, &empty, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         } else {
-            SetTextColor(dc, RGB(42, 46, 49));
+            SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
             if (sidebarSection == 0) {
                 for (size_t i = 0; i < std::min<size_t>(10, bookmarks.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
-                    SetTextColor(dc, RGB(126, 131, 135));
+                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, bookmarks[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     SetTextColor(dc, RGB(42, 46, 49));
                 }
@@ -2595,21 +2596,21 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 tabRect.right - MulDiv(2, dpi, 96),
                 tabRect.bottom
             };
-            drawClose(dc, closeRect);
+            drawClose(dc, closeRect, dark);
         }
 
         RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
-        drawPlus(dc, plusRect);
+        drawPlus(dc, plusRect, dark);
 
         int x = pad;
         RECT backRect { x, titleH, x + button, titleH + toolbarH };
-        drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())));
+        drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
         x += button + gap;
         RECT forwardRect { x, titleH, x + button, titleH + toolbarH };
-        drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())));
+        drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
         x += button + gap;
         RECT sidebarRect { x, titleH, x + button, titleH + toolbarH };
-        drawSidebar(dc, sidebarRect);
+        drawSidebar(dc, sidebarRect, dark);
 
         RECT pill = addressPillRect();
         HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(245, 246, 247));
@@ -2634,19 +2635,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(searchPen);
 
         RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
-        drawShield(dc, privacyGlyph);
+        drawShield(dc, privacyGlyph, dark);
         bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
-        drawReload(dc, reloadRect, loading);
+        drawReload(dc, reloadRect, loading, dark);
 
         int rightStart = pill.right + gap * 2;
         RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
         RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
 
-        drawShare(dc, shareRect);
-        drawDownload(dc, downloadsRect);
-        drawMenu(dc, menuRect);
+        drawShare(dc, shareRect, dark);
+        drawDownload(dc, downloadsRect, dark);
+        drawMenu(dc, menuRect, dark);
     }
 };
 
