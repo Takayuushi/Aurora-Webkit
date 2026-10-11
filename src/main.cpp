@@ -497,7 +497,7 @@ void drawReload(HDC dc, const RECT& rect, bool loading)
 
 void drawSidebar(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
@@ -511,7 +511,7 @@ void drawSidebar(HDC dc, const RECT& rect)
 
 void drawShare(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
@@ -529,18 +529,18 @@ void drawShare(HDC dc, const RECT& rect)
 
 void drawDownload(HDC dc, const RECT& rect)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
-    MoveToEx(dc, x, rect.top + 8, nullptr);
-    LineTo(dc, x, rect.bottom - 13);
-    MoveToEx(dc, x, rect.bottom - 13, nullptr);
-    LineTo(dc, x - 6, rect.bottom - 19);
-    MoveToEx(dc, x, rect.bottom - 13, nullptr);
-    LineTo(dc, x + 6, rect.bottom - 19);
-    MoveToEx(dc, rect.left + 9, rect.bottom - 8, nullptr);
-    LineTo(dc, rect.right - 9, rect.bottom - 8);
+    int shaftBottom = rect.bottom - 12;
+    MoveToEx(dc, x, rect.top + 7, nullptr);
+    LineTo(dc, x, shaftBottom);
+    MoveToEx(dc, x - 6, shaftBottom - 6, nullptr);
+    LineTo(dc, x, shaftBottom);
+    LineTo(dc, x + 6, shaftBottom - 6);
+    MoveToEx(dc, rect.left + 8, rect.bottom - 7, nullptr);
+    LineTo(dc, rect.right - 8, rect.bottom - 7);
 
     SelectObject(dc, oldPen);
     DeleteObject(pen);
@@ -569,7 +569,7 @@ void drawPageMenu(HDC dc, const RECT& rect)
 
 void drawMenu(HDC dc, const RECT& rect)
 {
-    HBRUSH brush = CreateSolidBrush(RGB(55, 60, 63));
+    HBRUSH brush = CreateSolidBrush(RGB(75, 80, 84));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
 
     int x = (rect.left + rect.right) / 2;
@@ -2648,15 +2648,14 @@ void didChangeActiveURL(const void* clientInfo)
         tab->lastRecordedUrl = url;
     }
 
-    InvalidateRect(tab->browser->window, nullptr, TRUE);
+    InvalidateRect(tab->browser->window, nullptr, FALSE);
 }
 
 void didChangeEstimatedProgress(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
     if (tab && tab->browser)
-        InvalidateRect(tab->browser->window, nullptr, TRUE);
-}
+        InvalidateRect(tab->browser->window, nullptr, FALSE);}
 
 void didChangeCanGoBack(const void* clientInfo)
 {
@@ -2772,7 +2771,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && lParam) {
             auto* result = reinterpret_cast<FaviconResult*>(lParam);
             for (auto& tab : state->tabs) {
-                if (tab->activeUrl != result->url)
+                if (tab->activeUrl != result->url || tab->faviconRequestURL != result->url)
                     continue;
                 if (tab->favicon)
                     DestroyIcon(tab->favicon);
