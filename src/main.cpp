@@ -73,6 +73,7 @@ constexpr UINT kCommandMaximize = 1012;
 constexpr UINT kCommandCloseWindow = 1013;
 constexpr UINT kCommandPrivacy = 1014;
 constexpr UINT kCommandReader = 1015;
+constexpr UINT kCommandTabOverview = 1016;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 
 constexpr UINT kMenuNewTab = 2001;
@@ -561,6 +562,22 @@ void drawShare(HDC dc, const RECT& rect, bool dark = false)
     LineTo(dc, x + 6, rect.top + 15);
     Rectangle(dc, rect.left + 9, rect.top + 13, rect.right - 9, rect.bottom - 8);
 
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawTabOverview(HDC dc, const RECT& rect, bool dark)
+{
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(205, 205, 210) : RGB(75, 80, 84));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+
+    int cx = (rect.left + rect.right) / 2;
+    int cy = (rect.top + rect.bottom) / 2;
+    RoundRect(dc, cx - 7, cy - 5, cx + 7, cy + 7, 3, 3);
+    RoundRect(dc, cx - 4, cy - 8, cx + 10, cy + 4, 3, 3);
+
+    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -2044,6 +2061,36 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DestroyMenu(privacyMenu);
     }
 
+    void showTabOverviewMenu()
+    {
+        if (tabs.empty())
+            return;
+        HMENU overview = CreatePopupMenu();
+        if (!overview)
+            return;
+
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            std::wstring label = tabs[i]->title.empty() ? L"New Tab" : tabs[i]->title;
+            if (label.size() > 72) {
+                label.resize(69);
+                label += L"...";
+            }
+            UINT flags = MF_STRING;
+            if (i == activeTab)
+                flags |= MF_CHECKED;
+            AppendMenuW(overview, flags, 3000 + static_cast<UINT>(i), label.c_str());
+        }
+
+        int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        int button = scaleForDpi(window, kToolbarButtonSize);
+        int gap = scaleForDpi(window, kToolbarGap);
+        POINT point { GetClientWidth(window) - pad - button - gap - button / 2,
+            titleBarHeight() + toolbarHeight() };
+        ClientToScreen(window, &point);
+        TrackPopupMenu(overview, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        DestroyMenu(overview);
+    }
+
     void showMenu()
     {
         if (bookmarksMenu) {
@@ -2091,7 +2138,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int gap = scaleForDpi(window, kToolbarGap);
 
         int leftControls = button * 3 + gap * 2;
-        int rightControls = button * 3 + gap * 4;
+        int rightControls = button * 4 + gap * 5;
 
         int left = pad + leftControls + scaleForDpi(window, 12);
         int right = client.right - pad - rightControls;
@@ -2259,6 +2306,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             break;
         case kCommandDownloads:
             showDownloadsMenu();
+            break;
+        case kCommandTabOverview:
+            showTabOverviewMenu();
             break;
         case kCommandMinimize:
             ShowWindow(window, SW_MINIMIZE);
@@ -2670,7 +2720,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int rightStart = pill.right + gap * 2;
         RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
-        RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+        RECT overviewRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+        RECT menuRect { overviewRect.right + gap, titleH, overviewRect.right + gap + button, titleH + toolbarH };
 
         if (PtInRect(&shareRect, point)) {
             handleCommand(kCommandShare);
@@ -2678,6 +2729,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
         if (PtInRect(&downloadsRect, point)) {
             handleCommand(kCommandDownloads);
+            return true;
+        }
+        if (PtInRect(&overviewRect, point)) {
+            handleCommand(kCommandTabOverview);
             return true;
         }
         if (PtInRect(&menuRect, point)) {
@@ -3016,10 +3071,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int rightStart = pill.right + gap * 2;
         RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
         RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
-        RECT menuRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+        RECT overviewRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
+        RECT menuRect { overviewRect.right + gap, titleH, overviewRect.right + gap + button, titleH + toolbarH };
 
         drawShare(dc, shareRect, dark);
         drawDownload(dc, downloadsRect, dark);
+        drawTabOverview(dc, overviewRect, dark);
         drawMenu(dc, menuRect, dark);
     }
 };
