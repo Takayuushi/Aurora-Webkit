@@ -14,6 +14,7 @@
 #include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
+#include <WebKit/WKHTTPCookieStoreRef.h>
 #include <WebKit/WKData.h>
 #include "WKPagePrivate.h"
 #include <WebKit/WKFindOptions.h>
@@ -158,6 +159,11 @@ void openBrowserSettings(BrowserState*);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void printPageCountCompleted(WKRect*, uint32_t, double, WKErrorRef, void*);
 void websiteDataCleared(void*);
+void websiteDataStorageCleared(void*);
+void websiteDataLocalStorageCleared(void*);
+void websiteDataNetworkCacheCleared(void*);
+void websiteDataMemoryCacheCleared(void*);
+void websiteDataFetchCacheCleared(void*);
 void printPDFDataCompleted(WKDataRef, WKErrorRef, void*);
 
 struct FaviconResult {
@@ -196,6 +202,11 @@ struct SavedPage {
 struct ScriptExtension {
     std::wstring filename;
     std::wstring source;
+};
+
+struct ClearWebsiteDataContext {
+    HWND owner { nullptr };
+    WKWebsiteDataStoreRef store { nullptr };
 };
 
 struct SavePageRequest {
@@ -3272,7 +3283,11 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         if (LOWORD(wParam) == kSettingsClearWebsiteData) {
             if (MessageBoxW(window, L"Clear cookies, cached site data, and local website storage for this browser window?", L"Clear Website Data", MB_YESNO | MB_ICONWARNING) != IDYES)
                 return 0;
-            WKWebsiteDataStoreClearStorage(dialog->browser->websiteDataStore.get(), dialog->browser->window, websiteDataCleared);
+            auto* context = new ClearWebsiteDataContext {
+                dialog->browser->window,
+                dialog->browser->websiteDataStore.get()
+            };
+            WKWebsiteDataStoreClearStorage(context->store, context, websiteDataStorageCleared);
             return 0;
         }
         if (LOWORD(wParam) == kSettingsSave) {
@@ -3488,9 +3503,44 @@ void printPageCountCompleted(WKRect*, uint32_t pageCount, double, WKErrorRef err
 
 void websiteDataCleared(void* context)
 {
-    HWND owner = static_cast<HWND>(context);
-    if (IsWindow(owner))
-        PostMessageW(owner, WM_AURORA_WEBSITE_DATA_CLEARED, 0, 0);
+    std::unique_ptr<ClearWebsiteDataContext> request(static_cast<ClearWebsiteDataContext*>(context));
+    if (request && IsWindow(request->owner))
+        PostMessageW(request->owner, WM_AURORA_WEBSITE_DATA_CLEARED, 0, 0);
+}
+
+void websiteDataStorageCleared(void* context)
+{
+    auto* request = static_cast<ClearWebsiteDataContext*>(context);
+    WKWebsiteDataStoreRemoveLocalStorage(request->store, context, websiteDataLocalStorageCleared);
+}
+
+void websiteDataLocalStorageCleared(void* context)
+{
+    auto* request = static_cast<ClearWebsiteDataContext*>(context);
+    WKWebsiteDataStoreRemoveNetworkCache(request->store, context, websiteDataNetworkCacheCleared);
+}
+
+void websiteDataNetworkCacheCleared(void* context)
+{
+    auto* request = static_cast<ClearWebsiteDataContext*>(context);
+    WKWebsiteDataStoreRemoveMemoryCaches(request->store, context, websiteDataMemoryCacheCleared);
+}
+
+void websiteDataMemoryCacheCleared(void* context)
+{
+    auto* request = static_cast<ClearWebsiteDataContext*>(context);
+    WKWebsiteDataStoreRemoveAllFetchCaches(request->store, context, websiteDataFetchCacheCleared);
+}
+
+void websiteDataFetchCacheCleared(void* context)
+{
+    auto* request = static_cast<ClearWebsiteDataContext*>(context);
+    auto cookies = adoptWK(WKWebsiteDataStoreGetHTTPCookieStore(request->store));
+    if (!cookies) {
+        websiteDataCleared(context);
+        return;
+    }
+    WKHTTPCookieStoreDeleteAllCookies(cookies.get(), context, websiteDataCleared);
 }
 
 void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
