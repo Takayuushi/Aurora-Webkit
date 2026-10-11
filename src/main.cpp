@@ -914,6 +914,8 @@ struct BrowserState {
     {
         if (addressBar && addressBarOriginalProcedure)
             SetWindowLongPtrW(addressBar, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(addressBarOriginalProcedure));
+        if (findEdit && findEditOriginalProcedure)
+            SetWindowLongPtrW(findEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(findEditOriginalProcedure));
         if (uiFont)
             DeleteObject(uiFont);
         if (addressBarBrush)
@@ -1627,6 +1629,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             );
         }
 
+        if (findBarVisible)
+            positionFindBar();
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -1774,7 +1778,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             MessageBoxW(window, L"Printing will be connected to the Windows print pipeline in a later pass.", L"Aurora", MB_OK);
             break;
         case kMenuFindInPage:
-            MessageBoxW(window, L"Find in Page will be added in the next page-services pass.", L"Aurora", MB_OK);
+            showFindBar();
             break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
@@ -2500,6 +2504,24 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
     }).detach();
 }
 
+LRESULT CALLBACK findEditProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (browser && message == WM_KEYDOWN) {
+        if (wParam == VK_RETURN) {
+            browser->searchInPage((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+            return 0;
+        }
+        if (wParam == VK_ESCAPE) {
+            browser->hideFindBar();
+            return 0;
+        }
+    }
+    if (browser && browser->findEditOriginalProcedure)
+        return CallWindowProcW(browser->findEditOriginalProcedure, window, message, wParam, lParam);
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
 LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -2802,9 +2824,9 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 1;
 
     case WM_CTLCOLOREDIT:
-        if (state && reinterpret_cast<HWND>(lParam) == state->addressBar) {
+        if (state && (reinterpret_cast<HWND>(lParam) == state->addressBar || reinterpret_cast<HWND>(lParam) == state->findEdit)) {
             HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, RGB(45, 49, 52));
+            SetTextColor(dc, state->darkTheme() ? RGB(240, 240, 242) : RGB(45, 49, 52));
             SetBkColor(dc, state->darkTheme() ? RGB(57, 57, 60) : RGB(240, 242, 243));
             static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(240, 242, 243));
             static HBRUSH darkAddressBrush = CreateSolidBrush(RGB(57, 57, 60));
@@ -2883,8 +2905,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_COMMAND:
-        // Menu items and accelerators arrive with lParam == 0. Ignore
-        // notifications emitted by child controls such as the address bar.
+        if (state && lParam != 0 && state->handleFindControlCommand(
+                LOWORD(wParam), reinterpret_cast<HWND>(lParam), HIWORD(wParam)))
+            return 0;
+        // Menu items and accelerators arrive with lParam == 0.
         if (state && lParam == 0)
             state->handleCommand(LOWORD(wParam));
         return 0;
