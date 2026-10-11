@@ -2641,6 +2641,241 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 };
 
+struct SettingsDialogState {
+    BrowserState* browser { nullptr };
+    HWND themeCombo { nullptr };
+    HWND searchCombo { nullptr };
+    HWND homeEdit { nullptr };
+    HWND downloadsEdit { nullptr };
+};
+
+LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* dialog = reinterpret_cast<SettingsDialogState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        dialog = static_cast<SettingsDialogState*>(createInfo->lpCreateParams);
+        if (!dialog)
+            return FALSE;
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+    }
+
+    switch (message) {
+    case WM_CREATE: {
+        if (!dialog || !dialog->browser)
+            return -1;
+        BrowserState* browser = dialog->browser;
+        HFONT font = browser->uiFont;
+        auto label = [&](const wchar_t* text, int x, int y, int width = 170) {
+            HWND control = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
+                x, y, width, 24, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+            if (font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            return control;
+        };
+        auto combo = [&](int id, int x, int y, int width) {
+            HWND control = CreateWindowExW(0, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                x, y, width, 180, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                GetModuleHandleW(nullptr), nullptr);
+            if (font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            return control;
+        };
+        auto edit = [&](int id, int x, int y, int width, const std::wstring& value) {
+            HWND control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value.c_str(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                x, y, width, 28, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                GetModuleHandleW(nullptr), nullptr);
+            if (font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            return control;
+        };
+
+        label(L"Appearance", 30, 32);
+        dialog->themeCombo = combo(kSettingsThemeCombo, 220, 30, 360);
+        SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic (follow Windows)"));
+        SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Light"));
+        SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Dark"));
+        SendMessageW(dialog->themeCombo, CB_SETCURSEL,
+            browser->themeMode == ThemeMode::System ? 0 : (browser->themeMode == ThemeMode::Light ? 1 : 2), 0);
+
+        label(L"Default search engine", 30, 88);
+        dialog->searchCombo = combo(kSettingsSearchCombo, 220, 86, 360);
+        SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Google"));
+        SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Bing"));
+        SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"DuckDuckGo"));
+        int searchIndex = browser->searchEngine == L"Bing" ? 1 : (browser->searchEngine == L"DuckDuckGo" ? 2 : 0);
+        SendMessageW(dialog->searchCombo, CB_SETCURSEL, searchIndex, 0);
+
+        label(L"Home page", 30, 144);
+        dialog->homeEdit = edit(kSettingsHomePageEdit, 220, 142, 360, browser->homePage);
+        label(L"Downloads folder", 30, 200);
+        const std::wstring downloads = browser->effectiveDownloadsDirectory();
+        dialog->downloadsEdit = edit(kSettingsDownloadsEdit, 220, 198, 270, downloads);
+        HWND browse = CreateWindowExW(0, L"BUTTON", L"Choose…",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            500, 198, 80, 28, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsBrowse)),
+            GetModuleHandleW(nullptr), nullptr);
+        if (font) SendMessageW(browse, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+        label(L"Privacy", 30, 264);
+        label(L"Clear saved browsing history. Bookmarks and downloads are kept.", 220, 264, 390);
+        HWND clearHistory = CreateWindowExW(0, L"BUTTON", L"Clear History",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            220, 292, 130, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsClearHistory)),
+            GetModuleHandleW(nullptr), nullptr);
+        if (font) SendMessageW(clearHistory, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+        HWND save = CreateWindowExW(0, L"BUTTON", L"Save",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            400, 408, 85, 32, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsSave)),
+            GetModuleHandleW(nullptr), nullptr);
+        HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            495, 408, 85, 32, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsCancel)),
+            GetModuleHandleW(nullptr), nullptr);
+        if (font) {
+            SendMessageW(save, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        }
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (!dialog || !dialog->browser)
+            return 0;
+        if (LOWORD(wParam) == kSettingsBrowse) {
+            BROWSEINFOW info { };
+            info.hwndOwner = window;
+            info.lpszTitle = L"Choose the folder for downloads";
+            info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            PIDLIST_ABSOLUTE folder = SHBrowseForFolderW(&info);
+            if (folder) {
+                wchar_t path[MAX_PATH] { };
+                if (SHGetPathFromIDListW(folder, path))
+                    SetWindowTextW(dialog->downloadsEdit, path);
+                CoTaskMemFree(folder);
+            }
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsClearHistory) {
+            dialog->browser->visits.clear();
+            dialog->browser->saveVisitData();
+            dialog->browser->applyTheme();
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsSave) {
+            BrowserState* browser = dialog->browser;
+            const LRESULT theme = SendMessageW(dialog->themeCombo, CB_GETCURSEL, 0, 0);
+            browser->themeMode = theme == 1 ? ThemeMode::Light : (theme == 2 ? ThemeMode::Dark : ThemeMode::System);
+            const LRESULT search = SendMessageW(dialog->searchCombo, CB_GETCURSEL, 0, 0);
+            browser->searchEngine = search == 1 ? L"Bing" : (search == 2 ? L"DuckDuckGo" : L"Google");
+
+            int homeLength = GetWindowTextLengthW(dialog->homeEdit);
+            std::wstring home(static_cast<size_t>(homeLength) + 1, L'\0');
+            GetWindowTextW(dialog->homeEdit, home.data(), homeLength + 1);
+            home.resize(static_cast<size_t>(homeLength));
+            while (!home.empty() && iswspace(home.front())) home.erase(home.begin());
+            while (!home.empty() && iswspace(home.back())) home.pop_back();
+            if (home.empty())
+                home = L"https://www.google.com";
+            else if (home.find(L"://") == std::wstring::npos && home.rfind(L"about:", 0) != 0)
+                home = L"https://" + home;
+            browser->homePage = home;
+
+            int folderLength = GetWindowTextLengthW(dialog->downloadsEdit);
+            std::wstring folder(static_cast<size_t>(folderLength) + 1, L'\0');
+            GetWindowTextW(dialog->downloadsEdit, folder.data(), folderLength + 1);
+            folder.resize(static_cast<size_t>(folderLength));
+            while (!folder.empty() && iswspace(folder.front())) folder.erase(folder.begin());
+            while (!folder.empty() && iswspace(folder.back())) folder.pop_back();
+            browser->downloadLocation = folder;
+            browser->savePreferences();
+            browser->applyTheme();
+            DestroyWindow(window);
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsCancel) {
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+
+    case WM_CTLCOLORDLG:
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+        if (dialog && dialog->browser && dialog->browser->darkTheme()) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, RGB(240, 240, 242));
+            SetBkColor(dc, RGB(38, 38, 40));
+            static HBRUSH darkBrush = CreateSolidBrush(RGB(38, 38, 40));
+            return reinterpret_cast<LRESULT>(darkBrush);
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+
+    case WM_DESTROY:
+        if (dialog && dialog->browser) {
+            HWND owner = dialog->browser->window;
+            dialog->browser->settingsWindow = nullptr;
+            EnableWindow(owner, TRUE);
+            SetForegroundWindow(owner);
+        }
+        return 0;
+
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        delete dialog;
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void openBrowserSettings(BrowserState* browser)
+{
+    if (!browser || !browser->window)
+        return;
+    if (browser->settingsWindow) {
+        SetForegroundWindow(browser->settingsWindow);
+        return;
+    }
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSEXW cls { };
+        cls.cbSize = sizeof(cls);
+        cls.lpfnWndProc = settingsWindowProcedure;
+        cls.hInstance = GetModuleHandleW(nullptr);
+        cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        cls.lpszClassName = L"AuroraSettingsWindow";
+        if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return;
+        classRegistered = true;
+    }
+
+    auto* dialog = new SettingsDialogState { browser };
+    HWND settings = CreateWindowExW(WS_EX_DLGMODALFRAME,
+        L"AuroraSettingsWindow", L"Settings",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 640, 500,
+        browser->window, nullptr, GetModuleHandleW(nullptr), dialog);
+    if (!settings) {
+        delete dialog;
+        return;
+    }
+    browser->settingsWindow = settings;
+    EnableWindow(browser->window, FALSE);
+    RECT ownerRect { };
+    GetWindowRect(browser->window, &ownerRect);
+    SetWindowPos(settings, HWND_TOP,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - 640) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - 500) / 2,
+        640, 500, SWP_SHOWWINDOW);
+    UpdateWindow(settings);
+}
+
 void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
 {
     if (!browser || pageURL.empty())
