@@ -95,6 +95,7 @@ constexpr UINT kMenuAddBookmark = 2017;
 constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
+constexpr UINT kMenuAddReadingList = 2034;
 constexpr UINT kFindPrevious = 2101;
 constexpr UINT kFindNext = 2102;
 constexpr UINT kFindClose = 2103;
@@ -1157,7 +1158,10 @@ struct BrowserState {
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarksMenu), L"Bookmarks");
 
         AppendMenuW(menu, MF_STRING, kMenuDownloads, L"Downloads\tCtrl+I");
-        AppendMenuW(menu, MF_STRING, kMenuReadingList, L"Reading List\tCtrl+Shift+D");
+        HMENU readingListMenu = CreatePopupMenu();
+        AppendMenuW(readingListMenu, MF_STRING, kMenuAddReadingList, L"Add to Reading List\tCtrl+Shift+D");
+        AppendMenuW(readingListMenu, MF_STRING, kMenuReadingList, L"Show Reading List");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(readingListMenu), L"Reading List");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -1748,20 +1752,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     void toggleBookmark()
     {
         auto* tab = active();
-        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank" || tab->activeUrl.rfind(L"about:", 0) == 0) {
+            MessageBoxW(window, L"Open a webpage before adding it to Favorites.", L"Bookmarks", MB_OK | MB_ICONINFORMATION);
             return;
+        }
 
         auto found = std::find_if(bookmarks.begin(), bookmarks.end(), [&](const SavedPage& page) {
             return page.url == tab->activeUrl;
         });
 
-        if (found != bookmarks.end())
+        const bool removed = found != bookmarks.end();
+        if (removed)
             bookmarks.erase(found);
         else
             bookmarks.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
 
         saveSavedPages(bookmarksPath(), bookmarks);
         InvalidateRect(window, nullptr, TRUE);
+        MessageBoxW(window, removed ? L"Removed from Favorites." : L"Added to Favorites.", L"Bookmarks", MB_OK | MB_ICONINFORMATION);
     }
 
     void addReadingList()
@@ -2168,6 +2176,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kMenuBookmarks:
             if (addTab(true))
                 loadBookmarksPage();
+            break;
+        case kMenuAddReadingList:
+            addReadingList();
             break;
         case kMenuReadingList:
             if (addTab(true))
@@ -3137,6 +3148,7 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
     case WM_CTLCOLORDLG:
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORBTN:
         if (dialog && dialog->browser && dialog->browser->darkTheme()) {
             HDC dc = reinterpret_cast<HDC>(wParam);
             SetTextColor(dc, RGB(240, 240, 242));
@@ -3862,13 +3874,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         { FCONTROL, 'L', kCommandAddress },
         { FCONTROL, 'R', kCommandReload },
         { FCONTROL, 'T', kCommandNewTab },
+        { FCONTROL, 'N', kMenuNewWindow },
+        { FCONTROL, 'I', kMenuDownloads },
+        { FCONTROL, 'J', kMenuDownloads },
+        { FCONTROL, VK_OEM_COMMA, kMenuSettings },
         { FCONTROL | FSHIFT, 'P', kMenuNewPrivateWindow },
         { FCONTROL, 'W', kCommandCloseTab },
         { FCONTROL | FSHIFT, 'Q', kMenuQuit },
         { FCONTROL, 'H', kMenuHistory },
         { FCONTROL | FSHIFT, 'B', kMenuBookmarks },
         { FCONTROL, 'D', kMenuAddBookmark },
-        { FCONTROL | FSHIFT, 'D', kMenuReadingList },
+        { FCONTROL | FSHIFT, 'D', kMenuAddReadingList },
         { FCONTROL, 'S', kMenuSavePage },
         { FCONTROL, 'P', kMenuPrint },
         { FCONTROL, 'F', kMenuFindInPage },
