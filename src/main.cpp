@@ -681,7 +681,7 @@ struct BrowserState {
     {
         std::wofstream file(themePath(), std::ios::trunc);
         if (!file) return;
-        file << (themeMode == ThemeMode::Light ? L"light" : themeMode == ThemeMode::Dark ? L"dark" : L"system") << L"\\n";
+        file << (themeMode == ThemeMode::Light ? L"light" : themeMode == ThemeMode::Dark ? L"dark" : L"system") << L'\n';
     }
 
     void applyTheme()
