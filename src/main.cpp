@@ -1294,6 +1294,7 @@ struct BrowserState {
 
     void loadExtensionsPage()
     {
+        loadExtensionScripts();
         auto* tab = active();
         if (!tab)
             return;
