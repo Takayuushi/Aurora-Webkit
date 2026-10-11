@@ -1648,8 +1648,9 @@ search.addEventListener('keydown',e=>{
         }
     }
 
-    void loadLocalHTML(TabState& tab, const std::string& html)
+    void loadLocalHTML(TabState& tab, const std::string& sourceHtml)
     {
+        std::string html = sourceHtml;
         const std::string searchPrefix = searchEngine == L"Bing"
             ? "https://www.bing.com/search?q="
             : (searchEngine == L"DuckDuckGo" ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
