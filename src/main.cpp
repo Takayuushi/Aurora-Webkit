@@ -723,7 +723,9 @@ struct BrowserState {
         return tabs[activeTab].get();
     }
 
-    void loadVisitData()\n    {\n        visits.clear();
+    void loadVisitData()
+    {
+        visits.clear();
         std::ifstream file(historyPath(), std::ios::binary);
         std::string line;
         while (std::getline(file, line)) {
@@ -745,7 +747,9 @@ struct BrowserState {
             } catch (...) {
                 continue;
             }
-        }\n    }\n    void saveVisitData()\n    {\n        std::ofstream file(toUTF8(historyPath()), std::ios::binary | std::ios::trunc);
+        }\n    }\n    void saveVisitData()
+    {
+        std::ofstream file(historyPath(), std::ios::binary | std::ios::trunc);
         if (!file)
             return;
         for (const auto& entry : visits) {
@@ -810,8 +814,10 @@ struct BrowserState {
         return sorted;
     }
 
-    void loadSavedPages()\n    {\n        pages.clear();
-        std::ifstream file(toUTF8(path), std::ios::binary);
+    void loadSavedPages(const std::wstring& path, std::vector<SavedPage>& pages)
+    {
+        pages.clear();
+        std::ifstream file(path, std::ios::binary);
         std::string line;
         while (std::getline(file, line)) {
             if (!line.empty() && line.back() == '\r')
@@ -829,7 +835,9 @@ struct BrowserState {
             } catch (...) {
                 continue;
             }
-        }\n    }\n    void saveSavedPages()\n    {\n        std::ofstream file(toUTF8(path), std::ios::binary | std::ios::trunc);
+        }\n    }\n    void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
         if (!file)
             return;
         for (const auto& page : pages) {
