@@ -40,6 +40,7 @@
 
 #include <shlobj.h>
 #include <shellapi.h>
+#include <winreg.h>
 #include <urlmon.h>
 
 #ifndef EM_SETCUEBANNER
@@ -88,6 +89,9 @@ constexpr UINT kMenuAddBookmark = 2017;
 constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
+constexpr UINT kMenuThemeLight = 2030;
+constexpr UINT kMenuThemeDark = 2031;
+constexpr UINT kMenuThemeSystem = 2032;
 
 constexpr int kTitleBarHeight = 23;
 constexpr int kToolbarHeight = 33;
@@ -312,6 +316,11 @@ std::wstring bookmarksPath()
 std::wstring readingListPath()
 {
     return applicationDataDirectory() + L"\\reading-list.tsv";
+}
+
+std::wstring themePath()
+{
+    return applicationDataDirectory() + L"\\theme.txt";
 }
 
 std::wstring extensionsPath()
@@ -627,6 +636,20 @@ struct TabState {
     std::wstring faviconRequestURL;
 };
 
+enum class ThemeMode { System, Light, Dark };
+
+bool windowsPrefersDarkMode()
+{
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+    LONG result = RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr, reinterpret_cast<LPBYTE>(&value), &size);
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS && value == 0;
+}
+
 struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
@@ -640,6 +663,37 @@ struct BrowserState {
     HMENU bookmarksMenu { nullptr };
     bool sidebarOpen { false };
     int sidebarSection { 0 };
+    ThemeMode themeMode { ThemeMode::System };
+
+    bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
+
+    void loadThemePreference()
+    {
+        std::wifstream file(themePath());
+        std::wstring value;
+        std::getline(file, value);
+        if (value == L"light") themeMode = ThemeMode::Light;
+        else if (value == L"dark") themeMode = ThemeMode::Dark;
+        else themeMode = ThemeMode::System;
+    }
+
+    void saveThemePreference()
+    {
+        std::wofstream file(themePath(), std::ios::trunc);
+        if (!file) return;
+        file << (themeMode == ThemeMode::Light ? L"light" : themeMode == ThemeMode::Dark ? L"dark" : L"system") << L"\\n";
+    }
+
+    void applyTheme()
+    {
+        saveThemePreference();
+        InvalidateRect(window, nullptr, TRUE);
+        if (auto* tab = active()) {
+            // Rebuild only internal pages; ordinary websites retain their own styling.
+            if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+                loadStartPage(*tab);
+        }
+    }
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
     WKRetainPtr<WKWebsiteDataStoreRef> websiteDataStore;
@@ -859,6 +913,7 @@ struct BrowserState {
         );
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
+        loadThemePreference();
         loadVisitData();
         loadSavedPages(bookmarksPath(), bookmarks);
         loadSavedPages(readingListPath(), readingList);
@@ -945,6 +1000,11 @@ struct BrowserState {
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuStartPage, L"Start Page");
+        HMENU appearanceMenu = CreatePopupMenu();
+        AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeLight, L"Light");
+        AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeDark, L"Dark");
+        AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeSystem, L"Automatic (System)");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(appearanceMenu), L"Appearance");
         AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"About Aurora");
 
@@ -955,6 +1015,7 @@ struct BrowserState {
     void loadStartPage(TabState& tab)
     {
         auto frequent = frequentVisits(5);
+        const bool dark = darkTheme();
 
         std::string html = R"HTML(
 <!doctype html>
@@ -964,17 +1025,17 @@ struct BrowserState {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:light;color:#202124}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
-body{min-height:100vh;background:#f5f5f7;color:#202124}
+body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f7") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
 .page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 24px}
-.search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:#fff;color:#202124;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:)HTML" + std::string(dark ? "#2c2c2e" : "#fff") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .search:focus{border-color:#aeb8c7;box-shadow:0 0 0 3px rgba(65,120,220,.12)}
 .search::placeholder{color:#777d84}
 .section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:#5f6368;font-size:13px;font-weight:600}
 .tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
-.tile{width:148px;min-height:106px;border-radius:14px;border:1px solid #e2e4e7;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#202124;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.tile{width:148px;min-height:106px;border-radius:14px;border:1px solid )HTML" + std::string(dark ? "#48484a" : "#e2e4e7") + R"HTML(;background:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;cursor:pointer;transition:background .12s ease,border-color .12s ease}
 .tile:hover{background:#fafbfc;border-color:#cbd0d6}
 .icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:#f0f2f5;color:#42474d;font-weight:600;font-size:16px}
 .name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1748,6 +1809,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             if (auto* tab = active())
                 WKPageSetPageZoomFactor(WKViewGetPage(tab->view.get()), 1.0);
             break;
+        case kMenuThemeLight:
+            themeMode = ThemeMode::Light; applyTheme(); break;
+        case kMenuThemeDark:
+            themeMode = ThemeMode::Dark; applyTheme(); break;
+        case kMenuThemeSystem:
+            themeMode = ThemeMode::System; applyTheme(); break;
         case kMenuStartPage:
             if (auto* tab = active())
                 loadStartPage(*tab);
@@ -2166,16 +2233,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
 
-        HBRUSH pageBrush = CreateSolidBrush(RGB(249, 249, 250));
+        const bool dark = darkTheme();
+        HBRUSH pageBrush = CreateSolidBrush(dark ? RGB(28, 28, 30) : RGB(249, 249, 250));
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(RGB(241, 242, 243));
+        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(241, 242, 243));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(RGB(246, 247, 248));
+        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(246, 247, 248));
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -2209,8 +2277,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
                 titleH - MulDiv(3, dpi, 96)
             };
 
-            HBRUSH tabBrush = CreateSolidBrush(i == activeTab ? RGB(250, 251, 251) : RGB(239, 240, 241));
-            HPEN tabPen = CreatePen(PS_SOLID, 1, i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232));
+            HBRUSH tabBrush = CreateSolidBrush(dark ? (i == activeTab ? RGB(66, 66, 69) : RGB(47, 47, 49)) : (i == activeTab ? RGB(250, 251, 251) : RGB(239, 240, 241)));
+            HPEN tabPen = CreatePen(PS_SOLID, 1, dark ? (i == activeTab ? RGB(91, 91, 95) : RGB(55, 55, 58)) : (i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232)));
             HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
             HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
             RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(8, dpi, 96), MulDiv(8, dpi, 96));
@@ -2236,7 +2304,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             titleText.left = iconRect.right + MulDiv(6, dpi, 96);
             titleText.right -= MulDiv(31, dpi, 96);
             SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(45, 49, 52));
+            SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
             HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
             DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SelectObject(dc, oldFont);
@@ -2264,8 +2332,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         drawSidebar(dc, sidebarRect);
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(RGB(245, 246, 247));
-        HPEN pillPen = CreatePen(PS_SOLID, 1, RGB(208, 212, 214));
+        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(245, 246, 247));
+        HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(208, 212, 214));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
         RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
@@ -2635,9 +2703,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && reinterpret_cast<HWND>(lParam) == state->addressBar) {
             HDC dc = reinterpret_cast<HDC>(wParam);
             SetTextColor(dc, RGB(45, 49, 52));
-            SetBkColor(dc, RGB(240, 242, 243));
-            static HBRUSH addressBrush = CreateSolidBrush(RGB(240, 242, 243));
-            return reinterpret_cast<LRESULT>(addressBrush);
+            SetBkColor(dc, state->darkTheme() ? RGB(57, 57, 60) : RGB(240, 242, 243));
+            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(240, 242, 243));
+            static HBRUSH darkAddressBrush = CreateSolidBrush(RGB(57, 57, 60));
+            return reinterpret_cast<LRESULT>(state->darkTheme() ? darkAddressBrush : lightAddressBrush);
         }
         break;
 
