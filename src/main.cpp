@@ -207,6 +207,7 @@ struct ScriptExtension {
 struct ClearWebsiteDataContext {
     HWND owner { nullptr };
     WKWebsiteDataStoreRef store { nullptr };
+    WKRetainPtr<WKHTTPCookieStoreRef> cookieStore;
 };
 
 struct SavePageRequest {
@@ -3534,12 +3535,12 @@ void websiteDataMemoryCacheCleared(void* context)
 void websiteDataFetchCacheCleared(void* context)
 {
     auto* request = static_cast<ClearWebsiteDataContext*>(context);
-    auto cookies = adoptWK(WKWebsiteDataStoreGetHTTPCookieStore(request->store));
-    if (!cookies) {
+    request->cookieStore = adoptWK(WKWebsiteDataStoreGetHTTPCookieStore(request->store));
+    if (!request->cookieStore) {
         websiteDataCleared(context);
         return;
     }
-    WKHTTPCookieStoreDeleteAllCookies(cookies.get(), context, websiteDataCleared);
+    WKHTTPCookieStoreDeleteAllCookies(request->cookieStore.get(), context, websiteDataCleared);
 }
 
 void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
