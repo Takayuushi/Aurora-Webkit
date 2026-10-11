@@ -1445,9 +1445,7 @@ search.addEventListener('keydown',e=>{
 </body></html>
 )HTML";
 
-        auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
-        auto baseURL = createWKURL(L"about:blank");
-        WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
+        loadLocalHTML(tab, html);
 
         tab.title = L"New Tab";
         tab.activeUrl.clear();
