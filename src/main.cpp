@@ -147,6 +147,7 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void printPageCountCompleted(WKRect*, uint32_t, double, WKErrorRef, void*);
+void printPDFDataCompleted(WKDataRef, WKErrorRef, void*);
 
 struct FaviconResult {
     std::wstring url;
@@ -1741,6 +1742,81 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         loadHistoryPage();
     }
 
+    void savePageAs()
+    {
+        auto* tab = active();
+        if (!tab || !tab->activeUrl.size() || tab->activeUrl == L"about:blank" || tab->activeUrl.rfind(L"about:", 0) == 0) {
+            MessageBoxW(window, L"Open a webpage before saving it.", L"Save Page As", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        std::wstring filename = tab->title.empty() ? L"Webpage" : tab->title;
+        for (auto& ch : filename) {
+            if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
+                ch = L'_';
+        }
+        filename += L".mhtml";
+
+        std::vector<wchar_t> path(32768, L'\\0');
+        wcsncpy_s(path.data(), path.size(), filename.c_str(), _TRUNCATE);
+        const wchar_t filter[] = L"Web archive (*.mhtml)\\0*.mhtml\\0All files (*.*)\\0*.*\\0\\0";
+        OPENFILENAMEW dialog { };
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window;
+        dialog.lpstrFilter = filter;
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.lpstrDefExt = L"mhtml";
+        dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&dialog))
+            return;
+
+        auto* request = new SavePageRequest;
+        request->owner = window;
+        request->path = path.data();
+        request->page = WKViewGetPage(tab->view.get());
+        request->frame = WKPageGetMainFrame(request->page);
+        WKPageGetContentsAsMHTMLData(request->page, request, savePageDataCompleted);
+    }
+
+    void printPage()
+    {
+        auto* tab = active();
+        if (!tab || !tab->activeUrl.size() || tab->activeUrl == L"about:blank" || tab->activeUrl.rfind(L"about:", 0) == 0) {
+            MessageBoxW(window, L"Open a webpage before printing.", L"Print", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        std::wstring filename = tab->title.empty() ? L"Webpage" : tab->title;
+        for (auto& ch : filename) {
+            if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
+                ch = L'_';
+        }
+        filename += L".pdf";
+
+        std::vector<wchar_t> path(32768, L'\\0');
+        wcsncpy_s(path.data(), path.size(), filename.c_str(), _TRUNCATE);
+        const wchar_t filter[] = L"PDF document (*.pdf)\\0*.pdf\\0All files (*.*)\\0*.*\\0\\0";
+        OPENFILENAMEW dialog { };
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window;
+        dialog.lpstrFilter = filter;
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.lpstrDefExt = L"pdf";
+        dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&dialog))
+            return;
+
+        auto* request = new SavePageRequest;
+        request->owner = window;
+        request->path = path.data();
+        request->page = WKViewGetPage(tab->view.get());
+        request->frame = WKPageGetMainFrame(request->page);
+        request->printInfo = { 1.0f, 595.0f, 842.0f };
+        WKPageComputePagesForPrinting(request->page, request->frame, request->printInfo, printPageCountCompleted, request);
+    }
+
     void showShareMenu()
     {
         HMENU shareMenu = CreatePopupMenu();
@@ -2059,10 +2135,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 loadDownloadsPage();
             break;
         case kMenuSavePage:
-            MessageBoxW(window, L"Save Page As will be connected to WebKit downloads in the next browser-services pass.", L"Aurora", MB_OK);
+            savePageAs();
             break;
         case kMenuPrint:
-            MessageBoxW(window, L"Printing will be connected to the Windows print pipeline in a later pass.", L"Aurora", MB_OK);
+            printPage();
             break;
         case kMenuFindInPage:
             showFindBar();
@@ -2770,9 +2846,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
 std::vector<std::unique_ptr<BrowserState>> gAdditionalBrowserWindows;
 
-bool openNewBrowserWindow(BrowserState*)
+bool openNewBrowserWindow(BrowserState* source, bool privateMode)
 {
     auto browser = std::make_unique<BrowserState>();
+    browser->privateBrowsing = privateMode;
+    if (source) {
+        browser->themeMode = source->themeMode;
+        browser->homePage = source->homePage;
+        browser->searchEngine = source->searchEngine;
+        browser->downloadLocation = source->downloadLocation;
+    }
     HWND window = CreateWindowExW(
         WS_EX_APPWINDOW,
         windowClassName,
@@ -3036,6 +3119,89 @@ void openBrowserSettings(BrowserState* browser)
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - 500) / 2,
         640, 500, SWP_SHOWWINDOW);
     UpdateWindow(settings);
+}
+
+static bool writeDataToFile(const std::wstring& path, WKDataRef data)
+{
+    if (!data)
+        return false;
+    const unsigned char* bytes = WKDataGetBytes(data);
+    size_t remaining = WKDataGetSize(data);
+    if (!bytes || !remaining)
+        return false;
+
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    bool ok = true;
+    while (remaining) {
+        DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, 1u << 20));
+        DWORD written = 0;
+        if (!WriteFile(file, bytes, chunk, &written, nullptr) || !written) {
+            ok = false;
+            break;
+        }
+        bytes += written;
+        remaining -= written;
+    }
+    CloseHandle(file);
+    if (!ok)
+        DeleteFileW(path.c_str());
+    return ok;
+}
+
+void savePageDataCompleted(WKDataRef data, WKErrorRef error, void* context)
+{
+    std::unique_ptr<SavePageRequest> request(static_cast<SavePageRequest*>(context));
+    if (!request)
+        return;
+
+    if (error || !writeDataToFile(request->path, data)) {
+        if (IsWindow(request->owner))
+            MessageBoxW(request->owner, L"WebKit could not create the web archive. Try again after the page finishes loading.", L"Save Page As", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    if (IsWindow(request->owner))
+        MessageBoxW(request->owner, (L"Page saved to:\\n" + request->path).c_str(), L"Save Page As", MB_OK | MB_ICONINFORMATION);
+}
+
+void printPDFDataCompleted(WKDataRef data, WKErrorRef error, void* context)
+{
+    std::unique_ptr<SavePageRequest> request(static_cast<SavePageRequest*>(context));
+    if (!request)
+        return;
+
+    WKPageEndPrinting(request->page);
+    if (error || !writeDataToFile(request->path, data)) {
+        if (IsWindow(request->owner))
+            MessageBoxW(request->owner, L"WebKit could not create a PDF for this page.", L"Print", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // Use the registered Windows PDF handler's print verb as the platform equivalent
+    // of Safari's print panel. The saved PDF remains available at the chosen path.
+    HINSTANCE result = ShellExecuteW(request->owner, L"print", request->path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32 && IsWindow(request->owner))
+        MessageBoxW(request->owner, L"The page was saved as a PDF, but Windows has no PDF print handler configured. Open the PDF and print it from your PDF reader.", L"Print", MB_OK | MB_ICONINFORMATION);
+}
+
+void printPageCountCompleted(WKRect*, uint32_t pageCount, double, WKErrorRef error, void* context)
+{
+    auto* request = static_cast<SavePageRequest*>(context);
+    if (!request)
+        return;
+
+    if (error || pageCount == 0) {
+        if (IsWindow(request->owner))
+            MessageBoxW(request->owner, L"WebKit could not prepare this page for printing.", L"Print", MB_OK | MB_ICONWARNING);
+        delete request;
+        return;
+    }
+
+    WKPageBeginPrinting(request->page, request->frame, request->printInfo);
+    WKPageDrawPagesToPDF(request->page, request->frame, request->printInfo, 0, pageCount, printPDFDataCompleted, request);
 }
 
 void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
