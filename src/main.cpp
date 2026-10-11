@@ -1322,14 +1322,27 @@ search.addEventListener('keydown',e=>{
 
     std::string savedPagesHTML(const char* heading, const std::vector<SavedPage>& pages)
     {
+        const bool dark = darkTheme();
         std::string html = R"HTML(
-<!doctype html><html><head><meta charset="utf-8"><title>Aurora</title>
+<!doctype html><html><head><meta charset="utf-8"><title>Browser</title>
 <style>
-body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans-serif}
+)HTML";
+        html += dark ? R"CSS(
+:root{color-scheme:dark}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+.wrap{max-width:980px;margin:auto;padding:54px 32px}
+.item{padding:16px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
+.name{font-size:15px}.url{font-size:12px;color:#a1a1a6;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{padding:22px;color:#a1a1a6}
+)CSS" : R"CSS(
+:root{color-scheme:light}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 .wrap{max-width:980px;margin:auto;padding:54px 32px}
 .item{padding:16px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
 .name{font-size:15px}.url{font-size:12px;color:#70777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{padding:22px;color:#777}
+)CSS";
+        html += R"HTML(
 </style></head><body><main class="wrap"><h1>)HTML";
         html += heading;
         html += R"HTML(</h1>)HTML";
@@ -1373,14 +1386,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             return;
 
         tab->internalPage = L"downloads";
-        std::string html = "<!doctype html><html><head><meta charset='utf-8'><title>Aurora Downloads</title>"
-            "<style>body{margin:0;background:#f5f6f7;color:#202428;font-family:Segoe UI,Arial,sans-serif}"
+        const bool dark = darkTheme();
+        tab->internalPage = L"downloads";
+        std::string html = "<!doctype html><html><head><meta charset='utf-8'><title>Downloads</title>"
+            "<style>:root{color-scheme:" + std::string(dark ? "dark" : "light") + "}body{margin:0;background:"
+            + (dark ? "#1c1c1e" : "#f5f6f7") + ";color:" + (dark ? "#f5f5f7" : "#202428")
+            + ";font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif}"
             ".wrap{max-width:980px;margin:auto;padding:52px 32px}"
             "h1{font-size:30px;font-weight:500;margin:0 0 24px}"
-            ".item{background:#fff;border:1px solid #e1e4e6;border-radius:12px;padding:16px 18px;margin:10px 0}"
-            ".name{font-size:15px;font-weight:500}.path{font-size:12px;color:#73777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-            ".meta{font-size:12px;color:#666;margin-top:10px}.bar{height:6px;background:#e2e5e7;border-radius:3px;overflow:hidden;margin-top:8px}.fill{height:100%;background:#6b91c8}"
-            ".empty{color:#777}</style></head><body><main class='wrap'><h1>Downloads</h1>";
+            ".item{background:" + std::string(dark ? "#2c2c2e" : "#fff") + ";border:1px solid " + (dark ? "#48484a" : "#e1e4e6")
+            + ";border-radius:12px;padding:16px 18px;margin:10px 0}"
+            ".name{font-size:15px;font-weight:500}.path{font-size:12px;color:" + (dark ? "#a1a1a6" : "#73777d") + ";margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".meta{font-size:12px;color:" + (dark ? "#b8b8bd" : "#666") + ";margin-top:10px}.bar{height:6px;background:"
+            + (dark ? "#48484a" : "#e2e5e7") + ";border-radius:3px;overflow:hidden;margin-top:8px}.fill{height:100%;background:#6b91c8}"
+            ".empty{color:" + (dark ? "#a1a1a6" : "#777") + "}</style></head><body><main class='wrap'><h1>Downloads</h1>";
 
         if (downloads.empty()) {
             html += "<div class='empty'>No downloads yet.</div>";
@@ -1477,13 +1496,25 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         });
         tab->internalPage = L"history";
 
+        const bool dark = darkTheme();
         std::string html = R"HTML(
-<!doctype html><html><head><meta charset="utf-8"><title>Aurora History</title>
+<!doctype html><html><head><meta charset="utf-8"><title>History</title>
 <style>
-body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans-serif}
+)HTML";
+        html += dark ? R"CSS(
+:root{color-scheme:dark}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+.item{padding:15px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:8px 0}
+.name{font-size:15px}.meta{font-size:12px;color:#a1a1a6;margin-top:5px}
+.item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#a1a1a6}
+)CSS" : R"CSS(
+:root{color-scheme:light}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 .item{padding:15px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:8px 0}
 .name{font-size:15px}.meta{font-size:12px;color:#73777d;margin-top:5px}
 .item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#777}
+)CSS";
+        html += R"HTML(
 </style></head><body><main style="max-width:980px;margin:auto;padding:54px 32px"><h1>History</h1>)HTML";
 
         if (sorted.empty()) {
