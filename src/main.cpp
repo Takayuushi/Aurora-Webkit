@@ -40,6 +40,7 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <ctime>
 #include <thread>
 #include <utility>
@@ -3294,7 +3295,8 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
                 return 0;
             auto* context = new ClearWebsiteDataContext {
                 dialog->browser->window,
-                dialog->browser->websiteDataStore.get()
+                dialog->browser->websiteDataStore.get(),
+                { }
             };
             WKWebsiteDataStoreClearStorage(context->store, context, websiteDataStorageCleared);
             return 0;
