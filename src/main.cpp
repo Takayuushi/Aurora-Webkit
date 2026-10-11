@@ -635,6 +635,7 @@ struct TabState {
     WKRetainPtr<WKViewRef> view;
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
+    std::wstring internalPage { L"start" };
     std::wstring lastRecordedUrl;
     std::wstring fallbackURL;
     HICON favicon { nullptr };
@@ -699,11 +700,14 @@ struct BrowserState {
     {
         saveThemePreference();
         InvalidateRect(window, nullptr, TRUE);
-        if (auto* tab = active()) {
-            // Rebuild only internal pages; ordinary websites retain their own styling.
-            if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
-                loadStartPage(*tab);
-        }
+        auto* tab = active();
+        if (!tab)
+            return;
+        if (tab->internalPage == L"start") loadStartPage(*tab);
+        else if (tab->internalPage == L"bookmarks") loadBookmarksPage();
+        else if (tab->internalPage == L"reading-list") loadReadingListPage();
+        else if (tab->internalPage == L"history") loadHistoryPage();
+        else if (tab->internalPage == L"downloads") loadDownloadsPage();
     }
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
@@ -999,6 +1003,7 @@ struct BrowserState {
 
     void loadStartPage(TabState& tab)
     {
+        tab.internalPage = L"start";
         auto frequent = frequentVisits(5);
         const bool dark = darkTheme();
 
@@ -1117,6 +1122,7 @@ search.addEventListener('keydown',e=>{
 
     void loadURL(TabState& tab, const std::wstring& value)
     {
+        tab.internalPage.clear();
         auto page = WKViewGetPage(tab.view.get());
         if (!page)
             return;
@@ -1346,14 +1352,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
 
     void loadBookmarksPage()
     {
-        if (auto* tab = active())
+        if (auto* tab = active()) {
+            tab->internalPage = L"bookmarks";
             loadLocalHTML(*tab, savedPagesHTML("Bookmarks", bookmarks));
+        }
     }
 
     void loadReadingListPage()
     {
-        if (auto* tab = active())
+        if (auto* tab = active()) {
+            tab->internalPage = L"reading-list";
             loadLocalHTML(*tab, savedPagesHTML("Reading List", readingList));
+        }
     }
 
     void loadDownloadsPage()
@@ -1362,6 +1372,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         if (!tab)
             return;
 
+        tab->internalPage = L"downloads";
         std::string html = "<!doctype html><html><head><meta charset='utf-8'><title>Aurora Downloads</title>"
             "<style>body{margin:0;background:#f5f6f7;color:#202428;font-family:Segoe UI,Arial,sans-serif}"
             ".wrap{max-width:980px;margin:auto;padding:52px 32px}"
@@ -1464,6 +1475,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) {
             return a.lastVisited > b.lastVisited;
         });
+        tab->internalPage = L"history";
 
         std::string html = R"HTML(
 <!doctype html><html><head><meta charset="utf-8"><title>Aurora History</title>
