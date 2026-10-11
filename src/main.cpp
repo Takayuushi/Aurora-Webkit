@@ -33,6 +33,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <ctime>
@@ -98,6 +99,11 @@ constexpr UINT kMenuThemeLight = 2030;
 constexpr UINT kMenuThemeDark = 2031;
 constexpr UINT kMenuThemeSystem = 2032;
 constexpr UINT kMenuHomePage = 2033;
+constexpr UINT kShareCopyLink = 2201;
+constexpr UINT kShareEmailLink = 2202;
+constexpr UINT kPrivacySiteInfo = 2210;
+constexpr UINT kPrivacyShowHistory = 2211;
+constexpr UINT kPrivacyClearHistory = 2212;
 constexpr UINT kSettingsThemeCombo = 7101;
 constexpr UINT kSettingsSearchCombo = 7102;
 constexpr UINT kSettingsHomePageEdit = 7103;
@@ -1703,6 +1709,63 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         loadHistoryPage();
     }
 
+    void showShareMenu()
+    {
+        HMENU shareMenu = CreatePopupMenu();
+        if (!shareMenu)
+            return;
+        AppendMenuW(shareMenu, MF_STRING, kShareCopyLink, L"Copy Link");
+        AppendMenuW(shareMenu, MF_STRING, kShareEmailLink, L"Email Link");
+        AppendMenuW(shareMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(shareMenu, MF_STRING, kMenuAddBookmark, L"Add Bookmark");
+        RECT client { };
+        GetClientRect(window, &client);
+        POINT point { client.right - scaleForDpi(window, 190), titleBarHeight() + toolbarHeight() };
+        ClientToScreen(window, &point);
+        TrackPopupMenu(shareMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        DestroyMenu(shareMenu);
+    }
+
+    void copyActiveUrl()
+    {
+        auto* tab = active();
+        if (!tab || tab->activeUrl.empty())
+            return;
+        if (!OpenClipboard(window))
+            return;
+        EmptyClipboard();
+        const SIZE_T bytes = (tab->activeUrl.size() + 1) * sizeof(wchar_t);
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (memory) {
+            void* target = GlobalLock(memory);
+            if (target) {
+                memcpy(target, tab->activeUrl.c_str(), bytes);
+                GlobalUnlock(memory);
+                if (!SetClipboardData(CF_UNICODETEXT, memory))
+                    GlobalFree(memory);
+            } else {
+                GlobalFree(memory);
+            }
+        }
+        CloseClipboard();
+    }
+
+    void showPrivacyMenu()
+    {
+        HMENU privacyMenu = CreatePopupMenu();
+        if (!privacyMenu)
+            return;
+        AppendMenuW(privacyMenu, MF_STRING, kPrivacySiteInfo, L"Connection Information");
+        AppendMenuW(privacyMenu, MF_STRING, kPrivacyShowHistory, L"Show History");
+        AppendMenuW(privacyMenu, MF_STRING, kPrivacyClearHistory, L"Clear History");
+        RECT client { };
+        GetClientRect(window, &client);
+        POINT point { scaleForDpi(window, 50), titleBarHeight() + toolbarHeight() };
+        ClientToScreen(window, &point);
+        TrackPopupMenu(privacyMenu, TPM_LEFTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        DestroyMenu(privacyMenu);
+    }
+
     void showMenu()
     {
         if (bookmarksMenu) {
@@ -1870,7 +1933,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             InvalidateRect(window, nullptr, TRUE);
             break;
         case kCommandPrivacy:
-            MessageBoxW(window, L"Privacy controls will be connected here in the privacy-services pass.", L"Privacy — Aurora", MB_OK);
+            showPrivacyMenu();
             break;
         case kCommandReader:
             if (auto* tab = active()) {
@@ -1892,7 +1955,29 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             closeActiveTab();
             break;
         case kCommandShare:
-            MessageBoxW(window, L"Share is reserved for the next browser-services pass.", L"Aurora", MB_OK);
+            showShareMenu();
+            break;
+        case kShareCopyLink:
+            copyActiveUrl();
+            break;
+        case kShareEmailLink:
+            if (auto* tab = active()) {
+                std::wstring mailto = L"mailto:?body=" + percentEncode(tab->activeUrl);
+                ShellExecuteW(window, L"open", mailto.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            break;
+        case kPrivacySiteInfo:
+            if (auto* tab = active()) {
+                const bool secure = tab->activeUrl.rfind(L"https://", 0) == 0;
+                const wchar_t* prefix = secure ? L"Secure connection (HTTPS).\n\n" : L"This page is not using HTTPS.\n\n";
+                MessageBoxW(window, (std::wstring(prefix) + tab->activeUrl).c_str(), L"Connection Information", MB_OK | (secure ? MB_ICONINFORMATION : MB_ICONWARNING));
+            }
+            break;
+        case kPrivacyShowHistory:
+            if (addTab(true)) loadHistoryPage();
+            break;
+        case kPrivacyClearHistory:
+            clearHistory();
             break;
         case kCommandDownloads:
             showDownloadsMenu();
