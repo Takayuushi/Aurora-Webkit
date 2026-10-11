@@ -1244,6 +1244,7 @@ struct BrowserState {
         if (!webURL || tab->lastExtensionsUrl == tab->activeUrl)
             return;
 
+        loadExtensionScripts();
         tab->lastExtensionsUrl = tab->activeUrl;
         for (const auto& extension : extensionScripts) {
             const std::string source = toUTF8(extension.source);
@@ -2443,7 +2444,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 WKPageHideFindUI(WKViewGetPage(tab->view.get()));
             return;
         }
-        std::wstring query(static_cast<size_t>(length) + 1, L'\\0');
+        std::wstring query(static_cast<size_t>(length) + 1, L'\0');
         GetWindowTextW(findEdit, query.data(), length + 1);
         query.resize(static_cast<size_t>(length));
         const std::string utf8 = toUTF8(query);
