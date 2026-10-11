@@ -96,6 +96,7 @@ constexpr UINT kMenuReadingList = 2018;
 constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
 constexpr UINT kMenuAddReadingList = 2034;
+constexpr UINT kMenuOpenExtensionsFolder = 2035;
 constexpr UINT kFindPrevious = 2101;
 constexpr UINT kFindNext = 2102;
 constexpr UINT kFindClose = 2103;
@@ -189,6 +190,11 @@ struct SavedPage {
     std::wstring url;
     std::wstring title;
     long long added { 0 };
+};
+
+struct ScriptExtension {
+    std::wstring filename;
+    std::wstring source;
 };
 
 struct SavePageRequest {
@@ -687,6 +693,7 @@ struct TabState {
     bool hasInternalThemeSnapshot { false };
     bool internalDarkTheme { false };
     std::wstring lastRecordedUrl;
+    std::wstring lastExtensionsUrl;
     std::wstring fallbackURL;
     HICON favicon { nullptr };
     std::wstring faviconRequestURL;
@@ -849,6 +856,7 @@ struct BrowserState {
             else if (tab.internalPage == L"bookmarks") loadBookmarksPage();
             else if (tab.internalPage == L"reading-list") loadReadingListPage();
             else if (tab.internalPage == L"history") loadHistoryPage();
+            else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
         }
         if (!tabs.empty())
@@ -875,7 +883,7 @@ struct BrowserState {
     std::vector<VisitEntry> visits;
     std::vector<SavedPage> bookmarks;
     std::vector<SavedPage> readingList;
-    std::vector<std::wstring> extensionScripts;
+    std::vector<ScriptExtension> extensionScripts;
     std::vector<std::unique_ptr<TabState>> retiredTabs;
     std::vector<DownloadEntry> downloads;
     size_t activeTab { 0 };
@@ -1089,6 +1097,7 @@ struct BrowserState {
         loadVisitData();
         loadSavedPages(bookmarksPath(), bookmarks);
         loadSavedPages(readingListPath(), readingList);
+        loadExtensionScripts();
         createAddressBar();
         createMenu();
 
@@ -1183,11 +1192,91 @@ struct BrowserState {
         AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeDark, L"Dark");
         AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeSystem, L"Automatic (System)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(appearanceMenu), L"Appearance");
+        HMENU extensionMenu = CreatePopupMenu();
+        AppendMenuW(extensionMenu, MF_STRING, kMenuExtensions, L"Manage Extensions");
+        AppendMenuW(extensionMenu, MF_STRING, kMenuOpenExtensionsFolder, L"Open Extensions Folder");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(extensionMenu), L"Extensions");
         AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"About Aurora");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit Aurora\tCtrl+Shift+Q");
+    }
+
+    void loadExtensionScripts()
+    {
+        extensionScripts.clear();
+        const std::wstring directory = extensionsPath();
+        CreateDirectoryW(directory.c_str(), nullptr);
+        const std::wstring pattern = directory + L"\\*.js";
+        WIN32_FIND_DATAW entry { };
+        HANDLE search = FindFirstFileW(pattern.c_str(), &entry);
+        if (search == INVALID_HANDLE_VALUE)
+            return;
+
+        do {
+            if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            const std::wstring path = directory + L"\\" + entry.cFileName;
+            std::ifstream file(path, std::ios::binary);
+            if (!file)
+                continue;
+            std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            std::wstring source = fromUTF8(bytes);
+            if (!source.empty())
+                extensionScripts.push_back({ entry.cFileName, std::move(source) });
+        } while (FindNextFileW(search, &entry));
+        FindClose(search);
+    }
+
+    void openExtensionsFolder()
+    {
+        const std::wstring directory = extensionsPath();
+        CreateDirectoryW(directory.c_str(), nullptr);
+        ShellExecuteW(window, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    void runExtensionScripts(TabState* tab)
+    {
+        if (!tab || tab->browser != this || privateBrowsing || tab->activeUrl.empty())
+            return;
+        const bool webURL = tab->activeUrl.rfind(L"https://", 0) == 0 || tab->activeUrl.rfind(L"http://", 0) == 0;
+        if (!webURL || tab->lastExtensionsUrl == tab->activeUrl)
+            return;
+
+        tab->lastExtensionsUrl = tab->activeUrl;
+        for (const auto& extension : extensionScripts) {
+            const std::string source = toUTF8(extension.source);
+            if (source.empty())
+                continue;
+            auto script = adoptWK(WKStringCreateWithUTF8CString(source.c_str()));
+            if (script)
+                WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), script.get(), nullptr, nullptr);
+        }
+    }
+
+    void loadExtensionsPage()
+    {
+        auto* tab = active();
+        if (!tab)
+            return;
+        tab->internalPage = L"extensions";
+        tab->hasInternalThemeSnapshot = true;
+        tab->internalDarkTheme = darkTheme();
+        const bool dark = darkTheme();
+        std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Extensions</title><style>)HTML";
+        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
+        html += R"HTML(</style></head><body><main style="max-width:900px;margin:auto;padding:48px 28px"><h1>Extensions</h1><p class="muted">Aurora supports local JavaScript user scripts. Put trusted .js files in the Extensions folder, then reload a page. Scripts run on regular HTTP/HTTPS pages and are disabled in Private Browsing.</p><p>)HTML";
+        html += "Installed scripts: " + std::to_string(extensionScripts.size());
+        html += "</p>";
+        if (extensionScripts.empty())
+            html += "<div class=\"item\">No scripts installed yet. Choose Extensions → Open Extensions Folder to add a .js file.</div>";
+        else {
+            for (const auto& extension : extensionScripts)
+                html += "<div class=\"item\"><strong>" + toUTF8(htmlEscape(extension.filename)) + "</strong><p class=\"muted\">Enabled on regular web pages</p></div>";
+        }
+        html += "</main></body></html>";
+        loadLocalHTML(*tab, html);
     }
 
     void loadStartPage(TabState& tab)
@@ -2223,6 +2312,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             themeMode = ThemeMode::Dark; applyTheme(); break;
         case kMenuThemeSystem:
             themeMode = ThemeMode::System; applyTheme(); break;
+        case kMenuExtensions:
+            if (addTab(true))
+                loadExtensionsPage();
+            break;
+        case kMenuOpenExtensionsFolder:
+            openExtensionsFolder();
+            break;
         case kMenuStartPage:
             if (auto* tab = active())
                 loadStartPage(*tab);
@@ -3522,7 +3618,10 @@ void didChangeIsLoading(const void* clientInfo)
         return;
 
     auto page = WKViewGetPage(tab->view.get());
+    if (page && WKPageGetEstimatedProgress(page) < 1.0)
+        tab->lastExtensionsUrl.clear();
     if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        tab->browser->runExtensionScripts(tab);
         auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!url.empty()
             && (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)
