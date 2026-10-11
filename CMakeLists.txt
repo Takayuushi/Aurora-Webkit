@@ -44,6 +44,8 @@ function(_aurora_finish_webkit_target)
         user32
         shell32
         comdlg32
+        advapi32
+        ole32
         urlmon
     )
 
