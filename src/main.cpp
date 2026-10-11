@@ -1212,7 +1212,7 @@ search.addEventListener('keydown',e=>{
  if(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value) || /^www\./i.test(value) || /^[^ \t]+\.[^ \t]+$/.test(value))
    location.href=value.includes('://')?value:'https://'+value;
  else
-   location.href='https://www.google.com/search?q='+encodeURIComponent(value);
+   location.href='__AURORA_SEARCH_PREFIX__'+encodeURIComponent(value);
 });
 </script>
 </body></html>
@@ -1425,6 +1425,14 @@ search.addEventListener('keydown',e=>{
 
     void loadLocalHTML(TabState& tab, const std::string& html)
     {
+        const std::string searchPrefix = searchEngine == L"Bing"
+            ? "https://www.bing.com/search?q="
+            : (searchEngine == L"DuckDuckGo" ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
+        const std::string searchToken = "__AURORA_SEARCH_PREFIX__";
+        const size_t searchPosition = html.find(searchToken);
+        if (searchPosition != std::string::npos)
+            html.replace(searchPosition, searchToken.size(), searchPrefix);
+
         auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
         auto baseURL = createWKURL(L"about:blank");
         WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
@@ -3319,6 +3327,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // Menu items and accelerators arrive with lParam == 0.
         if (state && lParam == 0)
             state->handleCommand(LOWORD(wParam));
+        return 0;
+
+    case WM_SETTINGCHANGE:
+    case WM_THEMECHANGED:
+        if (state && state->themeMode == ThemeMode::System)
+            state->applyTheme();
         return 0;
 
     case WM_SIZE:
