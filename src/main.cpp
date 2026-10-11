@@ -96,6 +96,15 @@ constexpr UINT kFindClose = 2103;
 constexpr UINT kMenuThemeLight = 2030;
 constexpr UINT kMenuThemeDark = 2031;
 constexpr UINT kMenuThemeSystem = 2032;
+constexpr UINT kMenuHomePage = 2033;
+constexpr UINT kSettingsThemeCombo = 7101;
+constexpr UINT kSettingsSearchCombo = 7102;
+constexpr UINT kSettingsHomePageEdit = 7103;
+constexpr UINT kSettingsDownloadsEdit = 7104;
+constexpr UINT kSettingsBrowse = 7105;
+constexpr UINT kSettingsSave = 7106;
+constexpr UINT kSettingsCancel = 7107;
+constexpr UINT kSettingsClearHistory = 7108;
 
 constexpr int kTitleBarHeight = 23;
 constexpr int kToolbarHeight = 33;
@@ -122,6 +131,7 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
+void openBrowserSettings(BrowserState*);
 
 struct FaviconResult {
     std::wstring url;
@@ -325,6 +335,11 @@ std::wstring readingListPath()
 std::wstring themePath()
 {
     return applicationDataDirectory() + L"\\theme.txt";
+}
+
+std::wstring preferencesPath()
+{
+    return applicationDataDirectory() + L"\\preferences.tsv";
 }
 
 std::wstring extensionsPath()
@@ -670,6 +685,7 @@ struct BrowserState {
     HWND findNextButton { nullptr };
     HWND findCloseButton { nullptr };
     bool findBarVisible { false };
+    HWND settingsWindow { nullptr };
 
     HFONT uiFont { nullptr };
     HBRUSH addressBarBrush { nullptr };
@@ -678,8 +694,63 @@ struct BrowserState {
     bool sidebarOpen { false };
     int sidebarSection { 0 };
     ThemeMode themeMode { ThemeMode::System };
+    std::wstring homePage { L"https://www.google.com" };
+    std::wstring searchEngine { L"Google" };
+    std::wstring downloadLocation;
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
+
+    void loadPreferences()
+    {
+        std::ifstream file(preferencesPath(), std::ios::binary);
+        std::string line;
+        while (std::getline(file, line)) {
+            const size_t split = line.find('\t');
+            if (split == std::string::npos)
+                continue;
+            const std::string key = line.substr(0, split);
+            const std::wstring value = fromUTF8(line.substr(split + 1));
+            if (key == "home")
+                homePage = value;
+            else if (key == "search" && (value == L"Google" || value == L"Bing" || value == L"DuckDuckGo"))
+                searchEngine = value;
+            else if (key == "downloads")
+                downloadLocation = value;
+        }
+        if (homePage.empty())
+            homePage = L"https://www.google.com";
+    }
+
+    void savePreferences()
+    {
+        std::ofstream file(preferencesPath(), std::ios::binary | std::ios::trunc);
+        if (!file)
+            return;
+        std::wstring safeHome = homePage;
+        std::wstring safeSearch = searchEngine;
+        std::wstring safeDownloads = downloadLocation;
+        replaceTabsAndNewlines(safeHome);
+        replaceTabsAndNewlines(safeSearch);
+        replaceTabsAndNewlines(safeDownloads);
+        file << "home\t" << toUTF8(safeHome) << '\n'
+             << "search\t" << toUTF8(safeSearch) << '\n'
+             << "downloads\t" << toUTF8(safeDownloads) << '\n';
+    }
+
+    std::wstring effectiveDownloadsDirectory() const
+    {
+        return downloadLocation.empty() ? downloadsDirectory() : downloadLocation;
+    }
+
+    std::wstring searchURL(const std::wstring& query) const
+    {
+        const std::wstring encoded = percentEncode(query);
+        if (searchEngine == L"Bing")
+            return L"https://www.bing.com/search?q=" + encoded;
+        if (searchEngine == L"DuckDuckGo")
+            return L"https://duckduckgo.com/?q=" + encoded;
+        return L"https://www.google.com/search?q=" + encoded;
+    }
 
     void loadThemePreference()
     {
@@ -934,6 +1005,7 @@ struct BrowserState {
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
         loadThemePreference();
+        loadPreferences();
         loadVisitData();
         loadSavedPages(bookmarksPath(), bookmarks);
         loadSavedPages(readingListPath(), readingList);
@@ -1022,6 +1094,7 @@ struct BrowserState {
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuStartPage, L"Start Page");
+        AppendMenuW(menu, MF_STRING, kMenuHomePage, L"Home Page");
         HMENU appearanceMenu = CreatePopupMenu();
         AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeLight, L"Light");
         AppendMenuW(appearanceMenu, MF_STRING, kMenuThemeDark, L"Dark");
@@ -1208,7 +1281,7 @@ search.addEventListener('keydown',e=>{
             }
         }
         else
-            loadURL(*tab, L"https://www.google.com/search?q=" + percentEncode(cleaned));
+            loadURL(*tab, searchURL(cleaned));
 
         SetFocus(WKViewGetWindow(tab->view.get()));
     }
@@ -1894,8 +1967,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (auto* tab = active())
                 loadStartPage(*tab);
             break;
+        case kMenuHomePage:
+            if (auto* tab = active())
+                loadURL(*tab, homePage);
+            break;
         case kMenuSettings:
-            MessageBoxW(window, L"Aurora Settings will be added here. This will control appearance, privacy, search, and start-page behavior.", L"Settings — Aurora", MB_OK);
+            openBrowserSettings(this);
             break;
         case kMenuAbout:
             MessageBoxW(
