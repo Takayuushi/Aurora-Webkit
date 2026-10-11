@@ -1865,18 +1865,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     void addReadingList()
     {
         auto* tab = active();
-        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank" || tab->activeUrl.rfind(L"about:", 0) == 0) {
+            MessageBoxW(window, L"Open a webpage before adding it to Reading List.", L"Reading List", MB_OK | MB_ICONINFORMATION);
             return;
+        }
 
         auto found = std::find_if(readingList.begin(), readingList.end(), [&](const SavedPage& page) {
             return page.url == tab->activeUrl;
         });
 
-        if (found == readingList.end())
-            readingList.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
+        if (found != readingList.end()) {
+            MessageBoxW(window, L"This page is already in Reading List.", L"Reading List", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
 
+        readingList.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
         saveSavedPages(readingListPath(), readingList);
         InvalidateRect(window, nullptr, TRUE);
+        MessageBoxW(window, L"Added to Reading List.", L"Reading List", MB_OK | MB_ICONINFORMATION);
     }
 
     void clearHistory()
@@ -2756,7 +2762,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
                     SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, bookmarks[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SetTextColor(dc, RGB(42, 46, 49));
+                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             } else if (sidebarSection == 1) {
                 for (size_t i = 0; i < std::min<size_t>(10, readingList.size()); ++i) {
@@ -2764,9 +2770,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
-                    SetTextColor(dc, RGB(126, 131, 135));
+                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, readingList[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SetTextColor(dc, RGB(42, 46, 49));
+                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             } else {
                 auto sorted = visits;
@@ -2776,9 +2782,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
-                    SetTextColor(dc, RGB(126, 131, 135));
+                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, sorted[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SetTextColor(dc, RGB(42, 46, 49));
+                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             }
         }
