@@ -29,6 +29,7 @@
 #include <WebKit/WKWebsiteDataStoreRef.h>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cwchar>
 #include <cwctype>
@@ -289,6 +290,16 @@ std::wstring fromUTF8(const std::string& value)
     std::wstring result(static_cast<size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), length);
     return result;
+}
+
+bool parseInteger(const std::string& value, long long& output)
+{
+    if (value.empty())
+        return false;
+    const char* begin = value.data();
+    const char* end = begin + value.size();
+    const auto parsed = std::from_chars(begin, end, output);
+    return parsed.ec == std::errc { } && parsed.ptr == end;
 }
 
 WKRetainPtr<WKURLRef> createWKURL(const std::wstring& value)
@@ -963,17 +974,16 @@ struct BrowserState {
             const size_t third = second == std::string::npos ? second : line.find('\t', second + 1);
             if (first == std::string::npos || second == std::string::npos || third == std::string::npos)
                 continue;
-            try {
-                VisitEntry entry;
-                entry.visits = std::stoll(line.substr(0, first));
-                entry.lastVisited = std::stoll(line.substr(first + 1, second - first - 1));
-                entry.url = fromUTF8(line.substr(second + 1, third - second - 1));
-                entry.title = fromUTF8(line.substr(third + 1));
-                if (!entry.url.empty() && entry.visits > 0)
-                    visits.push_back(std::move(entry));
-            } catch (...) {
+            VisitEntry entry;
+            const std::string visitsText = line.substr(0, first);
+            const std::string timestampText = line.substr(first + 1, second - first - 1);
+            if (!parseInteger(visitsText, entry.visits)
+                || !parseInteger(timestampText, entry.lastVisited))
                 continue;
-            }
+            entry.url = fromUTF8(line.substr(second + 1, third - second - 1));
+            entry.title = fromUTF8(line.substr(third + 1));
+            if (!entry.url.empty() && entry.visits > 0)
+                visits.push_back(std::move(entry));
         }
     }
     void saveVisitData()
@@ -1074,15 +1084,13 @@ struct BrowserState {
             const size_t second = first == std::string::npos ? first : line.find('\t', first + 1);
             if (first == std::string::npos || second == std::string::npos)
                 continue;
-            try {
-                long long added = std::stoll(line.substr(0, first));
-                std::wstring url = fromUTF8(line.substr(first + 1, second - first - 1));
-                std::wstring title = fromUTF8(line.substr(second + 1));
-                if (!url.empty())
-                    pages.push_back({ url, title.empty() ? url : title, added });
-            } catch (...) {
+            long long added = 0;
+            if (!parseInteger(line.substr(0, first), added))
                 continue;
-            }
+            std::wstring url = fromUTF8(line.substr(first + 1, second - first - 1));
+            std::wstring title = fromUTF8(line.substr(second + 1));
+            if (!url.empty())
+                pages.push_back({ url, title.empty() ? url : title, added });
         }
     }
     void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
@@ -2163,7 +2171,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         };
     }
 
-    void resize() const
+    void resize()
     {
         if (!window)
             return;
@@ -2452,9 +2460,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
         RECT client { };
         GetClientRect(window, &client);
-        const int width = std::min(scaleForDpi(window, 430), std::max(scaleForDpi(window, 320), client.right - scaleForDpi(window, 20)));
+        const int clientWidth = static_cast<int>(client.right);
+        const int width = std::min(scaleForDpi(window, 430), std::max(scaleForDpi(window, 320), clientWidth - scaleForDpi(window, 20)));
         const int height = scaleForDpi(window, 32);
-        const int left = std::max(scaleForDpi(window, 10), client.right - width - scaleForDpi(window, 16));
+        const int left = std::max(scaleForDpi(window, 10), clientWidth - width - scaleForDpi(window, 16));
         const int top = titleBarHeight() + toolbarHeight() + scaleForDpi(window, 8);
         MoveWindow(findEdit, left + scaleForDpi(window, 10), top + scaleForDpi(window, 5), width - scaleForDpi(window, 164), height - scaleForDpi(window, 10), TRUE);
         MoveWindow(findPreviousButton, left + width - scaleForDpi(window, 150), top + scaleForDpi(window, 4), scaleForDpi(window, 42), height - scaleForDpi(window, 8), TRUE);
