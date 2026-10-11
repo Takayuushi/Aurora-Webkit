@@ -30,6 +30,7 @@ function(_aurora_finish_webkit_target)
 
     set(Aurora_PRIVATE_INCLUDE_DIRECTORIES
         "${CMAKE_BINARY_DIR}"
+        "${CMAKE_SOURCE_DIR}/Source/WebKit/UIProcess/API/C"
     )
 
     set(Aurora_PRIVATE_DEFINITIONS
@@ -42,6 +43,7 @@ function(_aurora_finish_webkit_target)
     set(Aurora_PRIVATE_LIBRARIES
         user32
         shell32
+        comdlg32
         urlmon
     )
 
