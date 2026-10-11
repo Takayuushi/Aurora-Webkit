@@ -54,12 +54,15 @@ jobs:
           }
           winget install @common --id GnuWin32.Gperf
 
-      - name: Resolve WebKit SHA (remote)
+      - name: Resolve WebKit SHA (pinned default)
         id: webkit-sha
         env:
           WEBKIT_SHA_INPUT: ${{ github.event.inputs.webkit_sha }}
         shell: powershell
         run: |
+          # Reuse the exact WebKit revision from the last successful full build.
+          # Set the workflow input when intentionally upgrading WebKit.
+          $knownGoodSha = "a4e704f79fccaab616b4aadd590d3360bcae4b70"
           $inputSha = $env:WEBKIT_SHA_INPUT
           if (-not [string]::IsNullOrWhiteSpace($inputSha)) {
             $sha = $inputSha.Trim()
@@ -68,9 +71,8 @@ jobs:
             }
             $sha = $sha.ToLowerInvariant()
           } else {
-            $remoteHead = git ls-remote https://github.com/WebKit/WebKit.git HEAD
-            if ($LASTEXITCODE -ne 0) { throw "Failed to query the WebKit repository." }
-            $sha = $remoteHead.Split("`t")[0].Trim()
+            $sha = $knownGoodSha
+            Write-Host "Using the last successful WebKit revision: $sha"
           }
           if ($sha -notmatch '^[0-9a-fA-F]{40}$') { throw "Resolved WebKit revision is not a full 40-character Git commit SHA." }
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
@@ -217,7 +219,8 @@ jobs:
 
           $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
           if (-not (Test-Path (Join-Path $buildDir "CMakeCache.txt"))) { throw "WebKit CMake build directory not found at $buildDir" }
-          cmd /c "call `"$vcvars`" && cmake --build `"$buildDir`" --target Aurora --config Release"
+          # Refresh the cached CMake graph so Aurora source/include/link changes are picked up without rebuilding WebKit.
+          cmd /c "call `"$vcvars`" && cmake -S `"$env:WEBKIT_DIR`" -B `"$buildDir`" && cmake --build `"$buildDir`" --target Aurora --config Release"
           if ($LASTEXITCODE -ne 0) { throw "Building the Aurora target failed with exit code $LASTEXITCODE" }
 
       - name: Package Aurora with matching WebKit runtime files
