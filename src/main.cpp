@@ -1429,7 +1429,7 @@ body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f
 
         html += R"HTML(
 </div>
-<div class="footer">Frequently visited websites</div>
+<div class="footer">Favorites and frequently visited websites are stored locally</div>
 </div>
 <script>
 const search=document.getElementById('search');
