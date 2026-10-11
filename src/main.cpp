@@ -449,6 +449,24 @@ int windowDpi(HWND window)
     return static_cast<int>(windowScaleFactor(window) * 96.0);
 }
 
+void setNativeWindowBorderColor(HWND window, bool dark)
+{
+    if (!window)
+        return;
+    HMODULE dwmapi = LoadLibraryW(L"dwmapi.dll");
+    if (!dwmapi)
+        return;
+    using DwmSetWindowAttributeFunction = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    auto setWindowAttribute = reinterpret_cast<DwmSetWindowAttributeFunction>(
+        GetProcAddress(dwmapi, "DwmSetWindowAttribute")
+    );
+    if (setWindowAttribute) {
+        DWORD borderColor = dark ? RGB(35, 35, 37) : RGB(241, 242, 243);
+        setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
+    }
+    FreeLibrary(dwmapi);
+}
+
 void drawCompass(HDC dc, const RECT& rect)
 {
     int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
@@ -846,6 +864,7 @@ struct BrowserState {
     void applyTheme()
     {
         saveThemePreference();
+        setNativeWindowBorderColor(window, darkTheme());
         const size_t previousTab = activeTab;
         for (size_t i = 0; i < tabs.size(); ++i) {
             auto& tab = *tabs[i];
@@ -3959,19 +3978,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         return 1;
     }
 
-    // Prevent the Windows DWM accent color from appearing as a bright top border
-    // around Aurora's custom light window chrome.
-    if (HMODULE dwmapi = LoadLibraryW(L"dwmapi.dll")) {
-        using DwmSetWindowAttributeFunction = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
-        auto setWindowAttribute = reinterpret_cast<DwmSetWindowAttributeFunction>(
-            GetProcAddress(dwmapi, "DwmSetWindowAttribute")
-        );
-        if (setWindowAttribute) {
-            DWORD borderColor = RGB(241, 242, 243);
-            setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
-        }
-        FreeLibrary(dwmapi);
-    }
+    // Match the DWM border to the selected browser appearance.
+    setNativeWindowBorderColor(window, browserState.darkTheme());
 
     ShowWindow(window, showCommand == SW_MAXIMIZE ? SW_MAXIMIZE : SW_SHOWNORMAL);
     UpdateWindow(window);
