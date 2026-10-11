@@ -1833,6 +1833,125 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
         InvalidateRect(window, nullptr, TRUE);
     }
 
+    void positionFindBar()
+    {
+        if (!window || !findEdit)
+            return;
+        RECT client { };
+        GetClientRect(window, &client);
+        const int width = std::min(scaleForDpi(window, 430), std::max(scaleForDpi(window, 320), client.right - scaleForDpi(window, 20)));
+        const int height = scaleForDpi(window, 32);
+        const int left = std::max(scaleForDpi(window, 10), client.right - width - scaleForDpi(window, 16));
+        const int top = titleBarHeight() + toolbarHeight() + scaleForDpi(window, 8);
+        MoveWindow(findEdit, left + scaleForDpi(window, 10), top + scaleForDpi(window, 5), width - scaleForDpi(window, 164), height - scaleForDpi(window, 10), TRUE);
+        MoveWindow(findPreviousButton, left + width - scaleForDpi(window, 150), top + scaleForDpi(window, 4), scaleForDpi(window, 42), height - scaleForDpi(window, 8), TRUE);
+        MoveWindow(findNextButton, left + width - scaleForDpi(window, 104), top + scaleForDpi(window, 4), scaleForDpi(window, 42), height - scaleForDpi(window, 8), TRUE);
+        MoveWindow(findCloseButton, left + width - scaleForDpi(window, 56), top + scaleForDpi(window, 4), scaleForDpi(window, 46), height - scaleForDpi(window, 8), TRUE);
+    }
+
+    void showFindBar()
+    {
+        if (!findEdit) {
+            findEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | ES_AUTOHSCROLL | WS_TABSTOP | ES_LEFT,
+                0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandAddress + 30)),
+                GetModuleHandleW(nullptr), nullptr);
+            findPreviousButton = CreateWindowExW(0, L"BUTTON", L"Previous",
+                WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFindPrevious)),
+                GetModuleHandleW(nullptr), nullptr);
+            findNextButton = CreateWindowExW(0, L"BUTTON", L"Next",
+                WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFindNext)),
+                GetModuleHandleW(nullptr), nullptr);
+            findCloseButton = CreateWindowExW(0, L"BUTTON", L"×",
+                WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFindClose)),
+                GetModuleHandleW(nullptr), nullptr);
+            if (!findEdit || !findPreviousButton || !findNextButton || !findCloseButton) {
+                if (findEdit) DestroyWindow(findEdit);
+                if (findPreviousButton) DestroyWindow(findPreviousButton);
+                if (findNextButton) DestroyWindow(findNextButton);
+                if (findCloseButton) DestroyWindow(findCloseButton);
+                findEdit = findPreviousButton = findNextButton = findCloseButton = nullptr;
+                return;
+            }
+            for (HWND control : { findEdit, findPreviousButton, findNextButton, findCloseButton })
+                SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
+            SetWindowLongPtrW(findEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+            findEditOriginalProcedure = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(findEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(findEditProcedure)));
+        }
+
+        findBarVisible = true;
+        positionFindBar();
+        for (HWND control : { findEdit, findPreviousButton, findNextButton, findCloseButton }) {
+            ShowWindow(control, SW_SHOW);
+            SetWindowPos(control, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        }
+        SetFocus(findEdit);
+        SendMessageW(findEdit, EM_SETSEL, 0, -1);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void hideFindBar()
+    {
+        if (auto* tab = active()) {
+            if (auto page = WKViewGetPage(tab->view.get()))
+                WKPageHideFindUI(page);
+            SetFocus(WKViewGetWindow(tab->view.get()));
+        }
+        findBarVisible = false;
+        for (HWND control : { findEdit, findPreviousButton, findNextButton, findCloseButton })
+            if (control)
+                ShowWindow(control, SW_HIDE);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void searchInPage(bool backwards)
+    {
+        if (!findEdit || !findBarVisible)
+            return;
+        const int length = GetWindowTextLengthW(findEdit);
+        if (length <= 0) {
+            if (auto* tab = active())
+                WKPageHideFindUI(WKViewGetPage(tab->view.get()));
+            return;
+        }
+        std::wstring query(static_cast<size_t>(length) + 1, L'\\0');
+        GetWindowTextW(findEdit, query.data(), length + 1);
+        query.resize(static_cast<size_t>(length));
+        const std::string utf8 = toUTF8(query);
+        auto searchString = adoptWK(WKStringCreateWithUTF8CString(utf8.c_str()));
+        unsigned options = kWKFindOptionsCaseInsensitive | kWKFindOptionsWrapAround
+            | kWKFindOptionsShowFindIndicator | kWKFindOptionsShowHighlight;
+        if (backwards)
+            options |= kWKFindOptionsBackwards;
+        if (auto* tab = active())
+            WKPageFindString(WKViewGetPage(tab->view.get()), searchString.get(), static_cast<WKFindOptions>(options), 1000);
+    }
+
+    bool handleFindControlCommand(UINT command, HWND control, UINT notification)
+    {
+        if (control == findEdit && notification == EN_CHANGE) {
+            searchInPage(false);
+            return true;
+        }
+        if (command == kFindPrevious && control == findPreviousButton) {
+            searchInPage(true);
+            return true;
+        }
+        if (command == kFindNext && control == findNextButton) {
+            searchInPage(false);
+            return true;
+        }
+        if (command == kFindClose && control == findCloseButton) {
+            hideFindBar();
+            return true;
+        }
+        return false;
+    }
+
     void closeActiveTab()
     {
         closeTab(activeTab);
