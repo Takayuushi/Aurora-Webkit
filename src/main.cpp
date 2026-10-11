@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cwchar>
+#include <cwctype>
 #include <cstddef>
 #include <fstream>
 #include <iterator>
@@ -2787,6 +2788,13 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
             folder.resize(static_cast<size_t>(folderLength));
             while (!folder.empty() && iswspace(folder.front())) folder.erase(folder.begin());
             while (!folder.empty() && iswspace(folder.back())) folder.pop_back();
+            if (!folder.empty()) {
+                DWORD attributes = GetFileAttributesW(folder.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    MessageBoxW(window, L"That downloads folder does not exist. Choose an existing folder or leave it blank to use the Windows Downloads folder.", L"Settings", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+            }
             browser->downloadLocation = folder;
             browser->savePreferences();
             browser->applyTheme();
@@ -2974,13 +2982,12 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
             ch = L'_';
     }
 
-    std::wstring folder = downloadsDirectory();
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    std::wstring folder = browser ? browser->effectiveDownloadsDirectory() : downloadsDirectory();
     if (folder.empty())
         return nullptr;
 
     std::wstring path = folder + L"\\" + filename;
-
-    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (browser) {
         browser->downloads.push_back({ filename, path, 0, 0, false, false, download });
         if (browser->downloads.size() > 32)
