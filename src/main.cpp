@@ -2802,11 +2802,8 @@ void didChangeTitle(const void* clientInfo)
         tab->title = L"New Tab";
 
     if (!tab->activeUrl.empty()
-        && (tab->activeUrl.rfind(L"http://", 0) == 0 || tab->activeUrl.rfind(L"https://", 0) == 0)
-        && tab->activeUrl != tab->lastRecordedUrl) {
-        tab->browser->recordVisit(tab->activeUrl, tab->title);
-        tab->lastRecordedUrl = tab->activeUrl;
-    }
+        && (tab->activeUrl.rfind(L"http://", 0) == 0 || tab->activeUrl.rfind(L"https://", 0) == 0))
+        tab->browser->updateVisitTitle(tab->activeUrl, tab->title);
 
     InvalidateRect(tab->browser->window, nullptr, TRUE);
     if (tab == tab->browser->active()) {
@@ -2832,6 +2829,10 @@ void didChangeActiveURL(const void* clientInfo)
         tab->faviconRequestURL.clear();
     }
     tab->activeUrl = url;
+    if (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) {
+        tab->internalPage.clear();
+        tab->hasInternalThemeSnapshot = false;
+    }
 
     if (tab == tab->browser->active()) {
         if (url == L"about:blank" || url.empty())
