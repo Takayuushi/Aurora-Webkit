@@ -115,6 +115,13 @@ constexpr UINT kSettingsBrowse = 7105;
 constexpr UINT kSettingsSave = 7106;
 constexpr UINT kSettingsCancel = 7107;
 constexpr UINT kSettingsClearHistory = 7108;
+constexpr UINT kSettingsClearWebsiteData = 7109;
+constexpr UINT kSettingsJavaScript = 7110;
+constexpr UINT kSettingsImages = 7111;
+constexpr UINT kSettingsPopups = 7112;
+constexpr UINT kSettingsLocalStorage = 7113;
+constexpr UINT kSettingsDeveloperTools = 7114;
+constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
 constexpr int kTitleBarHeight = 23;
 constexpr int kToolbarHeight = 33;
@@ -147,6 +154,7 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void printPageCountCompleted(WKRect*, uint32_t, double, WKErrorRef, void*);
+void websiteDataCleared(void*);
 void printPDFDataCompleted(WKDataRef, WKErrorRef, void*);
 
 struct FaviconResult {
@@ -723,6 +731,11 @@ struct BrowserState {
     std::wstring homePage { L"https://www.google.com" };
     std::wstring searchEngine { L"Google" };
     std::wstring downloadLocation;
+    bool javascriptEnabled { true };
+    bool imagesEnabled { true };
+    bool allowPopups { false };
+    bool localStorageEnabled { true };
+    bool developerToolsEnabled { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
 
@@ -742,9 +755,20 @@ struct BrowserState {
                 searchEngine = value;
             else if (key == "downloads")
                 downloadLocation = value;
+            else if (key == "javascript")
+                javascriptEnabled = value == L"1" || value == L"true";
+            else if (key == "images")
+                imagesEnabled = value == L"1" || value == L"true";
+            else if (key == "popups")
+                allowPopups = value == L"1" || value == L"true";
+            else if (key == "localStorage")
+                localStorageEnabled = value == L"1" || value == L"true";
+            else if (key == "developerTools")
+                developerToolsEnabled = value == L"1" || value == L"true";
         }
         if (homePage.empty())
             homePage = L"https://www.google.com";
+        applyEnginePreferences();
     }
 
     void savePreferences()
@@ -760,7 +784,23 @@ struct BrowserState {
         replaceTabsAndNewlines(safeDownloads);
         file << "home\t" << toUTF8(safeHome) << '\n'
              << "search\t" << toUTF8(safeSearch) << '\n'
-             << "downloads\t" << toUTF8(safeDownloads) << '\n';
+             << "downloads\t" << toUTF8(safeDownloads) << '\n'
+             << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
+             << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
+             << "popups\t" << (allowPopups ? "1" : "0") << '\n'
+             << "localStorage\t" << (localStorageEnabled ? "1" : "0") << '\n'
+             << "developerTools\t" << (developerToolsEnabled ? "1" : "0") << '\n';
+    }
+
+    void applyEnginePreferences()
+    {
+        if (!preferences)
+            return;
+        WKPreferencesSetJavaScriptEnabled(preferences.get(), javascriptEnabled);
+        WKPreferencesSetLoadsImagesAutomatically(preferences.get(), imagesEnabled);
+        WKPreferencesSetJavaScriptCanOpenWindowsAutomatically(preferences.get(), allowPopups);
+        WKPreferencesSetLocalStorageEnabled(preferences.get(), localStorageEnabled);
+        WKPreferencesSetDeveloperExtrasEnabled(preferences.get(), developerToolsEnabled);
     }
 
     std::wstring effectiveDownloadsDirectory() const
@@ -1152,6 +1192,7 @@ struct BrowserState {
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
         auto frequent = frequentVisits(5);
+        auto favorites = bookmarks;
         const bool dark = darkTheme();
 
         std::string html = R"HTML(
@@ -1162,21 +1203,21 @@ struct BrowserState {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#5f6368") + R"HTML(;--surface:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;--border:)HTML" + (dark ? "#48484a" : "#e2e4e7") + R"HTML(;--icon-bg:)HTML" + (dark ? "#3a3a3c" : "#f0f2f5") + R"HTML(;--icon-fg:)HTML" + (dark ? "#d1d1d6" : "#42474d") + R"HTML(;--hover:)HTML" + (dark ? "#38383a" : "#fafbfc") + R"HTML(}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
 body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f7") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
 .page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 24px}
 .search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:)HTML" + std::string(dark ? "#2c2c2e" : "#fff") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .search:focus{border-color:#aeb8c7;box-shadow:0 0 0 3px rgba(65,120,220,.12)}
-.search::placeholder{color:#777d84}
-.section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:#5f6368;font-size:13px;font-weight:600}
+.search::placeholder{color:var(--muted)}
+.section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:var(--muted);font-size:13px;font-weight:600}
 .tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
 .tile{width:148px;min-height:106px;border-radius:14px;border:1px solid )HTML" + std::string(dark ? "#48484a" : "#e2e4e7") + R"HTML(;background:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;cursor:pointer;transition:background .12s ease,border-color .12s ease}
-.tile:hover{background:#fafbfc;border-color:#cbd0d6}
-.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:#f0f2f5;color:#42474d;font-weight:600;font-size:16px}
+.tile:hover{background:var(--hover);border-color:var(--border)}
+.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:var(--icon-bg);color:var(--icon-fg);font-weight:600;font-size:16px}
 .name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.host{font-size:11px;color:#777d84;max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.host{font-size:11px;color:var(--muted);max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .footer{margin-top:24px;color:#8a8f96;font-size:12px}
 @media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}}
 </style>
@@ -1186,7 +1227,7 @@ body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f
 <input id="search" class="search" autofocus placeholder="Search the web or enter an address">
 <div class="section">)HTML";
 
-        html += frequent.empty() ? "Quick Access" : "Frequently Visited";
+        html += !favorites.empty() ? "Favorites" : (frequent.empty() ? "Quick Access" : "Frequently Visited");
         html += R"HTML(</div><div class="tiles">)HTML";
 
         auto addTile = [&](const std::wstring& name, const std::wstring& url, const std::wstring& host) {
@@ -1213,7 +1254,18 @@ body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f
             html += "</div></div>";
         };
 
-        if (frequent.empty()) {
+        if (!favorites.empty()) {
+            for (const auto& entry : favorites) {
+                std::wstring host = entry.url;
+                size_t start = host.find(L"://");
+                if (start != std::wstring::npos)
+                    host.erase(0, start + 3);
+                size_t slash = host.find_first_of(L"/?#");
+                if (slash != std::wstring::npos)
+                    host.erase(slash);
+                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
+            }
+        } else if (frequent.empty()) {
             addTile(L"YouTube", L"https://www.youtube.com", L"youtube.com");
             addTile(L"Reddit", L"https://www.reddit.com", L"reddit.com");
             addTile(L"GitHub", L"https://github.com", L"github.com");
@@ -1225,19 +1277,14 @@ body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f
                 size_t start = host.find(L"://");
                 if (start != std::wstring::npos)
                     host.erase(0, start + 3);
-                size_t slash = host.find(L'/');
+                size_t slash = host.find_first_of(L"/?#");
                 if (slash != std::wstring::npos)
                     host.erase(slash);
-                addTile(
-                    entry.title.empty() ? host : entry.title,
-                    entry.url,
-                    host
-                );
+                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
             }
         }
 
         html += R"HTML(
-<div class="tile" onclick="alert('Custom shortcuts will be added in the next browser-services pass.')"><div class="icon">+</div><div class="name">Add Shortcut</div><div class="host">Custom</div></div>
 </div>
 <div class="footer">Frequently visited websites</div>
 </div>
@@ -1757,9 +1804,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
         filename += L".mhtml";
 
-        std::vector<wchar_t> path(32768, L'\\0');
+        std::vector<wchar_t> path(32768, L'\0');
         wcsncpy_s(path.data(), path.size(), filename.c_str(), _TRUNCATE);
-        const wchar_t filter[] = L"Web archive (*.mhtml)\\0*.mhtml\\0All files (*.*)\\0*.*\\0\\0";
+        const wchar_t filter[] = L"Web archive (*.mhtml)\0*.mhtml\0All files (*.*)\0*.*\0\0";
         OPENFILENAMEW dialog { };
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = window;
@@ -1794,9 +1841,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
         filename += L".pdf";
 
-        std::vector<wchar_t> path(32768, L'\\0');
+        std::vector<wchar_t> path(32768, L'\0');
         wcsncpy_s(path.data(), path.size(), filename.c_str(), _TRUNCATE);
-        const wchar_t filter[] = L"PDF document (*.pdf)\\0*.pdf\\0All files (*.*)\\0*.*\\0\\0";
+        const wchar_t filter[] = L"PDF document (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0\0";
         OPENFILENAMEW dialog { };
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = window;
@@ -2885,6 +2932,11 @@ struct SettingsDialogState {
     HWND searchCombo { nullptr };
     HWND homeEdit { nullptr };
     HWND downloadsEdit { nullptr };
+    HWND javascriptCheck { nullptr };
+    HWND imagesCheck { nullptr };
+    HWND popupsCheck { nullptr };
+    HWND localStorageCheck { nullptr };
+    HWND developerToolsCheck { nullptr };
 };
 
 LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -2954,13 +3006,36 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
             GetModuleHandleW(nullptr), nullptr);
         if (font) SendMessageW(browse, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 
-        label(L"Privacy", 30, 264);
-        label(L"Clear saved browsing history. Bookmarks and downloads are kept.", 220, 264, 390);
+        label(L"Website settings", 30, 248);
+        auto check = [&](const wchar_t* text, int id, int x, int y, bool checked) {
+            HWND control = CreateWindowExW(0, L"BUTTON", text,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                x, y, 180, 24, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                GetModuleHandleW(nullptr), nullptr);
+            if (font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+            return control;
+        };
+        dialog->javascriptCheck = check(L"Enable JavaScript", kSettingsJavaScript, 220, 244, browser->javascriptEnabled);
+        dialog->imagesCheck = check(L"Load images automatically", kSettingsImages, 220, 270, browser->imagesEnabled);
+        dialog->popupsCheck = check(L"Allow pop-up windows", kSettingsPopups, 410, 244, browser->allowPopups);
+        dialog->localStorageCheck = check(L"Allow website storage", kSettingsLocalStorage, 410, 270, browser->localStorageEnabled);
+        dialog->developerToolsCheck = check(L"Developer tools", kSettingsDeveloperTools, 220, 296, browser->developerToolsEnabled);
+
+        label(L"Privacy", 30, 336);
+        label(L"Clear local browsing history or website data.", 220, 336, 390);
         HWND clearHistory = CreateWindowExW(0, L"BUTTON", L"Clear History",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            220, 292, 130, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsClearHistory)),
+            220, 364, 130, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsClearHistory)),
             GetModuleHandleW(nullptr), nullptr);
-        if (font) SendMessageW(clearHistory, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        HWND clearWebsiteData = CreateWindowExW(0, L"BUTTON", L"Clear Website Data",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            360, 364, 150, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsClearWebsiteData)),
+            GetModuleHandleW(nullptr), nullptr);
+        if (font) {
+            SendMessageW(clearHistory, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            SendMessageW(clearWebsiteData, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        }
 
         HWND save = CreateWindowExW(0, L"BUTTON", L"Save",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
@@ -2995,9 +3070,18 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
             return 0;
         }
         if (LOWORD(wParam) == kSettingsClearHistory) {
+            if (MessageBoxW(window, L"Clear the saved browsing history?", L"Clear History", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                return 0;
             dialog->browser->visits.clear();
-            dialog->browser->saveVisitData();
+            if (!dialog->browser->privateBrowsing)
+                dialog->browser->saveVisitData();
             dialog->browser->applyTheme();
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsClearWebsiteData) {
+            if (MessageBoxW(window, L"Clear cookies, cached site data, and local website storage for this browser window?", L"Clear Website Data", MB_YESNO | MB_ICONWARNING) != IDYES)
+                return 0;
+            WKWebsiteDataStoreClearStorage(dialog->browser->websiteDataStore.get(), dialog->browser->window, websiteDataCleared);
             return 0;
         }
         if (LOWORD(wParam) == kSettingsSave) {
@@ -3033,7 +3117,13 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
                 }
             }
             browser->downloadLocation = folder;
+            browser->javascriptEnabled = SendMessageW(dialog->javascriptCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            browser->imagesEnabled = SendMessageW(dialog->imagesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            browser->allowPopups = SendMessageW(dialog->popupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            browser->localStorageEnabled = SendMessageW(dialog->localStorageCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            browser->developerToolsEnabled = SendMessageW(dialog->developerToolsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             browser->savePreferences();
+            browser->applyEnginePreferences();
             browser->applyTheme();
             DestroyWindow(window);
             return 0;
@@ -3164,7 +3254,7 @@ void savePageDataCompleted(WKDataRef data, WKErrorRef error, void* context)
     }
 
     if (IsWindow(request->owner))
-        MessageBoxW(request->owner, (L"Page saved to:\\n" + request->path).c_str(), L"Save Page As", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(request->owner, (L"Page saved to:\n" + request->path).c_str(), L"Save Page As", MB_OK | MB_ICONINFORMATION);
 }
 
 void printPDFDataCompleted(WKDataRef data, WKErrorRef error, void* context)
@@ -3202,6 +3292,13 @@ void printPageCountCompleted(WKRect*, uint32_t pageCount, double, WKErrorRef err
 
     WKPageBeginPrinting(request->page, request->frame, request->printInfo);
     WKPageDrawPagesToPDF(request->page, request->frame, request->printInfo, 0, pageCount, printPDFDataCompleted, request);
+}
+
+void websiteDataCleared(void* context)
+{
+    HWND owner = static_cast<HWND>(context);
+    if (IsWindow(owner))
+        PostMessageW(owner, WM_AURORA_WEBSITE_DATA_CLEARED, 0, 0);
 }
 
 void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
@@ -3616,6 +3713,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         return DefWindowProcW(window, message, wParam, lParam);
     }
+
+    case WM_AURORA_WEBSITE_DATA_CLEARED:
+        if (state)
+            MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
+        return 0;
 
     case WM_AURORA_FAVICON_READY:
         if (state && lParam) {
