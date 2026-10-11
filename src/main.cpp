@@ -95,8 +95,8 @@ constexpr int kToolbarHorizontalPadding = 12;
 constexpr int kToolbarButtonSize = 24;
 constexpr int kToolbarGap = 4;
 constexpr int kLogoSize = 17;
-constexpr int kTabMinWidth = 126;
-constexpr int kTabMaxWidth = 220;
+constexpr int kTabMinWidth = 112;
+constexpr int kTabMaxWidth = 280;
 constexpr int kTrafficLightSize = 12;
 constexpr int kTrafficLightGap = 8;
 constexpr int kResizeBorder = 4;
@@ -382,77 +382,30 @@ int windowDpi(HWND window)
     return static_cast<int>(windowScaleFactor(window) * 96.0);
 }
 
-void drawAuroraMark(HDC dc, const RECT& rect, bool darkBackground)
+void drawCompass(HDC dc, const RECT& rect)
 {
     int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
-    RECT circle {
-        rect.left,
-        rect.top,
-        rect.left + size,
-        rect.top + size
-    };
-
-    HBRUSH background = CreateSolidBrush(darkBackground ? RGB(27, 48, 68) : RGB(53, 184, 168));
+    int inset = std::max(1, size / 12);
+    RECT circle { rect.left + inset, rect.top + inset, rect.left + size - inset, rect.top + size - inset };
+    HPEN outline = CreatePen(PS_SOLID, std::max(1, size / 14), RGB(116, 126, 139));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, outline));
+    HBRUSH background = CreateSolidBrush(RGB(250, 250, 252));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, background));
     Ellipse(dc, circle.left, circle.top, circle.right, circle.bottom);
+    POINT needle[] = {
+        { circle.left + size * 5 / 12, circle.top + size / 5 },
+        { circle.left + size * 7 / 12, circle.top + size * 7 / 12 },
+        { circle.left + size * 3 / 5, circle.top + size * 4 / 5 },
+        { circle.left + size * 5 / 12, circle.top + size / 5 }
+    };
+    HBRUSH needleBrush = CreateSolidBrush(RGB(55, 116, 224));
+    SelectObject(dc, needleBrush);
+    Polygon(dc, needle, static_cast<int>(std::size(needle)));
     SelectObject(dc, oldBrush);
-    DeleteObject(background);
-
-    HPEN teal = CreatePen(PS_SOLID, std::max(1, size / 10), darkBackground ? RGB(63, 222, 201) : RGB(19, 130, 149));
-    HPEN mint = CreatePen(PS_SOLID, std::max(1, size / 12), darkBackground ? RGB(174, 248, 178) : RGB(164, 239, 173));
-
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, teal));
-    Arc(
-        dc,
-        circle.left + size / 8,
-        circle.top + size / 8,
-        circle.right - size / 8,
-        circle.bottom - size / 8,
-        circle.right - size / 4,
-        circle.top + size / 4,
-        circle.left + size / 4,
-        circle.bottom - size / 5
-    );
-
-    SelectObject(dc, mint);
-    Arc(
-        dc,
-        circle.left + size / 7,
-        circle.top + size / 5,
-        circle.right - size / 7,
-        circle.bottom - size / 8,
-        circle.right - size / 7,
-        circle.top + size / 3,
-        circle.left + size / 7,
-        circle.bottom - size / 3
-    );
-
     SelectObject(dc, oldPen);
-    DeleteObject(teal);
-    DeleteObject(mint);
-
-    HFONT font = CreateFontW(
-        -std::max(10, size * 2 / 3),
-        0,
-        0,
-        0,
-        FW_BOLD,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"Segoe UI"
-    );
-    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    DrawTextW(dc, L"a", 1, &circle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, oldFont);
-    DeleteObject(font);
+    DeleteObject(needleBrush);
+    DeleteObject(background);
+    DeleteObject(outline);
 }
 
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
@@ -1011,55 +964,27 @@ struct BrowserState {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root { font-family:"Segoe UI",Arial,sans-serif; color-scheme:dark; }
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:light;color:#202124}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
-body{
- min-height:100vh;
- color:#f7fbff;
- background:
-   radial-gradient(ellipse at 22% 14%,rgba(53,183,170,.28),transparent 35%),
-   radial-gradient(ellipse at 76% 18%,rgba(94,88,193,.28),transparent 34%),
-   radial-gradient(ellipse at 55% 80%,rgba(28,122,190,.18),transparent 42%),
-   linear-gradient(145deg,#0b1722,#172b49 48%,#251e45 80%,#0a111d);
-}
-.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:52px 24px 46px}
-.brand{text-align:center}
-.logo{width:92px;height:92px;margin:0 auto 18px;filter:drop-shadow(0 16px 28px rgba(0,0,0,.25))}
-.logo svg{width:100%;height:100%}
-.wordmark{font-size:44px;font-weight:500;letter-spacing:.03em;line-height:1}
-.tag{margin-top:10px;font-size:11px;letter-spacing:.38em;color:rgba(233,244,249,.68)}
-.search{width:min(760px,90vw);height:56px;margin:34px auto 30px;padding:0 22px;border:1px solid rgba(255,255,255,.30);border-radius:29px;background:rgba(255,255,255,.10);backdrop-filter:blur(18px);color:#fff;outline:none;font-size:16px;box-shadow:0 16px 45px rgba(0,0,0,.16)}
-.search::placeholder{color:rgba(241,248,252,.64)}
-.section{width:min(920px,94vw);text-align:left;margin-bottom:13px;color:rgba(239,247,251,.78);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
-.tiles{width:min(920px,94vw);display:flex;justify-content:center;flex-wrap:wrap;gap:14px}
-.tile{width:150px;min-height:118px;border-radius:18px;border:1px solid rgba(255,255,255,.20);background:rgba(255,255,255,.095);backdrop-filter:blur(17px);box-shadow:0 18px 40px rgba(0,0,0,.13);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;color:#f2f8fb;cursor:pointer;transition:transform .12s ease,background .12s ease}
-.tile:hover{transform:translateY(-2px);background:rgba(255,255,255,.145)}
-.icon{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:rgba(255,255,255,.14);font-weight:600;font-size:16px}
-.name{font-size:14px}
-.host{font-size:11px;color:rgba(237,247,251,.55);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.footer{margin-top:28px;color:rgba(235,246,250,.42);font-size:12px}
-@media(max-width:700px){.tile{width:136px}.page{padding-top:35px}.wordmark{font-size:36px}}
+body{min-height:100vh;background:#f5f5f7;color:#202124}
+.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 24px}
+.search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:#fff;color:#202124;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.search:focus{border-color:#aeb8c7;box-shadow:0 0 0 3px rgba(65,120,220,.12)}
+.search::placeholder{color:#777d84}
+.section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:#5f6368;font-size:13px;font-weight:600}
+.tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
+.tile{width:148px;min-height:106px;border-radius:14px;border:1px solid #e2e4e7;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#202124;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.tile:hover{background:#fafbfc;border-color:#cbd0d6}
+.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:#f0f2f5;color:#42474d;font-weight:600;font-size:16px}
+.name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.host{font-size:11px;color:#777d84;max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.footer{margin-top:24px;color:#8a8f96;font-size:12px}
+@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}}
 </style>
 </head>
 <body>
 <div class="page">
-<div class="brand">
-<div class="logo">
-<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-<defs>
-<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#69e7a9"/><stop offset=".48" stop-color="#27c9ad"/><stop offset="1" stop-color="#0c6d86"/></linearGradient>
-<linearGradient id="g2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7de89e"/><stop offset=".6" stop-color="#35b9b2"/><stop offset="1" stop-color="#127994"/></linearGradient>
-</defs>
-<circle cx="50" cy="50" r="48" fill="url(#g)"/>
-<path d="M11 42c15-24 38-34 65-28 8 2 15 5 22 11-22-3-41 8-53 27-10 16-24 16-34-10z" fill="url(#g2)" opacity=".82"/>
-<path d="M11 66c17-22 36-29 57-26 10 1 18 5 23 11-19 1-33 8-44 21-10 12-26 9-36-6z" fill="#91e7a8" opacity=".64"/>
-<text x="50" y="68" text-anchor="middle" font-family="Segoe UI,Arial" font-size="56" font-weight="700" fill="white">a</text>
-</svg>
-</div>
-<div class="wordmark">aurora</div>
-<div class="tag">BROWSE BEYOND</div>
-</div>
 <input id="search" class="search" autofocus placeholder="Search the web or enter an address">
 <div class="section">)HTML";
 
@@ -1116,7 +1041,7 @@ body{
         html += R"HTML(
 <div class="tile" onclick="alert('Custom shortcuts will be added in the next browser-services pass.')"><div class="icon">+</div><div class="name">Add Shortcut</div><div class="host">Custom</div></div>
 </div>
-<div class="footer">Frequently visited sites are stored locally by Aurora.</div>
+<div class="footer">Frequently visited websites</div>
 </div>
 <script>
 const search=document.getElementById('search');
@@ -2305,7 +2230,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:"Segoe UI",Arial,sans
             if (tabs[i]->favicon)
                 DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
             else
-                drawAuroraMark(dc, iconRect, false);
+                drawCompass(dc, iconRect);
 
             RECT titleText = tabRect;
             titleText.left = iconRect.right + MulDiv(6, dpi, 96);
