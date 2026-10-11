@@ -1,6 +1,10 @@
 name: build-aurora-windows
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/main.cpp'
   workflow_dispatch:
     inputs:
       webkit_sha:
