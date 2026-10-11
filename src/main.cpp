@@ -723,60 +723,39 @@ struct BrowserState {
         return tabs[activeTab].get();
     }
 
-    void loadVisitData()
-    {
-        visits.clear();
-
-        std::wifstream file(historyPath());
-        std::wstring line;
+    void loadVisitData()\n    {\n        visits.clear();
+        std::ifstream file(historyPath(), std::ios::binary);
+        std::string line;
         while (std::getline(file, line)) {
-            std::wistringstream stream(line);
-            std::wstring countText;
-            std::wstring timeText;
-            std::wstring url;
-            std::wstring title;
-
-            if (!std::getline(stream, countText, L'\t'))
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            const size_t first = line.find('\t');
+            const size_t second = first == std::string::npos ? first : line.find('\t', first + 1);
+            const size_t third = second == std::string::npos ? second : line.find('\t', second + 1);
+            if (first == std::string::npos || second == std::string::npos || third == std::string::npos)
                 continue;
-            if (!std::getline(stream, timeText, L'\t'))
+            try {
+                VisitEntry entry;
+                entry.visits = std::stoll(line.substr(0, first));
+                entry.lastVisited = std::stoll(line.substr(first + 1, second - first - 1));
+                entry.url = fromUTF8(line.substr(second + 1, third - second - 1));
+                entry.title = fromUTF8(line.substr(third + 1));
+                if (!entry.url.empty() && entry.visits > 0)
+                    visits.push_back(std::move(entry));
+            } catch (...) {
                 continue;
-            if (!std::getline(stream, url, L'\t'))
-                continue;
-            if (!std::getline(stream, title))
-                title = url;
-
-            VisitEntry entry;
-            wchar_t* countEnd = nullptr;
-            wchar_t* timeEnd = nullptr;
-            entry.visits = std::wcstoll(countText.c_str(), &countEnd, 10);
-            entry.lastVisited = std::wcstoll(timeText.c_str(), &timeEnd, 10);
-            if (countEnd == countText.c_str() || timeEnd == timeText.c_str())
-                continue;
-            entry.url = url;
-            entry.title = title;
-            if (!entry.url.empty())
-                visits.push_back(std::move(entry));
-        }
-    }
-
-    void saveVisitData()
-    {
-        auto path = historyPath();
-        std::wofstream file(path, std::ios::trunc);
+            }
+        }\n    }\n    void saveVisitData()\n    {\n        std::ofstream file(toUTF8(historyPath()), std::ios::binary | std::ios::trunc);
         if (!file)
             return;
-
         for (const auto& entry : visits) {
+            std::wstring url = entry.url;
             std::wstring title = entry.title;
+            replaceTabsAndNewlines(url);
             replaceTabsAndNewlines(title);
-            file << entry.visits << L'\t'
-                 << entry.lastVisited << L'\t'
-                 << entry.url << L'\t'
-                 << title << L'\n';
-        }
-    }
-
-    void recordVisit(const std::wstring& url, const std::wstring& title)
+            file << entry.visits << '\t' << entry.lastVisited << '\t'
+                 << toUTF8(url) << '\t' << toUTF8(title) << '\n';
+        }\n    }\n    void recordVisit(const std::wstring& url, const std::wstring& title)
     {
         if (url.empty())
             return;
@@ -831,50 +810,35 @@ struct BrowserState {
         return sorted;
     }
 
-    void loadSavedPages(const std::wstring& path, std::vector<SavedPage>& pages)
-    {
-        pages.clear();
-        std::wifstream file(path);
-        std::wstring line;
-
+    void loadSavedPages()\n    {\n        pages.clear();
+        std::ifstream file(toUTF8(path), std::ios::binary);
+        std::string line;
         while (std::getline(file, line)) {
-            std::wistringstream stream(line);
-            std::wstring addedText;
-            std::wstring url;
-            std::wstring title;
-
-            if (!std::getline(stream, addedText, L'\t'))
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            const size_t first = line.find('\t');
+            const size_t second = first == std::string::npos ? first : line.find('\t', first + 1);
+            if (first == std::string::npos || second == std::string::npos)
                 continue;
-            if (!std::getline(stream, url, L'\t'))
+            try {
+                long long added = std::stoll(line.substr(0, first));
+                std::wstring url = fromUTF8(line.substr(first + 1, second - first - 1));
+                std::wstring title = fromUTF8(line.substr(second + 1));
+                if (!url.empty())
+                    pages.push_back({ url, title.empty() ? url : title, added });
+            } catch (...) {
                 continue;
-            if (!std::getline(stream, title))
-                title = url;
-
-            wchar_t* end = nullptr;
-            long long added = std::wcstoll(addedText.c_str(), &end, 10);
-            if (end == addedText.c_str() || url.empty())
-                continue;
-
-            pages.push_back({ url, title.empty() ? url : title, added });
-        }
-    }
-
-    void saveSavedPages(const std::wstring& path, const std::vector<SavedPage>& pages)
-    {
-        std::wofstream file(path, std::ios::trunc);
+            }
+        }\n    }\n    void saveSavedPages()\n    {\n        std::ofstream file(toUTF8(path), std::ios::binary | std::ios::trunc);
         if (!file)
             return;
-
         for (const auto& page : pages) {
             std::wstring url = page.url;
             std::wstring title = page.title;
             replaceTabsAndNewlines(url);
             replaceTabsAndNewlines(title);
-            file << page.added << L'\t' << url << L'\t' << title << L'\n';
-        }
-    }
-
-    bool initialize(HWND parentWindow)
+            file << page.added << '\t' << toUTF8(url) << '\t' << toUTF8(title) << '\n';
+        }\n    }\n    bool initialize(HWND parentWindow)
     {
         window = parentWindow;
 
