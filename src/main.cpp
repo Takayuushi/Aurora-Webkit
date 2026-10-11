@@ -636,6 +636,8 @@ struct TabState {
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
     std::wstring internalPage { L"start" };
+    bool hasInternalThemeSnapshot { false };
+    bool internalDarkTheme { false };
     std::wstring lastRecordedUrl;
     std::wstring fallbackURL;
     HICON favicon { nullptr };
@@ -699,15 +701,29 @@ struct BrowserState {
     void applyTheme()
     {
         saveThemePreference();
+        const size_t previousTab = activeTab;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            auto& tab = *tabs[i];
+            if (tab.internalPage.empty())
+                continue;
+            activeTab = i;
+            if (tab.internalPage == L"start") loadStartPage(tab);
+            else if (tab.internalPage == L"bookmarks") loadBookmarksPage();
+            else if (tab.internalPage == L"reading-list") loadReadingListPage();
+            else if (tab.internalPage == L"history") loadHistoryPage();
+            else if (tab.internalPage == L"downloads") loadDownloadsPage();
+        }
+        if (!tabs.empty())
+            activeTab = std::min(previousTab, tabs.size() - 1);
+        if (auto* selected = active()) {
+            const wchar_t* address = selected->activeUrl.empty() || selected->activeUrl == L"about:blank"
+                ? L"" : selected->activeUrl.c_str();
+            SetWindowTextW(addressBar, address);
+            std::wstring titleText = selected->title + L" — Aurora";
+            SetWindowTextW(window, titleText.c_str());
+        }
+        resize();
         InvalidateRect(window, nullptr, TRUE);
-        auto* tab = active();
-        if (!tab)
-            return;
-        if (tab->internalPage == L"start") loadStartPage(*tab);
-        else if (tab->internalPage == L"bookmarks") loadBookmarksPage();
-        else if (tab->internalPage == L"reading-list") loadReadingListPage();
-        else if (tab->internalPage == L"history") loadHistoryPage();
-        else if (tab->internalPage == L"downloads") loadDownloadsPage();
     }
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
@@ -812,6 +828,23 @@ struct BrowserState {
             visits.resize(64);
 
         saveVisitData();
+    }
+
+    void updateVisitTitle(const std::wstring& url, const std::wstring& title)
+    {
+        if (url.empty() || title.empty())
+            return;
+        auto found = std::find_if(visits.begin(), visits.end(), [&](const VisitEntry& entry) {
+            return entry.url == url;
+        });
+        if (found == visits.end()) {
+            recordVisit(url, title);
+            return;
+        }
+        if (found->title != title) {
+            found->title = title;
+            saveVisitData();
+        }
     }
 
     std::vector<VisitEntry> frequentVisits(size_t maximum = 6) const
@@ -1004,6 +1037,8 @@ struct BrowserState {
     void loadStartPage(TabState& tab)
     {
         tab.internalPage = L"start";
+        tab.hasInternalThemeSnapshot = true;
+        tab.internalDarkTheme = darkTheme();
         auto frequent = frequentVisits(5);
         const bool dark = darkTheme();
 
@@ -1123,6 +1158,7 @@ search.addEventListener('keydown',e=>{
     void loadURL(TabState& tab, const std::wstring& value)
     {
         tab.internalPage.clear();
+        tab.hasInternalThemeSnapshot = false;
         auto page = WKViewGetPage(tab.view.get());
         if (!page)
             return;
@@ -1367,6 +1403,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (auto* tab = active()) {
             tab->internalPage = L"bookmarks";
+            tab->hasInternalThemeSnapshot = true;
+            tab->internalDarkTheme = darkTheme();
             loadLocalHTML(*tab, savedPagesHTML("Bookmarks", bookmarks));
         }
     }
@@ -1375,6 +1413,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (auto* tab = active()) {
             tab->internalPage = L"reading-list";
+            tab->hasInternalThemeSnapshot = true;
+            tab->internalDarkTheme = darkTheme();
             loadLocalHTML(*tab, savedPagesHTML("Reading List", readingList));
         }
     }
@@ -1388,6 +1428,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         tab->internalPage = L"downloads";
         const bool dark = darkTheme();
         tab->internalPage = L"downloads";
+        tab->hasInternalThemeSnapshot = true;
+        tab->internalDarkTheme = dark;
         std::string html = "<!doctype html><html><head><meta charset='utf-8'><title>Downloads</title>"
             "<style>:root{color-scheme:" + std::string(dark ? "dark" : "light") + "}body{margin:0;background:"
             + (dark ? "#1c1c1e" : "#f5f6f7") + ";color:" + (dark ? "#f5f5f7" : "#202428")
@@ -1497,6 +1539,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         tab->internalPage = L"history";
 
         const bool dark = darkTheme();
+        tab->internalPage = L"history";
+        tab->hasInternalThemeSnapshot = true;
+        tab->internalDarkTheme = dark;
         std::string html = R"HTML(
 <!doctype html><html><head><meta charset="utf-8"><title>History</title>
 <style>
