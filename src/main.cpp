@@ -437,9 +437,9 @@ void drawCompass(HDC dc, const RECT& rect)
     DeleteObject(outline);
 }
 
-void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
+void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, enabled ? RGB(55, 60, 63) : RGB(171, 176, 179));
+    HPEN pen = CreatePen(PS_SOLID, 1, enabled ? (dark ? RGB(220, 220, 224) : RGB(55, 60, 63)) : (dark ? RGB(103, 103, 108) : RGB(171, 176, 179)));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
@@ -453,9 +453,9 @@ void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled)
     DeleteObject(pen);
 }
 
-void drawReload(HDC dc, const RECT& rect, bool loading)
+void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
@@ -477,9 +477,9 @@ void drawReload(HDC dc, const RECT& rect, bool loading)
     DeleteObject(pen);
 }
 
-void drawSidebar(HDC dc, const RECT& rect)
+void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
@@ -491,9 +491,9 @@ void drawSidebar(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawShare(HDC dc, const RECT& rect)
+void drawShare(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
@@ -509,9 +509,9 @@ void drawShare(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawDownload(HDC dc, const RECT& rect)
+void drawDownload(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int x = (rect.left + rect.right) / 2;
@@ -528,9 +528,9 @@ void drawDownload(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawPageMenu(HDC dc, const RECT& rect)
+void drawPageMenu(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(55, 60, 63));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int left = rect.left + 8;
@@ -549,9 +549,9 @@ void drawPageMenu(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawMenu(HDC dc, const RECT& rect)
+void drawMenu(HDC dc, const RECT& rect, bool dark = false)
 {
-    HBRUSH brush = CreateSolidBrush(RGB(75, 80, 84));
+    HBRUSH brush = CreateSolidBrush(dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
 
     int x = (rect.left + rect.right) / 2;
@@ -573,9 +573,9 @@ void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
     DeleteObject(brush);
 }
 
-void drawPlus(HDC dc, const RECT& rect)
+void drawPlus(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 74, 77));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(70, 74, 77));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     int cx = (rect.left + rect.right) / 2;
     int cy = (rect.top + rect.bottom) / 2;
@@ -587,9 +587,9 @@ void drawPlus(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawClose(HDC dc, const RECT& rect)
+void drawClose(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(105, 109, 112));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(178, 178, 183) : RGB(105, 109, 112));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     int cx = (rect.left + rect.right) / 2;
     int cy = (rect.top + rect.bottom) / 2;
@@ -601,9 +601,9 @@ void drawClose(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawShield(HDC dc, const RECT& rect)
+void drawShield(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(67, 72, 75));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
@@ -623,9 +623,9 @@ void drawShield(HDC dc, const RECT& rect)
     DeleteObject(pen);
 }
 
-void drawReader(HDC dc, const RECT& rect)
+void drawReader(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(67, 72, 75));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
     int cx = (rect.left + rect.right) / 2;
