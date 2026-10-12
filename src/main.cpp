@@ -83,6 +83,9 @@ constexpr UINT kEditCut = 2222;
 constexpr UINT kEditCopy = 2223;
 constexpr UINT kEditPaste = 2224;
 constexpr UINT kEditSelectAll = 2225;
+constexpr UINT kSidebarBookmarks = 2230;
+constexpr UINT kSidebarReadingList = 2231;
+constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 
 constexpr UINT kMenuNewTab = 2001;
@@ -952,7 +955,10 @@ struct BrowserState {
     {
         if (point.y < 0 || point.y >= titleBarHeight())
             return -1;
-        for (int i = 0; i < 8; ++i) {
+        RECT safariMenu = menuBarItemRect(0);
+        if (point.x >= scaleForDpi(window, 14) && point.x < safariMenu.right)
+            return 0;
+        for (int i = 1; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
             if (PtInRect(&item, point))
                 return i;
@@ -973,9 +979,9 @@ struct BrowserState {
         const int width = scaleForDpi(window, 66);
         const int top = titleBarHeight();
         return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18),
-            top + scaleForDpi(window, 3),
+            top + scaleForDpi(window, 7),
             pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18) + width,
-            top + toolbarHeight() - scaleForDpi(window, 3) };
+            top + toolbarHeight() - scaleForDpi(window, 7) };
     }
 
     RECT navigationPillRect() const
@@ -2147,6 +2153,32 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DestroyMenu(overview);
     }
 
+    void showSidebarSelectionMenu()
+    {
+        HMENU popup = CreatePopupMenu();
+        if (!popup)
+            return;
+        AppendMenuW(popup, MF_STRING | (sidebarSection == 0 ? MF_CHECKED : 0), kSidebarBookmarks, L"Bookmarks");
+        AppendMenuW(popup, MF_STRING | (sidebarSection == 1 ? MF_CHECKED : 0), kSidebarReadingList, L"Reading List");
+        AppendMenuW(popup, MF_STRING | (sidebarSection == 2 ? MF_CHECKED : 0), kSidebarHistory, L"History");
+
+        RECT button = sidebarButtonRect();
+        POINT point { button.left, button.bottom };
+        ClientToScreen(window, &point);
+        const UINT command = TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+            point.x, point.y, 0, window, nullptr);
+        DestroyMenu(popup);
+        if (!command)
+            return;
+
+        if (command == kSidebarBookmarks) sidebarSection = 0;
+        else if (command == kSidebarReadingList) sidebarSection = 1;
+        else if (command == kSidebarHistory) sidebarSection = 2;
+        sidebarOpen = true;
+        resize();
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
     void showMenuBarPopup(int menuIndex, POINT clientPoint)
     {
         HMENU popup = CreatePopupMenu();
@@ -2237,8 +2269,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int index = menuBarItemAt(point);
         if (index < 0)
             return false;
-        RECT item = menuBarItemRect(index);
-        POINT popupPoint { item.left, item.bottom };
+        POINT popupPoint { point.x, titleBarHeight() };
         showMenuBarPopup(index, popupPoint);
         return true;
     }
@@ -2531,6 +2562,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
+        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; resize(); break;
+        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; resize(); break;
+        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; resize(); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -2774,7 +2808,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&traffic[2], point)) { handleCommand(kCommandMaximize); return true; }
 
         RECT sidebar = sidebarButtonRect();
-        if (PtInRect(&sidebar, point)) { handleCommand(kCommandSidebar); return true; }
+        if (PtInRect(&sidebar, point)) {
+            if (point.x >= sidebar.right - scaleForDpi(window, 18))
+                showSidebarSelectionMenu();
+            else
+                handleCommand(kCommandSidebar);
+            return true;
+        }
 
         RECT navigation = navigationPillRect();
         RECT back { navigation.left, navigation.top, navigation.left + (navigation.right - navigation.left) / 2, navigation.bottom };
@@ -3006,12 +3046,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(241, 242, 243));
+        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(121, 133, 151));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(246, 247, 248));
+        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(255, 255, 255));
         RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -3031,12 +3071,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
         SetBkMode(dc, TRANSPARENT);
         drawAppleMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 10),
-            dark ? RGB(235, 235, 238) : RGB(42, 43, 46));
+            RGB(255, 255, 255));
         const wchar_t* menuLabels[] = { L"Safari", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
         for (int i = 0; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
             RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
-            SetTextColor(dc, dark ? RGB(235, 235, 238) : RGB(42, 43, 46));
+            SetTextColor(dc, RGB(255, 255, 255));
             DrawTextW(dc, menuLabels[i], -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
         SelectObject(dc, oldMenuFont);
@@ -3137,7 +3177,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(245, 246, 247));
+        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(255, 255, 255));
         HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(208, 212, 214));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
@@ -3934,8 +3974,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && (reinterpret_cast<HWND>(lParam) == state->addressBar || reinterpret_cast<HWND>(lParam) == state->findEdit)) {
             HDC dc = reinterpret_cast<HDC>(wParam);
             SetTextColor(dc, state->darkTheme() ? RGB(240, 240, 242) : RGB(45, 49, 52));
-            SetBkColor(dc, state->darkTheme() ? RGB(57, 57, 60) : RGB(240, 242, 243));
-            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(240, 242, 243));
+            SetBkColor(dc, state->darkTheme() ? RGB(57, 57, 60) : RGB(255, 255, 255));
+            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(255, 255, 255));
             static HBRUSH darkAddressBrush = CreateSolidBrush(RGB(57, 57, 60));
             return reinterpret_cast<LRESULT>(state->darkTheme() ? darkAddressBrush : lightAddressBrush);
         }
