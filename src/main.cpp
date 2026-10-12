@@ -942,13 +942,14 @@ struct BrowserState {
 
     RECT menuBarItemRect(int index) const
     {
-        static const int widths[] = { 46, 30, 30, 32, 48, 78, 58, 34 };
-        const int gap = scaleForDpi(window, 6);
-        int x = scaleForDpi(window, 52);
-        for (int i = 0; i < index && i < 8; ++i)
-            x += scaleForDpi(window, widths[i]) + gap;
-        const int width = index >= 0 && index < 8 ? scaleForDpi(window, widths[index]) : 0;
-        return { x, 0, x + width, titleBarHeight() };
+        // Positions follow the spacing in the Safari menu-bar reference.
+        static const int lefts[] = { 58, 122, 166, 211, 264, 330, 498, 569 };
+        static const int widths[] = { 48, 28, 28, 31, 44, 66, 50, 34 };
+        if (index < 0 || index >= 8)
+            return { 0, 0, 0, titleBarHeight() };
+        const int left = scaleForDpi(window, lefts[index]);
+        const int width = scaleForDpi(window, widths[index]);
+        return { left, 0, left + width, titleBarHeight() };
     }
 
     int menuBarItemAt(POINT point) const
@@ -978,9 +979,9 @@ struct BrowserState {
         const int lightGap = scaleForDpi(window, kTrafficLightGap);
         const int width = scaleForDpi(window, 66);
         const int top = titleBarHeight();
-        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18),
+        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21),
             top + scaleForDpi(window, 7),
-            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18) + width,
+            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21) + width,
             top + toolbarHeight() - scaleForDpi(window, 7) };
     }
 
@@ -988,7 +989,7 @@ struct BrowserState {
     {
         RECT sidebar = sidebarButtonRect();
         const int gap = scaleForDpi(window, kToolbarGap);
-        const int button = scaleForDpi(window, kToolbarButtonSize + 6);
+        const int button = scaleForDpi(window, kToolbarButtonSize + 12);
         return { sidebar.right + gap * 2, sidebar.top,
             sidebar.right + gap * 2 + button * 2 + gap * 2, sidebar.bottom };
     }
@@ -997,7 +998,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int pad = scaleForDpi(window, 13);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, 8);
         const int left = client.right - pad - (3 - index) * button - (2 - index) * gap;
@@ -3065,7 +3066,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int tabsTop = menuH + toolbarH;
         const int tabsH = tabsBarHeight();
 
-        HFONT menuFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT menuFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
