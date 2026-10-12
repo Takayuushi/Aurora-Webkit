@@ -952,6 +952,23 @@ struct BrowserState {
     int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
     int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
 
+    RECT trafficLightHitRect(int index) const
+    {
+        if (index < 0 || index >= 3)
+            return { 0, 0, 0, 0 };
+
+        // Use the same coordinates as the painted traffic lights. The padded
+        // hit region is shared by WM_NCHITTEST and WM_LBUTTONDOWN so Windows
+        // doesn't treat clicks on the circles as a draggable caption.
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int light = scaleForDpi(window, kTrafficLightSize);
+        const int lightGap = scaleForDpi(window, kTrafficLightGap);
+        const int hitPad = scaleForDpi(window, 6);
+        const int x = pad + index * (light + lightGap);
+        const int y = titleBarHeight() + (toolbarHeight() - light) / 2;
+        return { x - hitPad, y - hitPad, x + light + hitPad, y + light + hitPad };
+    }
+
     RECT sidebarButtonRect() const
     {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
@@ -2675,18 +2692,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (point.y < top || point.y >= top + toolbarHeight())
             return false;
 
-        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
-        const int light = scaleForDpi(window, kTrafficLightSize);
-        const int lightGap = scaleForDpi(window, kTrafficLightGap);
-        const int trafficHit = scaleForDpi(window, 20);
-        const int trafficY = top + (toolbarHeight() - trafficHit) / 2;
-        const RECT traffic[] = {
-            { pad - scaleForDpi(window, 3), trafficY, pad - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
-            { pad + light + lightGap - scaleForDpi(window, 3), trafficY, pad + light + lightGap - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
-            { pad + (light + lightGap) * 2 - scaleForDpi(window, 3), trafficY, pad + (light + lightGap) * 2 - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit }
-        };
-        for (const auto& rect : traffic) {
-            if (PtInRect(&rect, point))
+        for (int i = 0; i < 3; ++i) {
+            const RECT hitRect = trafficLightHitRect(i);
+            if (PtInRect(&hitRect, point))
                 return true;
         }
 
@@ -2715,7 +2723,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int pad = scaleForDpi(window, 12);
         const int tabCount = static_cast<int>(tabs.size());
         const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
-        const int tabWidth = std::max(scaleForDpi(window, 80), available / std::max(1, tabCount));
+        const int desiredTabWidth = available / std::max(1, tabCount);
+        const int tabWidth = std::clamp(desiredTabWidth,
+            scaleForDpi(window, 120), scaleForDpi(window, 280));
         for (size_t i = 0; i < tabs.size(); ++i) {
             const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
             RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
@@ -2732,19 +2742,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (point.y < top || point.y >= bottom)
             return false;
 
-        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
-        const int light = scaleForDpi(window, kTrafficLightSize);
-        const int lightGap = scaleForDpi(window, kTrafficLightGap);
-        const int trafficHit = scaleForDpi(window, 20);
-        const int trafficY = top + (toolbarHeight() - trafficHit) / 2;
-        const RECT traffic[] = {
-            { pad - scaleForDpi(window, 3), trafficY, pad - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
-            { pad + light + lightGap - scaleForDpi(window, 3), trafficY, pad + light + lightGap - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
-            { pad + (light + lightGap) * 2 - scaleForDpi(window, 3), trafficY, pad + (light + lightGap) * 2 - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit }
-        };
-        if (PtInRect(&traffic[0], point)) { handleCommand(kCommandCloseWindow); return true; }
-        if (PtInRect(&traffic[1], point)) { handleCommand(kCommandMinimize); return true; }
-        if (PtInRect(&traffic[2], point)) { handleCommand(kCommandMaximize); return true; }
+        const RECT closeWindowHit = trafficLightHitRect(0);
+        const RECT minimizeHit = trafficLightHitRect(1);
+        const RECT maximizeHit = trafficLightHitRect(2);
+        if (PtInRect(&closeWindowHit, point)) { handleCommand(kCommandCloseWindow); return true; }
+        if (PtInRect(&minimizeHit, point)) { handleCommand(kCommandMinimize); return true; }
+        if (PtInRect(&maximizeHit, point)) { handleCommand(kCommandMaximize); return true; }
 
         RECT sidebar = sidebarButtonRect();
         if (PtInRect(&sidebar, point)) {
@@ -3087,7 +3090,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             const int tabPad = scaleForDpi(window, 12);
             const int tabCount = static_cast<int>(tabs.size());
             const int available = std::max(0, static_cast<int>(client.right) - tabPad * 2 - tabGap * (tabCount + 1));
-            const int tabWidth = std::max(scaleForDpi(window, 80), available / std::max(1, tabCount));
+            const int desiredTabWidth = available / std::max(1, tabCount);
+            const int tabWidth = std::clamp(desiredTabWidth,
+                scaleForDpi(window, 120), scaleForDpi(window, 280));
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const int left = tabPad + tabGap + static_cast<int>(i) * (tabWidth + tabGap);
