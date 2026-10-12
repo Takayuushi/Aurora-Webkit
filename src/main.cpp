@@ -576,7 +576,8 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     const int insetY = std::max(4, rectHeight / 4);
     RECT outline { rect.left + insetX, rect.top + insetY, rect.right - insetX, rect.bottom - insetY };
     RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, 4, 4);
-    const int splitX = outline.left + std::max(4, (outline.right - outline.left) / 3);
+    const int outlineWidth = static_cast<int>(outline.right - outline.left);
+    const int splitX = static_cast<int>(outline.left) + std::max(4, outlineWidth / 3);
     MoveToEx(dc, splitX, outline.top + 1, nullptr);
     LineTo(dc, splitX, outline.bottom - 1);
 
