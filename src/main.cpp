@@ -159,14 +159,12 @@ void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKD
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
-void printPageCountCompleted(WKRect*, uint32_t, double, WKErrorRef, void*);
 void websiteDataCleared(void*);
 void websiteDataStorageCleared(void*);
 void websiteDataLocalStorageCleared(void*);
 void websiteDataNetworkCacheCleared(void*);
 void websiteDataMemoryCacheCleared(void*);
 void websiteDataFetchCacheCleared(void*);
-void printPDFDataCompleted(WKDataRef, WKErrorRef, void*);
 
 struct FaviconResult {
     std::wstring url;
@@ -216,8 +214,6 @@ struct SavePageRequest {
     HWND owner { nullptr };
     std::wstring path;
     WKPageRef page { nullptr };
-    WKFrameRef frame { nullptr };
-    WKPrintInfo printInfo { 1.0f, 595.0f, 842.0f };
 };
 
 struct DownloadEntry {
@@ -1983,46 +1979,33 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         request->owner = window;
         request->path = path.data();
         request->page = WKViewGetPage(tab->view.get());
-        request->frame = WKPageGetMainFrame(request->page);
         WKPageGetContentsAsMHTMLData(request->page, request, savePageDataCompleted);
     }
 
     void printPage()
     {
         auto* tab = active();
-        if (!tab || !tab->activeUrl.size() || tab->activeUrl == L"about:blank" || tab->activeUrl.rfind(L"about:", 0) == 0) {
-            MessageBoxW(window, L"Open a webpage before printing.", L"Print", MB_OK | MB_ICONINFORMATION);
+        if (!tab || tab->activeUrl.empty() || tab->activeUrl == L"about:blank"
+            || tab->activeUrl.rfind(L"about:", 0) == 0
+            || (tab->activeUrl.rfind(L"https://", 0) != 0 && tab->activeUrl.rfind(L"http://", 0) != 0)) {
+            MessageBoxW(window, L"Open a regular webpage before printing.", L"Print", MB_OK | MB_ICONINFORMATION);
             return;
         }
 
-        std::wstring filename = tab->title.empty() ? L"Webpage" : tab->title;
-        for (auto& ch : filename) {
-            if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
-                ch = L'_';
-        }
-        filename += L".pdf";
-
-        std::vector<wchar_t> path(32768, L'\0');
-        wcsncpy_s(path.data(), path.size(), filename.c_str(), _TRUNCATE);
-        const wchar_t filter[] = L"PDF document (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0\0";
-        OPENFILENAMEW dialog { };
-        dialog.lStructSize = sizeof(dialog);
-        dialog.hwndOwner = window;
-        dialog.lpstrFilter = filter;
-        dialog.lpstrFile = path.data();
-        dialog.nMaxFile = static_cast<DWORD>(path.size());
-        dialog.lpstrDefExt = L"pdf";
-        dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-        if (!GetSaveFileNameW(&dialog))
+        const wchar_t prompt[] =
+            L"This Windows WebKit build does not expose native page-to-PDF printing.\n\n"
+            L"Aurora can open this page in your default browser, where you can use Ctrl+P. "
+            L"The other browser may not share Aurora's login session. Continue?";
+        if (MessageBoxW(window, prompt, L"Print", MB_YESNO | MB_ICONQUESTION) != IDYES)
             return;
 
-        auto* request = new SavePageRequest;
-        request->owner = window;
-        request->path = path.data();
-        request->page = WKViewGetPage(tab->view.get());
-        request->frame = WKPageGetMainFrame(request->page);
-        request->printInfo = { 1.0f, 595.0f, 842.0f };
-        WKPageComputePagesForPrinting(request->page, request->frame, request->printInfo, printPageCountCompleted, request);
+        HINSTANCE result = ShellExecuteW(window, L"open", tab->activeUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) <= 32) {
+            MessageBoxW(window, L"Windows could not open this page in your default browser.", L"Print", MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        MessageBoxW(window, L"The page was opened in your default browser. Use Ctrl+P there to print it.", L"Print", MB_OK | MB_ICONINFORMATION);
     }
 
     void showShareMenu()
@@ -3473,43 +3456,6 @@ void savePageDataCompleted(WKDataRef data, WKErrorRef error, void* context)
 
     if (IsWindow(request->owner))
         MessageBoxW(request->owner, (L"Page saved to:\n" + request->path).c_str(), L"Save Page As", MB_OK | MB_ICONINFORMATION);
-}
-
-void printPDFDataCompleted(WKDataRef data, WKErrorRef error, void* context)
-{
-    std::unique_ptr<SavePageRequest> request(static_cast<SavePageRequest*>(context));
-    if (!request)
-        return;
-
-    WKPageEndPrinting(request->page);
-    if (error || !writeDataToFile(request->path, data)) {
-        if (IsWindow(request->owner))
-            MessageBoxW(request->owner, L"WebKit could not create a PDF for this page.", L"Print", MB_OK | MB_ICONWARNING);
-        return;
-    }
-
-    // Use the registered Windows PDF handler's print verb as the platform equivalent
-    // of Safari's print panel. The saved PDF remains available at the chosen path.
-    HINSTANCE result = ShellExecuteW(request->owner, L"print", request->path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    if (reinterpret_cast<INT_PTR>(result) <= 32 && IsWindow(request->owner))
-        MessageBoxW(request->owner, L"The page was saved as a PDF, but Windows has no PDF print handler configured. Open the PDF and print it from your PDF reader.", L"Print", MB_OK | MB_ICONINFORMATION);
-}
-
-void printPageCountCompleted(WKRect*, uint32_t pageCount, double, WKErrorRef error, void* context)
-{
-    auto* request = static_cast<SavePageRequest*>(context);
-    if (!request)
-        return;
-
-    if (error || pageCount == 0) {
-        if (IsWindow(request->owner))
-            MessageBoxW(request->owner, L"WebKit could not prepare this page for printing.", L"Print", MB_OK | MB_ICONWARNING);
-        delete request;
-        return;
-    }
-
-    WKPageBeginPrinting(request->page, request->frame, request->printInfo);
-    WKPageDrawPagesToPDF(request->page, request->frame, request->printInfo, 0, pageCount, printPDFDataCompleted, request);
 }
 
 void websiteDataCleared(void* context)
