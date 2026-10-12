@@ -490,7 +490,9 @@ void setNativeWindowBorderColor(HWND window, bool dark)
         GetProcAddress(dwmapi, "DwmSetWindowAttribute")
     );
     if (setWindowAttribute) {
-        DWORD borderColor = dark ? RGB(35, 35, 37) : RGB(121, 133, 151);
+        // Keep Windows from drawing an accent-coloured outline around Aurora.
+        // The custom chrome already draws its own edge and remains resizable.
+        DWORD borderColor = 0xFFFFFFFE; // DWMWA_COLOR_NONE
         setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
     }
     FreeLibrary(dwmapi);
@@ -569,12 +571,14 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
     const int rectWidth = static_cast<int>(rect.right - rect.left);
-    const int inset = std::max(5, rectWidth / 5);
-    RECT outline { rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset };
-    Rectangle(dc, outline.left, outline.top, outline.right, outline.bottom);
-    const int splitX = outline.left + (outline.right - outline.left) / 3;
-    MoveToEx(dc, splitX, outline.top, nullptr);
-    LineTo(dc, splitX, outline.bottom);
+    const int insetX = std::max(5, rectWidth / 5);
+    const int rectHeight = static_cast<int>(rect.bottom - rect.top);
+    const int insetY = std::max(4, rectHeight / 4);
+    RECT outline { rect.left + insetX, rect.top + insetY, rect.right - insetX, rect.bottom - insetY };
+    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, 4, 4);
+    const int splitX = outline.left + std::max(4, (outline.right - outline.left) / 3);
+    MoveToEx(dc, splitX, outline.top + 1, nullptr);
+    LineTo(dc, splitX, outline.bottom - 1);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -680,11 +684,11 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(brush);
 }
 
-void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
+void drawTrafficLight(HDC dc, int x, int y, int size, COLORREF color)
 {
     HBRUSH brush = CreateSolidBrush(color);
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
-    Ellipse(dc, x, y, x + kTrafficLightSize, y + kTrafficLightSize);
+    Ellipse(dc, x, y, x + size, y + size);
     SelectObject(dc, oldBrush);
     DeleteObject(brush);
 }
@@ -717,24 +721,26 @@ void drawClose(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(pen);
 }
 
-void drawShield(HDC dc, const RECT& rect, bool dark = false)
+void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
+    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(67, 72, 75);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    POINT outline[] = {
-        { cx, cy - 7 },
-        { cx + 6, cy - 4 },
-        { cx + 5, cy + 2 },
-        { cx, cy + 7 },
-        { cx - 5, cy + 2 },
-        { cx - 6, cy - 4 },
-        { cx, cy - 7 }
-    };
-    Polyline(dc, outline, static_cast<int>(std::size(outline)));
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int w = 13;
+    const int h = 16;
+    RoundRect(dc, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, 2, 2);
+    MoveToEx(dc, cx - 3, cy - 3, nullptr);
+    LineTo(dc, cx + 3, cy - 3);
+    MoveToEx(dc, cx - 3, cy, nullptr);
+    LineTo(dc, cx + 3, cy);
+    MoveToEx(dc, cx - 3, cy + 3, nullptr);
+    LineTo(dc, cx + 1, cy + 3);
 
+    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -975,11 +981,11 @@ struct BrowserState {
         const int light = scaleForDpi(window, kTrafficLightSize);
         const int lightGap = scaleForDpi(window, kTrafficLightGap);
         const int width = scaleForDpi(window, 66);
-        const int top = titleBarHeight();
+        const int top = titleBarHeight() + (toolbarHeight() - scaleForDpi(window, 36)) / 2;
         return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21),
-            top + scaleForDpi(window, 8),
+            top,
             pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21) + width,
-            top + toolbarHeight() - scaleForDpi(window, 8) };
+            top + scaleForDpi(window, 36) };
     }
 
     RECT sidebarSettingsRect() const
@@ -1014,8 +1020,9 @@ struct BrowserState {
             return { 0, 0, 0, 0 };
         const int left = client.right - pad - (buttonCount - index) * button
             - (buttonCount - index - 1) * gap;
-        return { left, titleBarHeight() + scaleForDpi(window, 3),
-            left + button, titleBarHeight() + toolbarHeight() - scaleForDpi(window, 3) };
+        const int height = scaleForDpi(window, 36);
+        const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
+        return { left, top, left + button, top + height };
     }
 
     TabState* active()
@@ -2242,8 +2249,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const int gap = scaleForDpi(window, kToolbarGap);
         const RECT navigation = navigationPillRect();
-        // The first right-side control is Downloads when the current window
-        // has downloads; otherwise Share is the first control.
+        // Reserve equal space for Safari-style Share, New Tab, and Tab Overview.
         const RECT firstRightButton = rightToolbarButtonRect(0);
         const int minLeft = navigation.right + gap * 2;
         const int maxRight = firstRightButton.left - gap * 2;
@@ -3034,9 +3040,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int tabsH = tabsBarHeight();
 
         const int lightY = toolbarTop + (toolbarH - light) / 2;
-        drawTrafficLight(dc, pad, lightY, RGB(255, 95, 87));
-        drawTrafficLight(dc, pad + light + lightGap, lightY, RGB(255, 189, 46));
-        drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, RGB(39, 201, 63));
+        drawTrafficLight(dc, pad, lightY, light, RGB(255, 95, 87));
+        drawTrafficLight(dc, pad + light + lightGap, lightY, light, RGB(255, 189, 46));
+        drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, light, RGB(39, 201, 63));
 
         RECT sidebarRect = sidebarButtonRect();
         HBRUSH sidebarButtonBrush = CreateSolidBrush(dark ? RGB(55, 55, 58) : RGB(251, 251, 252));
@@ -3138,8 +3144,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
 
-        RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
-        drawShield(dc, privacyGlyph, dark);
+        RECT siteSettingsGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
+        drawWebsiteSettings(dc, siteSettingsGlyph, dark);
         const bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
