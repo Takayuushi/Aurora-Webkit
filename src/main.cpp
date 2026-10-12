@@ -138,7 +138,7 @@ constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
-constexpr int kTitleBarHeight = 36;
+constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 56;
 constexpr int kTabsBarHeight = 34;
 constexpr int kToolbarHorizontalPadding = 22;
@@ -680,59 +680,6 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(brush);
 }
 
-void drawAuroraMenuMark(HDC dc, int x, int y, COLORREF color)
-{
-    const int size = 18;
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
-    Ellipse(dc, x, y, x + size, y + size);
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-
-    HFONT font = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, color);
-    RECT letter { x + 1, y, x + size - 1, y + size };
-    DrawTextW(dc, L"a", -1, &letter, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, oldFont);
-    DeleteObject(font);
-}
-
-void drawSafariStyleMenuBackground(HDC dc, const RECT& rect)
-{
-    if (rect.right <= rect.left || rect.bottom <= rect.top)
-        return;
-
-    // Use a small number of adjacent colour bands to recreate Safari's blue
-    // macOS menu strip without introducing a platform-specific library.
-    const int rectWidth = static_cast<int>(rect.right - rect.left);
-    const int bands = std::min(96, std::max(1, rectWidth));
-    for (int i = 0; i < bands; ++i) {
-        const double t = bands > 1 ? static_cast<double>(i) / (bands - 1) : 0.0;
-        const auto mix = [t](int a, int b) {
-            return static_cast<BYTE>(std::clamp(static_cast<int>(a + (b - a) * t), 0, 255));
-        };
-        const COLORREF color = RGB(
-            mix(41, 52),
-            mix(119, 132),
-            mix(166, 177)
-        );
-        HBRUSH brush = CreateSolidBrush(color);
-        RECT band {
-            rect.left + (rect.right - rect.left) * i / bands,
-            rect.top,
-            rect.left + (rect.right - rect.left) * (i + 1) / bands,
-            rect.bottom
-        };
-        FillRect(dc, &band, brush);
-        DeleteObject(brush);
-    }
-}
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
 {
     HBRUSH brush = CreateSolidBrush(color);
@@ -1004,42 +951,6 @@ struct BrowserState {
     int toolbarHeight() const { return scaleForDpi(window, kToolbarHeight); }
     int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
     int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
-
-    RECT menuBarItemRect(int index) const
-    {
-        // Positions and widths mirror the compact Safari-style menu row.
-        static const int lefts[] = { 58, 122, 166, 211, 264, 330, 414, 498, 569 };
-        static const int widths[] = { 48, 28, 28, 31, 49, 72, 60, 53, 34 };
-        if (index < 0 || index >= 9)
-            return { 0, 0, 0, titleBarHeight() };
-        const int left = scaleForDpi(window, lefts[index]);
-        const int width = scaleForDpi(window, widths[index]);
-        return { left, 0, left + width, titleBarHeight() };
-    }
-
-    int menuBarItemAt(POINT point) const
-    {
-        if (point.y < 0 || point.y >= titleBarHeight())
-            return -1;
-
-        // The Aurora mark and its application menu are one hit target.
-        const RECT appMenu = menuBarItemRect(0);
-        if (point.x >= scaleForDpi(window, 14) && point.x < appMenu.right)
-            return 0;
-
-        for (int i = 1; i < 9; ++i) {
-            const RECT item = menuBarItemRect(i);
-            if (PtInRect(&item, point))
-                return i;
-        }
-        return -1;
-    }
-
-    bool menuBarHasInteractiveHit(POINT point) const
-    {
-        return menuBarItemAt(point) >= 0;
-    }
-
 
     RECT sidebarButtonRect() const
     {
@@ -2270,107 +2181,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             WKPageExecuteCommand(WKViewGetPage(tab->view.get()), commandString.get());
     }
 
-    void showMenuBarPopup(int menuIndex, POINT clientPoint)
-    {
-        HMENU popup = CreatePopupMenu();
-        if (!popup)
-            return;
-
-        switch (menuIndex) {
-        case 0: // Aurora
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
-            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Settings...");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuThemeLight, L"Light Appearance");
-            AppendMenuW(popup, MF_STRING, kMenuThemeDark, L"Dark Appearance");
-            AppendMenuW(popup, MF_STRING, kMenuThemeSystem, L"Automatic Appearance");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
-            break;
-        case 1: // File
-            AppendMenuW(popup, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
-            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window\tCtrl+N");
-            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window\tCtrl+Shift+P");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab\tCtrl+W");
-            AppendMenuW(popup, MF_STRING, kMenuSavePage, L"Save Page As...");
-            AppendMenuW(popup, MF_STRING, kMenuPrint, L"Print...");
-            AppendMenuW(popup, MF_STRING, kMenuDownloads, L"Downloads\tCtrl+I");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
-            break;
-        case 2: // Edit
-            AppendMenuW(popup, MF_STRING, kEditUndo, L"Undo");
-            AppendMenuW(popup, MF_STRING, kEditRedo, L"Redo");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kEditCut, L"Cut");
-            AppendMenuW(popup, MF_STRING, kEditCopy, L"Copy");
-            AppendMenuW(popup, MF_STRING, kEditPaste, L"Paste");
-            AppendMenuW(popup, MF_STRING, kEditSelectAll, L"Select All");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuFindInPage, L"Find in Page...\tCtrl+F");
-            break;
-        case 3: // View
-            AppendMenuW(popup, MF_STRING, kCommandSidebar, L"Show Sidebar");
-            AppendMenuW(popup, MF_STRING, kMenuStartPage, L"Start Page");
-            AppendMenuW(popup, MF_STRING, kMenuHomePage, L"Home Page");
-            AppendMenuW(popup, MF_STRING, kCommandReader, L"Show Reader");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuZoomOut, L"Zoom Out");
-            AppendMenuW(popup, MF_STRING, kMenuResetZoom, L"Actual Size");
-            AppendMenuW(popup, MF_STRING, kMenuZoomIn, L"Zoom In");
-            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
-            break;
-        case 4: // History
-            AppendMenuW(popup, MF_STRING, kMenuHistory, L"Show All History");
-            AppendMenuW(popup, MF_STRING, kMenuClearHistory, L"Clear History...");
-            break;
-        case 5: // Bookmarks
-            AppendMenuW(popup, MF_STRING, kMenuAddBookmark, L"Add Bookmark...");
-            AppendMenuW(popup, MF_STRING, kMenuBookmarks, L"Show Bookmarks");
-            AppendMenuW(popup, MF_STRING, kMenuAddReadingList, L"Add to Reading List");
-            AppendMenuW(popup, MF_STRING, kMenuReadingList, L"Show Reading List");
-            break;
-        case 6: // Develop — Windows/WebKit equivalents, no Apple services
-            AppendMenuW(popup, MF_STRING, kMenuExtensions, L"Manage User Scripts...");
-            AppendMenuW(popup, MF_STRING, kMenuOpenExtensionsFolder, L"Open User Scripts Folder");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Developer Settings...");
-            break;
-        case 7: // Window
-            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window");
-            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window");
-            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
-            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab");
-            break;
-        case 8: // Help
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
-            break;
-        default:
-            DestroyMenu(popup);
-            return;
-        }
-
-        ClientToScreen(window, &clientPoint);
-        const UINT command = TrackPopupMenu(
-            popup, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-            clientPoint.x, clientPoint.y, 0, window, nullptr);
-        DestroyMenu(popup);
-        if (command)
-            handleCommand(command);
-    }
-
-    bool handleMenuBarHit(POINT point)
-    {
-        const int index = menuBarItemAt(point);
-        if (index < 0)
-            return false;
-        POINT popupPoint { point.x, titleBarHeight() };
-        showMenuBarPopup(index, popupPoint);
-        return true;
-    }
-
-
     void showMenu()
     {
         if (bookmarksMenu) {
@@ -3199,7 +3009,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
 
         int dpi = windowDpi(window);
-        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
         int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
@@ -3209,32 +3018,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        RECT titleRect { 0, 0, client.right, titleH };
-        drawSafariStyleMenuBackground(dc, titleRect);
-
         HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(255, 255, 255));
-        RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
+        RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
-
-        HFONT menuFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
-        SetBkMode(dc, TRANSPARENT);
-        drawAuroraMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 9), RGB(255, 255, 255));
-        const wchar_t* menuLabels[] = {
-            L"Aurora", L"File", L"Edit", L"View", L"History",
-            L"Bookmarks", L"Develop", L"Window", L"Help"
-        };
-        for (int i = 0; i < 9; ++i) {
-            const RECT item = menuBarItemRect(i);
-            RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
-            SetTextColor(dc, RGB(255, 255, 255));
-            DrawTextW(dc, menuLabels[i], -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        }
-        SelectObject(dc, oldMenuFont);
-        DeleteObject(menuFont);
 
         drawSidebarPanel(dc);
 
@@ -4166,14 +3953,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (bottom) return HTBOTTOM;
 
         if (state) {
-            const int menuHeight = state->titleBarHeight();
-            if (point.y >= 0 && point.y < menuHeight) {
-                if (!state->menuBarHasInteractiveHit(point))
-                    return HTCAPTION;
-                return HTCLIENT;
-            }
-
-            const int toolbarTop = menuHeight;
+            const int toolbarTop = state->titleBarHeight();
             const int toolbarBottom = toolbarTop + state->toolbarHeight();
             if (point.y >= toolbarTop && point.y < toolbarBottom
                 && !state->toolbarHasInteractiveHit(point))
@@ -4189,9 +3969,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
-        if (state->handleMenuBarHit(point))
-            return 0;
         if (state->handleTopBarHit(point))
+            return 0;
         if (state->handleToolbarHit(point))
             return 0;
         if (state->handleSidebarHit(point))
