@@ -601,19 +601,29 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-
-    Ellipse(dc, cx - 4, cy - 4, cx + 4, cy + 4);
-    Ellipse(dc, cx - 1, cy - 1, cx + 1, cy + 1);
-    MoveToEx(dc, cx, cy - 8, nullptr); LineTo(dc, cx, cy - 5);
-    MoveToEx(dc, cx, cy + 5, nullptr); LineTo(dc, cx, cy + 8);
-    MoveToEx(dc, cx - 8, cy, nullptr); LineTo(dc, cx - 5, cy);
-    MoveToEx(dc, cx + 5, cy, nullptr); LineTo(dc, cx + 8, cy);
-    MoveToEx(dc, cx - 6, cy - 6, nullptr); LineTo(dc, cx - 4, cy - 4);
-    MoveToEx(dc, cx + 4, cy + 4, nullptr); LineTo(dc, cx + 6, cy + 6);
-    MoveToEx(dc, cx + 4, cy - 4, nullptr); LineTo(dc, cx + 6, cy - 6);
-    MoveToEx(dc, cx - 6, cy + 6, nullptr); LineTo(dc, cx - 4, cy + 4);
+    const int diameter = std::max(12, std::min(
+        static_cast<int>(rect.right - rect.left),
+        static_cast<int>(rect.bottom - rect.top)) - 3);
+    const double scale = static_cast<double>(diameter) / 20.0;
+    const int offsets[][2] = {
+        {-3,-9},{3,-9},{3,-6},{5,-5},{7,-5},{7,-2},{9,-2},{9,3},
+        {6,3},{5,5},{5,7},{2,7},{2,9},{-3,9},{-3,6},{-5,5},
+        {-7,5},{-7,2},{-9,2},{-9,-3},{-6,-3},{-5,-5},{-5,-7},
+        {-2,-7},{-2,-9},{-3,-9}
+    };
+    POINT teeth[static_cast<int>(std::size(offsets))];
+    for (size_t i = 0; i < std::size(offsets); ++i) {
+        teeth[i] = {
+            cx + static_cast<int>(offsets[i][0] * scale),
+            cy + static_cast<int>(offsets[i][1] * scale)
+        };
+    }
+    Polygon(dc, teeth, static_cast<int>(std::size(teeth)));
+    const int hole = std::max(2, diameter / 7);
+    Ellipse(dc, cx - hole, cy - hole, cx + hole, cy + hole);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -627,18 +637,26 @@ void drawShare(HDC dc, const RECT& rect, bool dark = false)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
+    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    MoveToEx(dc, cx, cy + 2, nullptr);
-    LineTo(dc, cx, cy - 7);
-    MoveToEx(dc, cx, cy - 7, nullptr);
-    LineTo(dc, cx - 4, cy - 3);
-    MoveToEx(dc, cx, cy - 7, nullptr);
-    LineTo(dc, cx + 4, cy - 3);
-    MoveToEx(dc, cx - 7, cy + 1, nullptr);
-    LineTo(dc, cx - 7, cy + 7);
-    LineTo(dc, cx + 7, cy + 7);
-    LineTo(dc, cx + 7, cy + 1);
+    const auto p = [&](int x, int y) -> POINT {
+        return { cx + static_cast<int>(x * scale), cy + static_cast<int>(y * scale) };
+    };
+    const POINT stemTop = p(0, -8), stemBottom = p(0, 1);
+    const POINT arrowLeft = p(-4, -4), arrowRight = p(4, -4);
+    MoveToEx(dc, stemBottom.x, stemBottom.y, nullptr);
+    LineTo(dc, stemTop.x, stemTop.y);
+    MoveToEx(dc, stemTop.x, stemTop.y, nullptr);
+    LineTo(dc, arrowLeft.x, arrowLeft.y);
+    MoveToEx(dc, stemTop.x, stemTop.y, nullptr);
+    LineTo(dc, arrowRight.x, arrowRight.y);
+    const POINT trayLeftTop = p(-7, 1), trayLeftBottom = p(-7, 8);
+    const POINT trayRightBottom = p(7, 8), trayRightTop = p(7, 1);
+    MoveToEx(dc, trayLeftTop.x, trayLeftTop.y, nullptr);
+    LineTo(dc, trayLeftBottom.x, trayLeftBottom.y);
+    LineTo(dc, trayRightBottom.x, trayRightBottom.y);
+    LineTo(dc, trayRightTop.x, trayRightTop.y);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -651,12 +669,17 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
+    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int w = 12;
-    const int h = 11;
-    RoundRect(dc, cx - w / 2 - 2, cy - h / 2 - 1, cx + w / 2 - 2, cy + h / 2 - 1, 3, 3);
-    RoundRect(dc, cx - w / 2 + 2, cy - h / 2 + 2, cx + w / 2 + 2, cy + h / 2 + 2, 3, 3);
+    const int w = static_cast<int>(12 * scale);
+    const int h = static_cast<int>(11 * scale);
+    const int offset = static_cast<int>(3 * scale);
+    const int radius = std::max(2, static_cast<int>(3 * scale));
+    RoundRect(dc, cx - w / 2 - offset, cy - h / 2 - offset / 2,
+        cx + w / 2 - offset, cy + h / 2 - offset / 2, radius, radius);
+    RoundRect(dc, cx - w / 2 + offset, cy - h / 2 + offset / 2,
+        cx + w / 2 + offset, cy + h / 2 + offset / 2, radius, radius);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -710,12 +733,14 @@ void drawPlus(HDC dc, const RECT& rect, bool dark = false)
 {
     HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(70, 74, 77));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    MoveToEx(dc, cx - 6, cy, nullptr);
-    LineTo(dc, cx + 6, cy);
-    MoveToEx(dc, cx, cy - 6, nullptr);
-    LineTo(dc, cx, cy + 6);
+    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int radius = static_cast<int>(6 * scale);
+    MoveToEx(dc, cx - radius, cy, nullptr);
+    LineTo(dc, cx + radius, cy);
+    MoveToEx(dc, cx, cy - radius, nullptr);
+    LineTo(dc, cx, cy + radius);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -2842,13 +2867,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(divider);
 
         int dpi = windowDpi(window);
-        HFONT font = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT font = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT secondaryFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT secondaryFont = CreateFontW(-MulDiv(9, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        HFONT headingFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
@@ -2858,8 +2883,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             width - scaleForDpi(window, 54), top + scaleForDpi(window, 44) };
         HFONT oldHeadingFont = static_cast<HFONT>(SelectObject(dc, headingFont));
         SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(35, 39, 42));
-        const wchar_t* headingText = sidebarSection == 0 ? L"Bookmarks" : (sidebarSection == 1 ? L"Reading List" : L"History");
-        DrawTextW(dc, headingText, -1, &heading, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, L"Library", -1, &heading, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, oldHeadingFont);
 
         RECT closeRect { width - scaleForDpi(window, 48), top + scaleForDpi(window, 10),
@@ -2881,8 +2905,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
-        int rowTop = top + scaleForDpi(window, 94);
-        int rowHeight = scaleForDpi(window, 48);
+        int rowTop = top + scaleForDpi(window, 88);
+        int rowHeight = scaleForDpi(window, 42);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
@@ -3001,8 +3025,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        int rowTop = top + scaleForDpi(window, 94);
-        int rowHeight = scaleForDpi(window, 48);
+        int rowTop = top + scaleForDpi(window, 88);
+        int rowHeight = scaleForDpi(window, 42);
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
             ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
@@ -3088,8 +3112,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         SelectObject(dc, oldSidebarPen);
         DeleteObject(sidebarButtonBrush);
         DeleteObject(sidebarButtonPen);
-        RECT sidebarGlyph = sidebarRect;
-        sidebarGlyph.right -= MulDiv(10, dpi, 96);
+        const int sidebarIconWidth = MulDiv(22, dpi, 96);
+        const int sidebarIconHeight = MulDiv(20, dpi, 96);
+        RECT sidebarGlyph {
+            sidebarRect.left + MulDiv(10, dpi, 96),
+            (sidebarRect.top + sidebarRect.bottom - sidebarIconHeight) / 2,
+            sidebarRect.left + MulDiv(10, dpi, 96) + sidebarIconWidth,
+            (sidebarRect.top + sidebarRect.bottom + sidebarIconHeight) / 2
+        };
         drawSidebar(dc, sidebarGlyph, dark);
         HPEN dropdownPen = CreatePen(PS_SOLID, 1, dark ? RGB(210, 210, 215) : RGB(72, 76, 80));
         HPEN oldDropdownPen = static_cast<HPEN>(SelectObject(dc, dropdownPen));
