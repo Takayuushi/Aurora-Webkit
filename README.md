@@ -2,7 +2,7 @@
 
 Aurora is a native Windows browser shell built on WebKit's Windows C API. It is **not Chromium-based**.
 
-The current UI pass uses modern Safari as the primary reference for browser chrome, spacing, tab presentation, toolbar placement, built-in pages, and settings. The old large Aurora start-page mark has been removed while the Safari-inspired layout is being developed; app identity can be revisited later.
+The Windows interface follows the layout and interaction patterns of modern Safari while keeping Aurora’s own branding and a native Win32/WebKit implementation. The menu bar uses Aurora naming and its own lowercase “a” mark rather than Apple’s logo or Safari product labels.
 
 ## Available browser features
 
@@ -13,6 +13,7 @@ The current UI pass uses modern Safari as the primary reference for browser chro
 - Multiple browser windows.
 - New Private Window using a separate non-persistent WebKit website data store.
 - DPI-aware window sizing, custom title-bar handling, and resize/maximize controls.
+- A Bookmarks / Reading List / History sidebar. Opening or closing it resizes and repaints the WebKit content viewport.
 - Address-bar URL detection and search, with Google, Bing, or DuckDuckGo selectable in Settings.
 - Page zoom in, zoom out, and reset.
 - Basic Reader Mode using page-level JavaScript/CSS injection.
@@ -29,7 +30,9 @@ Private windows use a non-persistent website data store and skip adding visits t
 
 ### Downloads, sharing, and page actions
 
-- WebKit download callbacks, suggested filenames, progress/completion/failure status, recent downloads, full downloads page, and Show in Folder.
+- An always-visible Downloads toolbar control that opens a recent-downloads menu and a full Downloads page.
+- WebKit download callbacks, suggested filenames, progress/completion/failure status, and Show in Folder. Selecting a completed item opens the downloaded file; an unfinished item reveals its destination in File Explorer when the file is present.
+- Download entries are currently kept in memory for the running browser window; the download list is not restored after restarting Aurora.
 - Share menu with Copy Link, Email Link, and Add Bookmark.
 - Save Page As exports an MHTML web archive where supported by the current WebKit build.
 - Print opens the current HTTP/HTTPS page in the default browser after confirmation, where Windows' native Ctrl+P print flow is available. This fallback is used because the pinned Windows WebKit port does not export its page-to-PDF drawing API; the default browser may not share Aurora's login session.
