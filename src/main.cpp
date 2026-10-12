@@ -568,7 +568,8 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const int inset = std::max(5, (rect.right - rect.left) / 5);
+    const int rectWidth = static_cast<int>(rect.right - rect.left);
+    const int inset = std::max(5, rectWidth / 5);
     RECT outline { rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset };
     Rectangle(dc, outline.left, outline.top, outline.right, outline.bottom);
     const int splitX = outline.left + (outline.right - outline.left) / 3;
@@ -709,7 +710,8 @@ void drawSafariStyleMenuBackground(HDC dc, const RECT& rect)
 
     // Use a small number of adjacent colour bands to recreate Safari's blue
     // macOS menu strip without introducing a platform-specific library.
-    const int bands = std::min(96, std::max(1, rect.right - rect.left));
+    const int rectWidth = static_cast<int>(rect.right - rect.left);
+    const int bands = std::min(96, std::max(1, rectWidth));
     for (int i = 0; i < bands; ++i) {
         const double t = bands > 1 ? static_cast<double>(i) / (bands - 1) : 0.0;
         const auto mix = [t](int a, int b) {
@@ -2885,7 +2887,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
 
         for (int i = 0; i < 3; ++i) {
-            if (PtInRect(&rightToolbarButtonRect(i), point))
+            const RECT buttonRect = rightToolbarButtonRect(i);
+            if (PtInRect(&buttonRect, point))
                 return true;
         }
         return false;
@@ -3093,7 +3096,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        RECT settingsRect = sidebarSettingsRect();
         RECT footer { 0, settingsRect.top - scaleForDpi(window, 8), width, client.bottom };
         HBRUSH footerBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
         FillRect(dc, &footer, footerBrush);
