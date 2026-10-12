@@ -134,7 +134,6 @@ constexpr int kToolbarHeight = 33;
 constexpr int kToolbarHorizontalPadding = 12;
 constexpr int kToolbarButtonSize = 24;
 constexpr int kToolbarGap = 4;
-constexpr int kLogoSize = 17;
 constexpr int kTabMinWidth = 112;
 constexpr int kTabMaxWidth = 280;
 constexpr int kTrafficLightSize = 12;
@@ -621,27 +620,6 @@ void drawDownload(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(pen);
 }
 
-void drawPageMenu(HDC dc, const RECT& rect, bool dark = false)
-{
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int left = rect.left + 8;
-    int top = rect.top + 7;
-    int right = rect.right - 8;
-    int bottom = rect.bottom - 7;
-
-    RoundRect(dc, left, top, right, bottom, 2, 2);
-    int lineX = left + 4;
-    for (int y : { top + 5, top + 9, top + 13 }) {
-        MoveToEx(dc, lineX, y, nullptr);
-        LineTo(dc, right - 4, y);
-    }
-
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
 void drawMenu(HDC dc, const RECT& rect, bool dark = false)
 {
     HBRUSH brush = CreateSolidBrush(dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
@@ -715,26 +693,6 @@ void drawShield(HDC dc, const RECT& rect, bool dark = false)
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
-
-void drawReader(HDC dc, const RECT& rect, bool dark = false)
-{
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    RoundRect(dc, cx - 7, cy - 7, cx + 7, cy + 7, 3, 3);
-    MoveToEx(dc, cx - 4, cy - 3, nullptr);
-    LineTo(dc, cx + 4, cy - 3);
-    MoveToEx(dc, cx - 4, cy, nullptr);
-    LineTo(dc, cx + 4, cy);
-    MoveToEx(dc, cx - 4, cy + 3, nullptr);
-    LineTo(dc, cx + 4, cy + 3);
-
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
