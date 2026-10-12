@@ -979,9 +979,9 @@ struct BrowserState {
         const int width = scaleForDpi(window, 66);
         const int top = titleBarHeight();
         return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21),
-            top + scaleForDpi(window, 7),
+            top + scaleForDpi(window, 8),
             pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21) + width,
-            top + toolbarHeight() - scaleForDpi(window, 7) };
+            top + toolbarHeight() - scaleForDpi(window, 8) };
     }
 
     RECT navigationPillRect() const
@@ -2336,7 +2336,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int left = (static_cast<int>(client.right) - width) / 2;
         left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
-        const int height = scaleForDpi(window, 32);
+        const int height = scaleForDpi(window, 36);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + width, top + height };
     }
