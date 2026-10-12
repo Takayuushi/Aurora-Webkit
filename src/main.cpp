@@ -145,7 +145,6 @@ constexpr int kToolbarHorizontalPadding = 22;
 constexpr int kToolbarButtonSize = 24;
 constexpr int kToolbarGap = 4;
 constexpr int kTabMinWidth = 112;
-constexpr int kTabMaxWidth = 280;
 constexpr int kTrafficLightSize = 13;
 constexpr int kTrafficLightGap = 12;
 constexpr int kResizeBorder = 4;
@@ -2776,8 +2775,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int pad = scaleForDpi(window, 12);
         const int tabCount = static_cast<int>(tabs.size());
         const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
-        const int tabWidth = std::clamp(available / std::max(1, tabCount),
-            scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
+        const int tabWidth = std::max(scaleForDpi(window, 80), available / std::max(1, tabCount));
         for (size_t i = 0; i < tabs.size(); ++i) {
             const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
             RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
@@ -3139,8 +3137,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             const int tabPad = scaleForDpi(window, 12);
             const int tabCount = static_cast<int>(tabs.size());
             const int available = std::max(0, static_cast<int>(client.right) - tabPad * 2 - tabGap * (tabCount + 1));
-            const int tabWidth = std::clamp(available / std::max(1, tabCount),
-                scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
+            const int tabWidth = std::max(scaleForDpi(window, 80), available / std::max(1, tabCount));
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const int left = tabPad + tabGap + static_cast<int>(i) * (tabWidth + tabGap);
