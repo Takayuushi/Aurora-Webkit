@@ -77,6 +77,12 @@ constexpr UINT kCommandCloseWindow = 1013;
 constexpr UINT kCommandPrivacy = 1014;
 constexpr UINT kCommandReader = 1015;
 constexpr UINT kCommandTabOverview = 1016;
+constexpr UINT kEditUndo = 2220;
+constexpr UINT kEditRedo = 2221;
+constexpr UINT kEditCut = 2222;
+constexpr UINT kEditCopy = 2223;
+constexpr UINT kEditPaste = 2224;
+constexpr UINT kEditSelectAll = 2225;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 
 constexpr UINT kMenuNewTab = 2001;
@@ -129,8 +135,9 @@ constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
-constexpr int kTitleBarHeight = 23;
-constexpr int kToolbarHeight = 33;
+constexpr int kTitleBarHeight = 24;
+constexpr int kToolbarHeight = 40;
+constexpr int kTabsBarHeight = 28;
 constexpr int kToolbarHorizontalPadding = 12;
 constexpr int kToolbarButtonSize = 24;
 constexpr int kToolbarGap = 4;
@@ -904,6 +911,70 @@ struct BrowserState {
 
     int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
     int toolbarHeight() const { return scaleForDpi(window, kToolbarHeight); }
+    int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
+    int contentTop() const { return contentTop() + tabsBarHeight(); }
+
+    RECT menuBarItemRect(int index) const
+    {
+        static const int widths[] = { 46, 30, 30, 32, 48, 78, 58, 34 };
+        const int gap = scaleForDpi(window, 6);
+        int x = scaleForDpi(window, 16);
+        for (int i = 0; i < index && i < 8; ++i)
+            x += scaleForDpi(window, widths[i]) + gap;
+        const int width = index >= 0 && index < 8 ? scaleForDpi(window, widths[index]) : 0;
+        return { x, 0, x + width, titleBarHeight() };
+    }
+
+    int menuBarItemAt(POINT point) const
+    {
+        if (point.y < 0 || point.y >= titleBarHeight())
+            return -1;
+        for (int i = 0; i < 8; ++i) {
+            RECT item = menuBarItemRect(i);
+            if (PtInRect(&item, point))
+                return i;
+        }
+        return -1;
+    }
+
+    bool menuBarHasInteractiveHit(POINT point) const
+    {
+        return menuBarItemAt(point) >= 0;
+    }
+
+    RECT sidebarButtonRect() const
+    {
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int light = scaleForDpi(window, kTrafficLightSize);
+        const int lightGap = scaleForDpi(window, kTrafficLightGap);
+        const int width = scaleForDpi(window, 48);
+        const int top = titleBarHeight();
+        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 14),
+            top + scaleForDpi(window, 3),
+            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 14) + width,
+            top + toolbarHeight() - scaleForDpi(window, 3) };
+    }
+
+    RECT navigationPillRect() const
+    {
+        RECT sidebar = sidebarButtonRect();
+        const int gap = scaleForDpi(window, kToolbarGap);
+        const int button = scaleForDpi(window, kToolbarButtonSize + 6);
+        return { sidebar.right + gap * 2, sidebar.top,
+            sidebar.right + gap * 2 + button * 2 + gap * 2, sidebar.bottom };
+    }
+
+    RECT rightToolbarButtonRect(int index) const
+    {
+        RECT client { };
+        GetClientRect(window, &client);
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int button = scaleForDpi(window, kToolbarButtonSize + 6);
+        const int gap = scaleForDpi(window, 8);
+        const int left = client.right - pad - (3 - index) * button - (2 - index) * gap;
+        return { left, titleBarHeight() + scaleForDpi(window, 3),
+            left + button, contentTop() - scaleForDpi(window, 3) };
+    }
 
     TabState* active()
     {
@@ -1139,7 +1210,7 @@ struct BrowserState {
             0,
             L"EDIT",
             L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_LEFT,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_CENTER,
             0, 0, 0, 0,
             window,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandAddress)),
@@ -1791,7 +1862,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
         POINT point {
             client.right - scaleForDpi(window, kToolbarHorizontalPadding) - scaleForDpi(window, kToolbarButtonSize) / 2,
-            titleBarHeight() + toolbarHeight()
+            contentTop()
         };
         ClientToScreen(window, &point);
         TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
@@ -1977,7 +2048,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         AppendMenuW(shareMenu, MF_STRING, kMenuAddBookmark, L"Add Bookmark");
         RECT client { };
         GetClientRect(window, &client);
-        POINT point { client.right - scaleForDpi(window, 190), titleBarHeight() + toolbarHeight() };
+        POINT point { client.right - scaleForDpi(window, 190), contentTop() };
         ClientToScreen(window, &point);
         TrackPopupMenu(shareMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
         DestroyMenu(shareMenu);
@@ -2017,7 +2088,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         AppendMenuW(privacyMenu, MF_STRING, kPrivacyClearHistory, L"Clear History");
         RECT client { };
         GetClientRect(window, &client);
-        POINT point { scaleForDpi(window, 50), titleBarHeight() + toolbarHeight() };
+        POINT point { scaleForDpi(window, 50), contentTop() };
         ClientToScreen(window, &point);
         TrackPopupMenu(privacyMenu, TPM_LEFTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
         DestroyMenu(privacyMenu);
@@ -2047,10 +2118,116 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int button = scaleForDpi(window, kToolbarButtonSize);
         int gap = scaleForDpi(window, kToolbarGap);
         POINT point { GetClientWidth(window) - pad - button - gap - button / 2,
-            titleBarHeight() + toolbarHeight() };
+            contentTop() };
         ClientToScreen(window, &point);
         TrackPopupMenu(overview, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
         DestroyMenu(overview);
+    }
+
+    void showMenuBarPopup(int menuIndex, POINT clientPoint)
+    {
+        HMENU popup = CreatePopupMenu();
+        if (!popup)
+            return;
+
+        switch (menuIndex) {
+        case 0: // Safari
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Settings...");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kMenuThemeLight, L"Light Appearance");
+            AppendMenuW(popup, MF_STRING, kMenuThemeDark, L"Dark Appearance");
+            AppendMenuW(popup, MF_STRING, kMenuThemeSystem, L"Automatic Appearance");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            break;
+        case 1: // File
+            AppendMenuW(popup, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
+            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window\tCtrl+N");
+            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window\tCtrl+Shift+P");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab\tCtrl+W");
+            AppendMenuW(popup, MF_STRING, kMenuSavePage, L"Save Page As...");
+            AppendMenuW(popup, MF_STRING, kMenuPrint, L"Print...");
+            AppendMenuW(popup, MF_STRING, kMenuDownloads, L"Downloads");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            break;
+        case 2: // Edit
+            AppendMenuW(popup, MF_STRING, kEditUndo, L"Undo");
+            AppendMenuW(popup, MF_STRING, kEditRedo, L"Redo");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kEditCut, L"Cut");
+            AppendMenuW(popup, MF_STRING, kEditCopy, L"Copy");
+            AppendMenuW(popup, MF_STRING, kEditPaste, L"Paste");
+            AppendMenuW(popup, MF_STRING, kEditSelectAll, L"Select All");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kMenuFindInPage, L"Find in Page...\tCtrl+F");
+            break;
+        case 3: // View
+            AppendMenuW(popup, MF_STRING, kCommandSidebar, L"Show Sidebar");
+            AppendMenuW(popup, MF_STRING, kMenuStartPage, L"Start Page");
+            AppendMenuW(popup, MF_STRING, kMenuHomePage, L"Home Page");
+            AppendMenuW(popup, MF_STRING, kCommandReader, L"Show Reader");
+            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(popup, MF_STRING, kMenuZoomOut, L"Zoom Out");
+            AppendMenuW(popup, MF_STRING, kMenuResetZoom, L"Actual Size");
+            AppendMenuW(popup, MF_STRING, kMenuZoomIn, L"Zoom In");
+            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
+            break;
+        case 4: // History
+            AppendMenuW(popup, MF_STRING, kMenuHistory, L"Show All History");
+            AppendMenuW(popup, MF_STRING, kMenuClearHistory, L"Clear History...");
+            break;
+        case 5: // Bookmarks
+            AppendMenuW(popup, MF_STRING, kMenuAddBookmark, L"Add Bookmark...");
+            AppendMenuW(popup, MF_STRING, kMenuBookmarks, L"Show Bookmarks");
+            AppendMenuW(popup, MF_STRING, kMenuAddReadingList, L"Add to Reading List");
+            AppendMenuW(popup, MF_STRING, kMenuReadingList, L"Show Reading List");
+            break;
+        case 6: // Window
+            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window");
+            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window");
+            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
+            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab");
+            break;
+        case 7: // Help
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Browser Settings");
+            break;
+        default:
+            DestroyMenu(popup);
+            return;
+        }
+
+        ClientToScreen(window, &clientPoint);
+        const UINT command = TrackPopupMenu(popup,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+            clientPoint.x, clientPoint.y, 0, window, nullptr);
+        DestroyMenu(popup);
+        if (command)
+            handleCommand(command);
+    }
+
+    bool handleMenuBarHit(POINT point)
+    {
+        const int index = menuBarItemAt(point);
+        if (index < 0)
+            return false;
+        RECT item = menuBarItemRect(index);
+        POINT popupPoint { item.left, item.bottom };
+        showMenuBarPopup(index, popupPoint);
+        return true;
+    }
+
+    void executeWebEditCommand(const char* command)
+    {
+        auto* tab = active();
+        if (!tab || !command)
+            return;
+        auto commandString = adoptWK(WKStringCreateWithUTF8CString(command));
+        if (commandString)
+            WKPageExecuteCommand(WKViewGetPage(tab->view.get()), commandString.get());
     }
 
     void showMenu()
@@ -2083,7 +2260,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         POINT point {
             client.right - pad - button / 2,
-            titleBarHeight() + toolbarHeight()
+            contentTop()
         };
         ClientToScreen(window, &point);
 
@@ -2095,22 +2272,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT client { };
         GetClientRect(window, &client);
 
-        int pad = scaleForDpi(window, kToolbarHorizontalPadding);
-        int button = scaleForDpi(window, kToolbarButtonSize);
-        int gap = scaleForDpi(window, kToolbarGap);
+        const int gap = scaleForDpi(window, kToolbarGap);
+        const RECT navigation = navigationPillRect();
+        const RECT share = rightToolbarButtonRect(0);
+        const int minLeft = navigation.right + gap * 2;
+        const int maxRight = share.left - gap * 2;
+        const int available = std::max(0, maxRight - minLeft);
+        const int width = std::min(scaleForDpi(window, 660), available);
+        int left = (static_cast<int>(client.right) - width) / 2;
+        left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
-        int leftControls = button * 3 + gap * 2;
-        int rightControls = button * 4 + gap * 5;
-
-        int left = pad + leftControls + scaleForDpi(window, 12);
-        int right = client.right - pad - rightControls;
-
-        return {
-            left,
-            titleBarHeight() + scaleForDpi(window, 7),
-            std::max(left + scaleForDpi(window, 220), right),
-            titleBarHeight() + toolbarHeight() - scaleForDpi(window, 7)
-        };
+        const int height = scaleForDpi(window, 32);
+        const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
+        return { left, top, left + width, top + height };
     }
 
     void resize()
@@ -2132,7 +2306,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             TRUE
         );
 
-        int contentTop = titleBarHeight() + toolbarHeight();
+        int contentTop = this->contentTop();
         int contentLeft = sidebarOpen ? scaleForDpi(window, 286) : 0;
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
@@ -2328,6 +2502,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kMenuFindInPage:
             showFindBar();
             break;
+        case kEditUndo: executeWebEditCommand("Undo"); break;
+        case kEditRedo: executeWebEditCommand("Redo"); break;
+        case kEditCut: executeWebEditCommand("Cut"); break;
+        case kEditCopy: executeWebEditCommand("Copy"); break;
+        case kEditPaste: executeWebEditCommand("Paste"); break;
+        case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -2406,7 +2586,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int width = std::min(scaleForDpi(window, 430), std::max(scaleForDpi(window, 320), clientWidth - scaleForDpi(window, 20)));
         const int height = scaleForDpi(window, 32);
         const int left = std::max(scaleForDpi(window, 10), clientWidth - width - scaleForDpi(window, 16));
-        const int top = titleBarHeight() + toolbarHeight() + scaleForDpi(window, 8);
+        const int top = contentTop() + scaleForDpi(window, 8);
         MoveWindow(findEdit, left + scaleForDpi(window, 10), top + scaleForDpi(window, 5), width - scaleForDpi(window, 164), height - scaleForDpi(window, 10), TRUE);
         MoveWindow(findPreviousButton, left + width - scaleForDpi(window, 150), top + scaleForDpi(window, 4), scaleForDpi(window, 42), height - scaleForDpi(window, 8), TRUE);
         MoveWindow(findNextButton, left + width - scaleForDpi(window, 104), top + scaleForDpi(window, 4), scaleForDpi(window, 42), height - scaleForDpi(window, 8), TRUE);
@@ -2523,186 +2703,92 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     bool topBarHasInteractiveHit(POINT point) const
     {
-        int dpi = windowDpi(window);
-        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
-        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
-        int light = MulDiv(kTrafficLightSize, dpi, 96);
-        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
-        int button = MulDiv(kToolbarButtonSize, dpi, 96);
-        int gap = MulDiv(kToolbarGap, dpi, 96);
-
-        if (point.y < 0 || point.y >= titleH)
+        const int top = titleBarHeight() + toolbarHeight();
+        const int stripHeight = tabsBarHeight();
+        if (!stripHeight || point.y < top || point.y >= top + stripHeight)
             return false;
 
-        RECT closeRect { pad, (titleH - light) / 2, pad + light, (titleH + light) / 2 };
-        RECT minimizeRect {
-            pad + light + lightGap,
-            (titleH - light) / 2,
-            pad + light * 2 + lightGap,
-            (titleH + light) / 2
-        };
-        RECT maximizeRect {
-            pad + light * 2 + lightGap * 2,
-            (titleH - light) / 2,
-            pad + light * 3 + lightGap * 2,
-            (titleH + light) / 2
-        };
-
-        if (PtInRect(&closeRect, point) || PtInRect(&minimizeRect, point) || PtInRect(&maximizeRect, point))
-            return true;
-
-        int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
-        int plusLeft = GetClientWidth(window) - pad - button;
-        int tabCount = std::max(1, static_cast<int>(tabs.size()));
-        int available = plusLeft - tabsStart - pad - gap * (tabCount + 1);
-        int tabWidth = std::clamp(
-            available / tabCount,
-            MulDiv(kTabMinWidth, dpi, 96),
-            MulDiv(kTabMaxWidth, dpi, 96)
-        );
-
+        const int pad = scaleForDpi(window, 12);
+        const int gap = scaleForDpi(window, kToolbarGap);
+        const int tabCount = static_cast<int>(tabs.size());
+        const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
+        const int tabWidth = std::clamp(available / std::max(1, tabCount),
+            scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
         for (size_t i = 0; i < tabs.size(); ++i) {
-            int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
-            RECT tabRect { left, MulDiv(4, dpi, 96), left + tabWidth, titleH - MulDiv(4, dpi, 96) };
+            const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
+            RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
             if (PtInRect(&tabRect, point))
                 return true;
         }
-
-        RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
-        return PtInRect(&plusRect, point);
+        return false;
     }
 
     bool handleTopBarHit(POINT point)
     {
-        int dpi = windowDpi(window);
-        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
-        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
-        int light = MulDiv(kTrafficLightSize, dpi, 96);
-        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
-
-        if (point.y >= 0 && point.y < titleH) {
-            int controlHit = scaleForDpi(window, 20);
-            int controlY = (titleH - controlHit) / 2;
-            RECT closeRect { pad - scaleForDpi(window, 2), controlY, pad - scaleForDpi(window, 2) + controlHit, controlY + controlHit };
-            RECT minimizeRect {
-                pad + light + lightGap - scaleForDpi(window, 2),
-                controlY,
-                pad + light + lightGap - scaleForDpi(window, 2) + controlHit,
-                controlY + controlHit
-            };
-            RECT maximizeRect {
-                pad + light * 2 + lightGap * 2 - scaleForDpi(window, 2),
-                controlY,
-                pad + light * 2 + lightGap * 2 - scaleForDpi(window, 2) + controlHit,
-                controlY + controlHit
-            };
-
-            if (PtInRect(&closeRect, point)) {
-                handleCommand(kCommandCloseWindow);
-                return true;
-            }
-            if (PtInRect(&minimizeRect, point)) {
-                handleCommand(kCommandMinimize);
-                return true;
-            }
-            if (PtInRect(&maximizeRect, point)) {
-                handleCommand(kCommandMaximize);
-                return true;
-            }
-
-            int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
-            int button = MulDiv(kToolbarButtonSize, dpi, 96);
-            int plusGap = MulDiv(kToolbarGap, dpi, 96);
-
-            int plusLeft = GetClientWidth(window) - pad - button;
-            int tabCount = std::max(1, static_cast<int>(tabs.size()));
-            int available = plusLeft - tabsStart - pad - plusGap * (tabCount + 1);
-            int tabWidth = std::clamp(
-                available / tabCount,
-                MulDiv(kTabMinWidth, dpi, 96),
-                MulDiv(kTabMaxWidth, dpi, 96)
-            );
-
-            for (size_t i = 0; i < tabs.size(); ++i) {
-                int left = tabsStart + static_cast<int>(i) * (tabWidth + plusGap);
-                if (point.x >= left && point.x < left + tabWidth)
-                    return handleTabHit(point, i, left, tabWidth);
-            }
-
-            if (point.x >= plusLeft && point.x < plusLeft + button) {
-                handleCommand(kCommandNewTab);
-                return true;
-            }
-
+        const int top = titleBarHeight() + toolbarHeight();
+        const int stripHeight = tabsBarHeight();
+        if (!stripHeight || point.y < top || point.y >= top + stripHeight)
             return false;
-        }
 
+        const int gap = scaleForDpi(window, kToolbarGap);
+        const int pad = scaleForDpi(window, 12);
+        const int tabCount = static_cast<int>(tabs.size());
+        const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
+        const int tabWidth = std::clamp(available / std::max(1, tabCount),
+            scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
+            RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
+            if (PtInRect(&tabRect, point))
+                return handleTabHit(point, i, left, tabWidth);
+        }
         return false;
     }
 
     bool handleToolbarHit(POINT point)
     {
-        int dpi = windowDpi(window);
-        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
-        int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
-        int button = MulDiv(kToolbarButtonSize, dpi, 96);
-        int gap = MulDiv(kToolbarGap, dpi, 96);
-        int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
-
-        if (point.y < titleH || point.y >= titleH + toolbarH)
+        const int top = titleBarHeight();
+        const int bottom = titleBarHeight() + toolbarHeight();
+        if (point.y < top || point.y >= bottom)
             return false;
 
-        int x = pad;
-        if (point.x >= x && point.x < x + button) {
-            handleCommand(kCommandBack);
-            return true;
-        }
-        x += button + gap;
-        if (point.x >= x && point.x < x + button) {
-            handleCommand(kCommandForward);
-            return true;
-        }
-        x += button + gap;
-        if (point.x >= x && point.x < x + button) {
-            handleCommand(kCommandSidebar);
-            return true;
-        }
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int light = scaleForDpi(window, kTrafficLightSize);
+        const int lightGap = scaleForDpi(window, kTrafficLightGap);
+        const int trafficHit = scaleForDpi(window, 20);
+        const int trafficY = top + (toolbarHeight() - trafficHit) / 2;
+        const RECT traffic[] = {
+            { pad - scaleForDpi(window, 3), trafficY, pad - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
+            { pad + light + lightGap - scaleForDpi(window, 3), trafficY, pad + light + lightGap - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
+            { pad + (light + lightGap) * 2 - scaleForDpi(window, 3), trafficY, pad + (light + lightGap) * 2 - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit }
+        };
+        if (PtInRect(&traffic[0], point)) { handleCommand(kCommandCloseWindow); return true; }
+        if (PtInRect(&traffic[1], point)) { handleCommand(kCommandMinimize); return true; }
+        if (PtInRect(&traffic[2], point)) { handleCommand(kCommandMaximize); return true; }
+
+        RECT sidebar = sidebarButtonRect();
+        if (PtInRect(&sidebar, point)) { handleCommand(kCommandSidebar); return true; }
+
+        RECT navigation = navigationPillRect();
+        RECT back { navigation.left, navigation.top, navigation.left + (navigation.right - navigation.left) / 2, navigation.bottom };
+        RECT forward { back.right, navigation.top, navigation.right, navigation.bottom };
+        if (PtInRect(&back, point)) { handleCommand(kCommandBack); return true; }
+        if (PtInRect(&forward, point)) { handleCommand(kCommandForward); return true; }
 
         RECT pill = addressPillRect();
         RECT privacyRect { pill.left, pill.top, pill.left + scaleForDpi(window, 30), pill.bottom };
-        if (PtInRect(&privacyRect, point)) {
-            handleCommand(kCommandPrivacy);
-            return true;
-        }
+        if (PtInRect(&privacyRect, point)) { handleCommand(kCommandPrivacy); return true; }
         RECT reloadRect { pill.right - scaleForDpi(window, 32), pill.top, pill.right, pill.bottom };
-        if (PtInRect(&reloadRect, point)) {
-            handleCommand(kCommandReload);
+        if (PtInRect(&reloadRect, point)) { handleCommand(kCommandReload); return true; }
+        if (PtInRect(&pill, point)) {
+            SetFocus(addressBar);
+            SendMessageW(addressBar, EM_SETSEL, 0, -1);
             return true;
         }
 
-        int rightStart = pill.right + gap * 2;
-        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
-        RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
-        RECT overviewRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
-        RECT menuRect { overviewRect.right + gap, titleH, overviewRect.right + gap + button, titleH + toolbarH };
-
-        if (PtInRect(&shareRect, point)) {
-            handleCommand(kCommandShare);
-            return true;
-        }
-        if (PtInRect(&downloadsRect, point)) {
-            handleCommand(kCommandDownloads);
-            return true;
-        }
-        if (PtInRect(&overviewRect, point)) {
-            handleCommand(kCommandTabOverview);
-            return true;
-        }
-        if (PtInRect(&menuRect, point)) {
-            handleCommand(kCommandMenu);
-            return true;
-        }
-
+        if (PtInRect(&rightToolbarButtonRect(0), point)) { handleCommand(kCommandShare); return true; }
+        if (PtInRect(&rightToolbarButtonRect(1), point)) { handleCommand(kCommandNewTab); return true; }
+        if (PtInRect(&rightToolbarButtonRect(2), point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
     }
 
@@ -2732,7 +2818,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const bool dark = darkTheme();
         int width = scaleForDpi(window, 286);
-        int top = titleBarHeight() + toolbarHeight();
+        int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
 
@@ -2836,7 +2922,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return false;
 
         int width = scaleForDpi(window, 286);
-        int top = titleBarHeight() + toolbarHeight();
+        int top = contentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
 
@@ -2922,86 +3008,121 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         drawSidebarPanel(dc);
 
-        int light = MulDiv(kTrafficLightSize, dpi, 96);
-        int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
-        int lightY = (titleH - light) / 2;
+        const int light = MulDiv(kTrafficLightSize, dpi, 96);
+        const int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
+        const int menuH = titleBarHeight();
+        const int toolbarTop = menuH;
+        const int tabsTop = menuH + toolbarH;
+        const int tabsH = tabsBarHeight();
 
+        HFONT menuFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
+        SetBkMode(dc, TRANSPARENT);
+        const wchar_t* menuLabels[] = { L"Safari", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
+        for (int i = 0; i < 8; ++i) {
+            RECT item = menuBarItemRect(i);
+            RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
+            SetTextColor(dc, dark ? RGB(235, 235, 238) : RGB(42, 43, 46));
+            DrawTextW(dc, menuLabels[i], -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectObject(dc, oldMenuFont);
+        DeleteObject(menuFont);
+
+        const int lightY = toolbarTop + (toolbarH - light) / 2;
         drawTrafficLight(dc, pad, lightY, RGB(255, 95, 87));
         drawTrafficLight(dc, pad + light + lightGap, lightY, RGB(255, 189, 46));
-        drawTrafficLight(dc, pad + light * 2 + lightGap * 2, lightY, RGB(39, 201, 63));
+        drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, RGB(39, 201, 63));
 
-        int tabsStart = pad + light * 3 + lightGap * 4 + MulDiv(26, dpi, 96);
-        int plusLeft = client.right - pad - button;
-        int tabCount = std::max(1, static_cast<int>(tabs.size()));
-        int available = plusLeft - tabsStart - pad - gap * (tabCount + 1);
-        int tabWidth = std::clamp(
-            available / tabCount,
-            MulDiv(kTabMinWidth, dpi, 96),
-            MulDiv(kTabMaxWidth, dpi, 96)
-        );
+        RECT sidebarRect = sidebarButtonRect();
+        HBRUSH sidebarButtonBrush = CreateSolidBrush(dark ? RGB(55, 55, 58) : RGB(251, 251, 252));
+        HPEN sidebarButtonPen = CreatePen(PS_SOLID, 1, dark ? RGB(73, 73, 77) : RGB(211, 214, 218));
+        HBRUSH oldSidebarBrush = static_cast<HBRUSH>(SelectObject(dc, sidebarButtonBrush));
+        HPEN oldSidebarPen = static_cast<HPEN>(SelectObject(dc, sidebarButtonPen));
+        RoundRect(dc, sidebarRect.left, sidebarRect.top, sidebarRect.right, sidebarRect.bottom,
+            MulDiv(9, dpi, 96), MulDiv(9, dpi, 96));
+        SelectObject(dc, oldSidebarBrush);
+        SelectObject(dc, oldSidebarPen);
+        DeleteObject(sidebarButtonBrush);
+        DeleteObject(sidebarButtonPen);
+        RECT sidebarGlyph = sidebarRect;
+        sidebarGlyph.right -= MulDiv(10, dpi, 96);
+        drawSidebar(dc, sidebarGlyph, dark);
+        HPEN dropdownPen = CreatePen(PS_SOLID, 1, dark ? RGB(210, 210, 215) : RGB(72, 76, 80));
+        HPEN oldDropdownPen = static_cast<HPEN>(SelectObject(dc, dropdownPen));
+        const int dropX = sidebarRect.right - MulDiv(7, dpi, 96);
+        const int dropY = (sidebarRect.top + sidebarRect.bottom) / 2;
+        MoveToEx(dc, dropX - MulDiv(3, dpi, 96), dropY - MulDiv(1, dpi, 96), nullptr);
+        LineTo(dc, dropX, dropY + MulDiv(2, dpi, 96));
+        LineTo(dc, dropX + MulDiv(3, dpi, 96), dropY - MulDiv(1, dpi, 96));
+        SelectObject(dc, oldDropdownPen);
+        DeleteObject(dropdownPen);
 
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            int left = tabsStart + static_cast<int>(i) * (tabWidth + gap);
-            RECT tabRect {
-                left,
-                MulDiv(3, dpi, 96),
-                left + tabWidth,
-                titleH - MulDiv(3, dpi, 96)
-            };
-
-            HBRUSH tabBrush = CreateSolidBrush(dark ? (i == activeTab ? RGB(66, 66, 69) : RGB(47, 47, 49)) : (i == activeTab ? RGB(250, 251, 251) : RGB(239, 240, 241)));
-            HPEN tabPen = CreatePen(PS_SOLID, 1, dark ? (i == activeTab ? RGB(91, 91, 95) : RGB(55, 55, 58)) : (i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232)));
-            HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
-            HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
-            RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(8, dpi, 96), MulDiv(8, dpi, 96));
-            SelectObject(dc, oldBrush);
-            SelectObject(dc, oldPen);
-            DeleteObject(tabBrush);
-            DeleteObject(tabPen);
-
-            int iconSize = MulDiv(16, dpi, 96);
-            int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
-            RECT iconRect {
-                tabRect.left + MulDiv(9, dpi, 96),
-                iconTop,
-                tabRect.left + MulDiv(9, dpi, 96) + iconSize,
-                iconTop + iconSize
-            };
-            if (tabs[i]->favicon)
-                DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-            else
-                drawCompass(dc, iconRect);
-
-            RECT titleText = tabRect;
-            titleText.left = iconRect.right + MulDiv(6, dpi, 96);
-            titleText.right -= MulDiv(31, dpi, 96);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
-            HFONT oldFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-            DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            SelectObject(dc, oldFont);
-
-            RECT closeRect {
-                tabRect.right - MulDiv(26, dpi, 96),
-                tabRect.top,
-                tabRect.right - MulDiv(2, dpi, 96),
-                tabRect.bottom
-            };
-            drawClose(dc, closeRect, dark);
-        }
-
-        RECT plusRect { plusLeft, 0, plusLeft + button, titleH };
-        drawPlus(dc, plusRect, dark);
-
-        int x = pad;
-        RECT backRect { x, titleH, x + button, titleH + toolbarH };
+        RECT navigationRect = navigationPillRect();
+        HBRUSH navBrush = CreateSolidBrush(dark ? RGB(52, 52, 55) : RGB(249, 249, 250));
+        HPEN navPen = CreatePen(PS_SOLID, 1, dark ? RGB(76, 76, 80) : RGB(218, 220, 223));
+        HBRUSH oldNavBrush = static_cast<HBRUSH>(SelectObject(dc, navBrush));
+        HPEN oldNavPen = static_cast<HPEN>(SelectObject(dc, navPen));
+        RoundRect(dc, navigationRect.left, navigationRect.top, navigationRect.right, navigationRect.bottom,
+            MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
+        SelectObject(dc, oldNavBrush);
+        SelectObject(dc, oldNavPen);
+        DeleteObject(navBrush);
+        DeleteObject(navPen);
+        RECT backRect { navigationRect.left + gap, navigationRect.top,
+            navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
+        RECT forwardRect { backRect.right, navigationRect.top, navigationRect.right - gap, navigationRect.bottom };
         drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
-        x += button + gap;
-        RECT forwardRect { x, titleH, x + button, titleH + toolbarH };
         drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
-        x += button + gap;
-        RECT sidebarRect { x, titleH, x + button, titleH + toolbarH };
-        drawSidebar(dc, sidebarRect, dark);
+
+        if (tabsH > 0) {
+            HBRUSH tabsBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(242, 242, 244));
+            RECT tabsRow { 0, tabsTop, client.right, tabsTop + tabsH };
+            FillRect(dc, &tabsRow, tabsBrush);
+            DeleteObject(tabsBrush);
+
+            const int tabGap = scaleForDpi(window, kToolbarGap);
+            const int tabPad = scaleForDpi(window, 12);
+            const int tabCount = static_cast<int>(tabs.size());
+            const int available = std::max(0, static_cast<int>(client.right) - tabPad * 2 - tabGap * (tabCount + 1));
+            const int tabWidth = std::clamp(available / std::max(1, tabCount),
+                scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
+
+            for (size_t i = 0; i < tabs.size(); ++i) {
+                const int left = tabPad + tabGap + static_cast<int>(i) * (tabWidth + tabGap);
+                RECT tabRect { left, tabsTop + scaleForDpi(window, 3), left + tabWidth, tabsTop + tabsH - scaleForDpi(window, 3) };
+                HBRUSH tabBrush = CreateSolidBrush(dark
+                    ? (i == activeTab ? RGB(66, 66, 69) : RGB(47, 47, 49))
+                    : (i == activeTab ? RGB(255, 255, 255) : RGB(233, 234, 236)));
+                HPEN tabPen = CreatePen(PS_SOLID, 1, dark
+                    ? (i == activeTab ? RGB(91, 91, 95) : RGB(55, 55, 58))
+                    : (i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232)));
+                HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, tabBrush));
+                HPEN oldPen = static_cast<HPEN>(SelectObject(dc, tabPen));
+                RoundRect(dc, tabRect.left, tabRect.top, tabRect.right, tabRect.bottom, MulDiv(7, dpi, 96), MulDiv(7, dpi, 96));
+                SelectObject(dc, oldBrush);
+                SelectObject(dc, oldPen);
+                DeleteObject(tabBrush);
+                DeleteObject(tabPen);
+
+                const int iconSize = MulDiv(16, dpi, 96);
+                const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
+                RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
+                    tabRect.left + MulDiv(9, dpi, 96) + iconSize, iconTop + iconSize };
+                if (tabs[i]->favicon)
+                    DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                else
+                    drawCompass(dc, iconRect);
+                RECT titleText = tabRect;
+                titleText.left = iconRect.right + MulDiv(6, dpi, 96);
+                titleText.right -= MulDiv(31, dpi, 96);
+                SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
+                DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top, tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
+                drawClose(dc, closeRect, dark);
+            }
+        }
 
         RECT pill = addressPillRect();
         HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(245, 246, 247));
@@ -3014,33 +3135,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
 
-        // Compact smart-search/privacy/reader glyphs.
-        HPEN searchPen = CreatePen(PS_SOLID, 1, RGB(83, 88, 91));
-        HPEN oldSearchPen = static_cast<HPEN>(SelectObject(dc, searchPen));
-        int sx = pill.left + MulDiv(18, dpi, 96);
-        int sy = (pill.top + pill.bottom) / 2;
-        Ellipse(dc, sx - 5, sy - 5, sx + 5, sy + 5);
-        MoveToEx(dc, sx + 4, sy + 4, nullptr);
-        LineTo(dc, sx + 8, sy + 8);
-        SelectObject(dc, oldSearchPen);
-        DeleteObject(searchPen);
-
         RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
         drawShield(dc, privacyGlyph, dark);
-        bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
+        const bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
 
-        int rightStart = pill.right + gap * 2;
-        RECT shareRect { rightStart, titleH, rightStart + button, titleH + toolbarH };
-        RECT downloadsRect { shareRect.right + gap, titleH, shareRect.right + gap + button, titleH + toolbarH };
-        RECT overviewRect { downloadsRect.right + gap, titleH, downloadsRect.right + gap + button, titleH + toolbarH };
-        RECT menuRect { overviewRect.right + gap, titleH, overviewRect.right + gap + button, titleH + toolbarH };
-
+        RECT shareRect = rightToolbarButtonRect(0);
+        RECT newTabRect = rightToolbarButtonRect(1);
+        RECT overviewRect = rightToolbarButtonRect(2);
         drawShare(dc, shareRect, dark);
-        drawDownload(dc, downloadsRect, dark);
+        drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
-        drawMenu(dc, menuRect, dark);
     }
 };
 
