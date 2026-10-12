@@ -135,16 +135,16 @@ constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
-constexpr int kTitleBarHeight = 24;
-constexpr int kToolbarHeight = 40;
-constexpr int kTabsBarHeight = 28;
-constexpr int kToolbarHorizontalPadding = 12;
+constexpr int kTitleBarHeight = 36;
+constexpr int kToolbarHeight = 54;
+constexpr int kTabsBarHeight = 34;
+constexpr int kToolbarHorizontalPadding = 22;
 constexpr int kToolbarButtonSize = 24;
 constexpr int kToolbarGap = 4;
 constexpr int kTabMinWidth = 112;
 constexpr int kTabMaxWidth = 280;
-constexpr int kTrafficLightSize = 12;
-constexpr int kTrafficLightGap = 8;
+constexpr int kTrafficLightSize = 13;
+constexpr int kTrafficLightGap = 12;
 constexpr int kResizeBorder = 4;
 
 struct BrowserState;
@@ -642,6 +642,29 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(brush);
 }
 
+void drawAppleMenuMark(HDC dc, int x, int y, COLORREF color)
+{
+    HBRUSH brush = CreateSolidBrush(color);
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    POINT body[] = {
+        { x + 8, y + 3 }, { x + 5, y + 1 }, { x + 2, y + 2 }, { x, y + 6 },
+        { x + 1, y + 11 }, { x + 4, y + 16 }, { x + 7, y + 17 },
+        { x + 9, y + 16 }, { x + 12, y + 17 }, { x + 15, y + 13 },
+        { x + 16, y + 8 }, { x + 14, y + 4 }, { x + 11, y + 2 }, { x + 8, y + 3 }
+    };
+    Polygon(dc, body, static_cast<int>(std::size(body)));
+    POINT leaf[] = { { x + 9, y }, { x + 14, y - 3 }, { x + 13, y + 1 }, { x + 9, y + 3 } };
+    Polygon(dc, leaf, static_cast<int>(std::size(leaf)));
+
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
 {
     HBRUSH brush = CreateSolidBrush(color);
@@ -918,7 +941,7 @@ struct BrowserState {
     {
         static const int widths[] = { 46, 30, 30, 32, 48, 78, 58, 34 };
         const int gap = scaleForDpi(window, 6);
-        int x = scaleForDpi(window, 16);
+        int x = scaleForDpi(window, 52);
         for (int i = 0; i < index && i < 8; ++i)
             x += scaleForDpi(window, widths[i]) + gap;
         const int width = index >= 0 && index < 8 ? scaleForDpi(window, widths[index]) : 0;
@@ -947,11 +970,11 @@ struct BrowserState {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         const int light = scaleForDpi(window, kTrafficLightSize);
         const int lightGap = scaleForDpi(window, kTrafficLightGap);
-        const int width = scaleForDpi(window, 48);
+        const int width = scaleForDpi(window, 66);
         const int top = titleBarHeight();
-        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 14),
+        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18),
             top + scaleForDpi(window, 3),
-            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 14) + width,
+            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 18) + width,
             top + toolbarHeight() - scaleForDpi(window, 3) };
     }
 
@@ -3007,6 +3030,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
         SetBkMode(dc, TRANSPARENT);
+        drawAppleMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 10),
+            dark ? RGB(235, 235, 238) : RGB(42, 43, 46));
         const wchar_t* menuLabels[] = { L"Safari", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
         for (int i = 0; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
