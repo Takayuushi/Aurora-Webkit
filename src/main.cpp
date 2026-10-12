@@ -490,7 +490,7 @@ void setNativeWindowBorderColor(HWND window, bool dark)
         GetProcAddress(dwmapi, "DwmSetWindowAttribute")
     );
     if (setWindowAttribute) {
-        DWORD borderColor = dark ? RGB(35, 35, 37) : RGB(241, 242, 243);
+        DWORD borderColor = dark ? RGB(35, 35, 37) : RGB(121, 133, 151);
         setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
     }
     FreeLibrary(dwmapi);
@@ -2332,7 +2332,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int minLeft = navigation.right + gap * 2;
         const int maxRight = share.left - gap * 2;
         const int available = std::max(0, maxRight - minLeft);
-        const int width = std::min(scaleForDpi(window, 660), available);
+        const int width = std::min(scaleForDpi(window, 668), available);
         int left = (static_cast<int>(client.right) - width) / 2;
         left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
