@@ -564,14 +564,18 @@ void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
-    int splitX = rect.left + (rect.right - rect.left) / 2;
-    MoveToEx(dc, splitX, rect.top + 9, nullptr);
-    LineTo(dc, splitX, rect.bottom - 9);
+    const int inset = std::max(5, (rect.right - rect.left) / 5);
+    RECT outline { rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset };
+    Rectangle(dc, outline.left, outline.top, outline.right, outline.bottom);
+    const int splitX = outline.left + (outline.right - outline.left) / 3;
+    MoveToEx(dc, splitX, outline.top, nullptr);
+    LineTo(dc, splitX, outline.bottom);
 
+    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -603,18 +607,24 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
 
 void drawShare(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    int x = (rect.left + rect.right) / 2;
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x, rect.bottom - 9);
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x - 6, rect.top + 15);
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x + 6, rect.top + 15);
-    Rectangle(dc, rect.left + 9, rect.top + 13, rect.right - 9, rect.bottom - 8);
+    const int x = (rect.left + rect.right) / 2;
+    const int arrowTipY = rect.top + 7;
+    MoveToEx(dc, x, rect.top + 17, nullptr);
+    LineTo(dc, x, arrowTipY);
+    MoveToEx(dc, x, arrowTipY, nullptr);
+    LineTo(dc, x - 5, arrowTipY + 5);
+    MoveToEx(dc, x, arrowTipY, nullptr);
+    LineTo(dc, x + 5, arrowTipY + 5);
+    MoveToEx(dc, rect.left + 8, rect.top + 17, nullptr);
+    LineTo(dc, rect.left + 8, rect.bottom - 7);
+    LineTo(dc, rect.right - 8, rect.bottom - 7);
+    LineTo(dc, rect.right - 8, rect.top + 17);
 
+    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -981,13 +991,13 @@ struct BrowserState {
         const int pad = scaleForDpi(window, 13);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, 8);
-        const int buttonCount = 4;
+        const int buttonCount = 3;
         if (index < 0 || index >= buttonCount)
             return { 0, 0, 0, 0 };
         const int left = client.right - pad - (buttonCount - index) * button
             - (buttonCount - index - 1) * gap;
         return { left, titleBarHeight() + scaleForDpi(window, 3),
-            left + button, contentTop() - scaleForDpi(window, 3) };
+            left + button, titleBarHeight() + toolbarHeight() - scaleForDpi(window, 3) };
     }
 
     TabState* active()
@@ -2685,7 +2695,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&sidebar, point) || PtInRect(&navigation, point) || PtInRect(&address, point))
             return true;
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 3; ++i) {
             if (PtInRect(&rightToolbarButtonRect(i), point))
                 return true;
         }
@@ -2760,11 +2770,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
-        const RECT downloadButton = rightToolbarButtonRect(0);
-        const RECT shareButton = rightToolbarButtonRect(1);
-        const RECT newTabButton = rightToolbarButtonRect(2);
-        const RECT overviewButton = rightToolbarButtonRect(3);
-        if (PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
+        const RECT shareButton = rightToolbarButtonRect(0);
+        const RECT newTabButton = rightToolbarButtonRect(1);
+        const RECT overviewButton = rightToolbarButtonRect(2);
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
@@ -3132,10 +3140,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
 
-        drawDownload(dc, rightToolbarButtonRect(0), dark);
-        RECT shareRect = rightToolbarButtonRect(1);
-        RECT newTabRect = rightToolbarButtonRect(2);
-        RECT overviewRect = rightToolbarButtonRect(3);
+        RECT shareRect = rightToolbarButtonRect(0);
+        RECT newTabRect = rightToolbarButtonRect(1);
+        RECT overviewRect = rightToolbarButtonRect(2);
         drawShare(dc, shareRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
