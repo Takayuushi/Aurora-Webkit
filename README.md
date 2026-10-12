@@ -32,7 +32,7 @@ Private windows use a non-persistent website data store and skip adding visits t
 - WebKit download callbacks, suggested filenames, progress/completion/failure status, recent downloads, full downloads page, and Show in Folder.
 - Share menu with Copy Link, Email Link, and Add Bookmark.
 - Save Page As exports an MHTML web archive where supported by the current WebKit build.
-- Print renders the page to PDF, then invokes the registered Windows PDF print handler. This is a Windows adaptation rather than Safari's native macOS print panel.
+- Print opens the current HTTP/HTTPS page in the default browser after confirmation, where Windows' native Ctrl+P print flow is available. This fallback is used because the pinned Windows WebKit port does not export its page-to-PDF drawing API; the default browser may not share Aurora's login session.
 - Ctrl+F Find in Page with previous/next controls and match highlighting.
 
 ### Appearance and settings
@@ -69,4 +69,4 @@ WebKit is not vendored into this repository. The packaged executable must remain
 
 ## Current limitations
 
-This is a native browser shell, not yet a full one-to-one Safari replacement. The local user-script feature is not Safari Web Extensions; Reader Mode is a simple style-based implementation; and printing is routed through a generated PDF and the Windows print handler. The source and runtime still need a Windows build and hands-on regression testing after these recent changes.
+This is a native browser shell, not yet a full one-to-one Safari replacement. The local user-script feature is not Safari Web Extensions; Reader Mode is a simple style-based implementation; and Print currently opens the page in the default browser because the pinned Windows WebKit build does not expose its native PDF-rendering API. The source and runtime still need a successful Windows build and hands-on regression testing after these recent changes.
