@@ -566,7 +566,8 @@ void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(73, 77, 81);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
@@ -575,9 +576,17 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     const int rectHeight = static_cast<int>(rect.bottom - rect.top);
     const int insetY = std::max(4, rectHeight / 4);
     RECT outline { rect.left + insetX, rect.top + insetY, rect.right - insetX, rect.bottom - insetY };
-    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, 4, 4);
+    const int radius = std::max(2, rectHeight / 7);
+    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, radius, radius);
+
     const int outlineWidth = static_cast<int>(outline.right - outline.left);
-    const int splitX = static_cast<int>(outline.left) + std::max(4, outlineWidth / 3);
+    const int sidebarWidth = std::max(3, outlineWidth / 3);
+    HBRUSH paneBrush = CreateSolidBrush(dark ? RGB(82, 82, 86) : RGB(219, 222, 226));
+    RECT pane { outline.left + 1, outline.top + 1, outline.left + sidebarWidth, outline.bottom - 1 };
+    FillRect(dc, &pane, paneBrush);
+    DeleteObject(paneBrush);
+
+    const int splitX = outline.left + sidebarWidth;
     MoveToEx(dc, splitX, outline.top + 1, nullptr);
     LineTo(dc, splitX, outline.bottom - 1);
 
@@ -613,22 +622,23 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
 
 void drawShare(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(65, 69, 73);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const int x = (rect.left + rect.right) / 2;
-    const int arrowTipY = rect.top + 7;
-    MoveToEx(dc, x, rect.top + 17, nullptr);
-    LineTo(dc, x, arrowTipY);
-    MoveToEx(dc, x, arrowTipY, nullptr);
-    LineTo(dc, x - 5, arrowTipY + 5);
-    MoveToEx(dc, x, arrowTipY, nullptr);
-    LineTo(dc, x + 5, arrowTipY + 5);
-    MoveToEx(dc, rect.left + 8, rect.top + 17, nullptr);
-    LineTo(dc, rect.left + 8, rect.bottom - 7);
-    LineTo(dc, rect.right - 8, rect.bottom - 7);
-    LineTo(dc, rect.right - 8, rect.top + 17);
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    MoveToEx(dc, cx, cy + 2, nullptr);
+    LineTo(dc, cx, cy - 7);
+    MoveToEx(dc, cx, cy - 7, nullptr);
+    LineTo(dc, cx - 4, cy - 3);
+    MoveToEx(dc, cx, cy - 7, nullptr);
+    LineTo(dc, cx + 4, cy - 3);
+    MoveToEx(dc, cx - 7, cy + 1, nullptr);
+    LineTo(dc, cx - 7, cy + 7);
+    LineTo(dc, cx + 7, cy + 7);
+    LineTo(dc, cx + 7, cy + 1);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -637,14 +647,16 @@ void drawShare(HDC dc, const RECT& rect, bool dark = false)
 
 void drawTabOverview(HDC dc, const RECT& rect, bool dark)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(205, 205, 210) : RGB(75, 80, 84));
+    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(225, 225, 229) : RGB(65, 69, 73));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    RoundRect(dc, cx - 7, cy - 5, cx + 7, cy + 7, 3, 3);
-    RoundRect(dc, cx - 4, cy - 8, cx + 10, cy + 4, 3, 3);
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int w = 12;
+    const int h = 11;
+    RoundRect(dc, cx - w / 2 - 2, cy - h / 2 - 1, cx + w / 2 - 2, cy + h / 2 - 1, 3, 3);
+    RoundRect(dc, cx - w / 2 + 2, cy - h / 2 + 2, cx + w / 2 + 2, cy + h / 2 + 2, 3, 3);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -700,10 +712,10 @@ void drawPlus(HDC dc, const RECT& rect, bool dark = false)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     int cx = (rect.left + rect.right) / 2;
     int cy = (rect.top + rect.bottom) / 2;
-    MoveToEx(dc, cx - 5, cy, nullptr);
-    LineTo(dc, cx + 5, cy);
-    MoveToEx(dc, cx, cy - 5, nullptr);
-    LineTo(dc, cx, cy + 5);
+    MoveToEx(dc, cx - 6, cy, nullptr);
+    LineTo(dc, cx + 6, cy);
+    MoveToEx(dc, cx, cy - 6, nullptr);
+    LineTo(dc, cx, cy + 6);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -2830,7 +2842,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(divider);
 
         int dpi = windowDpi(window);
-        HFONT font = CreateFontW(-MulDiv(15, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT font = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT secondaryFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
@@ -2838,9 +2856,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT heading { scaleForDpi(window, 18), top + scaleForDpi(window, 14),
             width - scaleForDpi(window, 54), top + scaleForDpi(window, 44) };
+        HFONT oldHeadingFont = static_cast<HFONT>(SelectObject(dc, headingFont));
         SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(35, 39, 42));
         const wchar_t* headingText = sidebarSection == 0 ? L"Bookmarks" : (sidebarSection == 1 ? L"Reading List" : L"History");
         DrawTextW(dc, headingText, -1, &heading, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, oldHeadingFont);
 
         RECT closeRect { width - scaleForDpi(window, 48), top + scaleForDpi(window, 10),
             width - scaleForDpi(window, 10), top + scaleForDpi(window, 44) };
@@ -2861,8 +2881,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
-        int rowTop = top + scaleForDpi(window, 100);
-        int rowHeight = scaleForDpi(window, 62);
+        int rowTop = top + scaleForDpi(window, 94);
+        int rowHeight = scaleForDpi(window, 48);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
@@ -2880,21 +2900,25 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (sidebarSection == 0) {
                 for (size_t i = 0; i < std::min(visibleRows, bookmarks.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
                     DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
+                    SelectObject(dc, secondaryFont);
                     SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, bookmarks[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SelectObject(dc, font);
                     SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             } else if (sidebarSection == 1) {
                 for (size_t i = 0; i < std::min(visibleRows, readingList.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
                     DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
+                    SelectObject(dc, secondaryFont);
                     SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, readingList[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SelectObject(dc, font);
                     SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             } else {
@@ -2902,11 +2926,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
                 for (size_t i = 0; i < std::min(visibleRows, sorted.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
                     DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 31), width - scaleForDpi(window, 16), y + scaleForDpi(window, 50) };
+                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
+                    SelectObject(dc, secondaryFont);
                     SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
                     DrawTextW(dc, sorted[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    SelectObject(dc, font);
                     SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             }
@@ -2933,6 +2959,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DrawTextW(dc, L"Settings", -1, &settingsLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(dc, oldFont);
+        if (secondaryFont) DeleteObject(secondaryFont);
+        if (headingFont) DeleteObject(headingFont);
         DeleteObject(font);
     }
 
@@ -2973,8 +3001,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        int rowTop = top + scaleForDpi(window, 100);
-        int rowHeight = scaleForDpi(window, 62);
+        int rowTop = top + scaleForDpi(window, 94);
+        int rowHeight = scaleForDpi(window, 48);
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
             ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
