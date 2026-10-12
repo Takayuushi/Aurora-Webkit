@@ -912,7 +912,7 @@ struct BrowserState {
     int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
     int toolbarHeight() const { return scaleForDpi(window, kToolbarHeight); }
     int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
-    int contentTop() const { return contentTop() + tabsBarHeight(); }
+    int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
 
     RECT menuBarItemRect(int index) const
     {
@@ -2703,24 +2703,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     bool topBarHasInteractiveHit(POINT point) const
     {
-        const int top = titleBarHeight() + toolbarHeight();
-        const int stripHeight = tabsBarHeight();
-        if (!stripHeight || point.y < top || point.y >= top + stripHeight)
-            return false;
-
-        const int pad = scaleForDpi(window, 12);
-        const int gap = scaleForDpi(window, kToolbarGap);
-        const int tabCount = static_cast<int>(tabs.size());
-        const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
-        const int tabWidth = std::clamp(available / std::max(1, tabCount),
-            scaleForDpi(window, kTabMinWidth), scaleForDpi(window, kTabMaxWidth));
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
-            RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
-            if (PtInRect(&tabRect, point))
-                return true;
-        }
-        return false;
+        // The first row is a menu bar, not a draggable tab/title strip.
+        return menuBarHasInteractiveHit(point);
     }
 
     bool handleTopBarHit(POINT point)
@@ -2786,9 +2770,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
-        if (PtInRect(&rightToolbarButtonRect(0), point)) { handleCommand(kCommandShare); return true; }
-        if (PtInRect(&rightToolbarButtonRect(1), point)) { handleCommand(kCommandNewTab); return true; }
-        if (PtInRect(&rightToolbarButtonRect(2), point)) { handleCommand(kCommandTabOverview); return true; }
+        const RECT shareButton = rightToolbarButtonRect(0);
+        const RECT newTabButton = rightToolbarButtonRect(1);
+        const RECT overviewButton = rightToolbarButtonRect(2);
+        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
+        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
+        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
     }
 
@@ -3970,6 +3957,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
+        if (state->handleMenuBarHit(point))
+            return 0;
         if (state->handleTopBarHit(point))
             return 0;
         if (state->handleToolbarHit(point))
