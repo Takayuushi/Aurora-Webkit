@@ -139,10 +139,10 @@ constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
 constexpr int kTitleBarHeight = 0;
-constexpr int kToolbarHeight = 56;
+constexpr int kToolbarHeight = 44;
 constexpr int kTabsBarHeight = 34;
-constexpr int kToolbarHorizontalPadding = 22;
-constexpr int kToolbarButtonSize = 24;
+constexpr int kToolbarHorizontalPadding = 18;
+constexpr int kToolbarButtonSize = 20;
 constexpr int kToolbarGap = 4;
 constexpr int kTabMinWidth = 112;
 constexpr int kTrafficLightSize = 13;
@@ -724,24 +724,20 @@ void drawClose(HDC dc, const RECT& rect, bool dark = false)
 
 void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(67, 72, 75);
+    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(80, 84, 88);
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int w = 13;
-    const int h = 16;
-    RoundRect(dc, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, 2, 2);
-    MoveToEx(dc, cx - 3, cy - 3, nullptr);
-    LineTo(dc, cx + 3, cy - 3);
-    MoveToEx(dc, cx - 3, cy, nullptr);
-    LineTo(dc, cx + 3, cy);
-    MoveToEx(dc, cx - 3, cy + 3, nullptr);
-    LineTo(dc, cx + 1, cy + 3);
+    // Safari's site/reader control is a compact text-lines mark.
+    MoveToEx(dc, cx - 5, cy - 4, nullptr);
+    LineTo(dc, cx + 3, cy - 4);
+    MoveToEx(dc, cx - 6, cy, nullptr);
+    LineTo(dc, cx + 5, cy);
+    MoveToEx(dc, cx - 4, cy + 4, nullptr);
+    LineTo(dc, cx + 1, cy + 4);
 
-    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -811,6 +807,9 @@ struct BrowserState {
     bool developerToolsEnabled { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
+    // Safari's toolbar has its own appearance; keep System mode light by default
+    // so Windows dark mode does not flatten the browser chrome into a dark strip.
+    bool chromeDarkTheme() const { return themeMode == ThemeMode::Dark; }
 
     void loadPreferences()
     {
@@ -981,12 +980,10 @@ struct BrowserState {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         const int light = scaleForDpi(window, kTrafficLightSize);
         const int lightGap = scaleForDpi(window, kTrafficLightGap);
-        const int width = scaleForDpi(window, 66);
-        const int top = titleBarHeight() + (toolbarHeight() - scaleForDpi(window, 36)) / 2;
-        return { pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21),
-            top,
-            pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21) + width,
-            top + scaleForDpi(window, 36) };
+        const int width = scaleForDpi(window, 54);
+        const int top = titleBarHeight() + (toolbarHeight() - scaleForDpi(window, 32)) / 2;
+        const int left = pad + light * 3 + lightGap * 2 + scaleForDpi(window, 11);
+        return { left, top, left + width, top + scaleForDpi(window, 32) };
     }
 
     RECT sidebarSettingsRect() const
@@ -1004,7 +1001,7 @@ struct BrowserState {
     {
         RECT sidebar = sidebarButtonRect();
         const int gap = scaleForDpi(window, kToolbarGap);
-        const int button = scaleForDpi(window, kToolbarButtonSize + 12);
+        const int button = scaleForDpi(window, kToolbarButtonSize + 8);
         return { sidebar.right + gap * 2, sidebar.top,
             sidebar.right + gap * 2 + button * 2 + gap * 2, sidebar.bottom };
     }
@@ -1013,15 +1010,15 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int pad = scaleForDpi(window, 13);
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
-        const int gap = scaleForDpi(window, 8);
+        const int gap = scaleForDpi(window, kToolbarGap);
         const int buttonCount = 3;
         if (index < 0 || index >= buttonCount)
             return { 0, 0, 0, 0 };
         const int left = client.right - pad - (buttonCount - index) * button
             - (buttonCount - index - 1) * gap;
-        const int height = scaleForDpi(window, 36);
+        const int height = scaleForDpi(window, 30);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + button, top + height };
     }
@@ -2255,11 +2252,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int minLeft = navigation.right + gap * 2;
         const int maxRight = firstRightButton.left - gap * 2;
         const int available = std::max(0, maxRight - minLeft);
-        const int width = std::min(scaleForDpi(window, 668), available);
+        const int width = std::min(scaleForDpi(window, 630), available);
         int left = (static_cast<int>(client.right) - width) / 2;
         left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
-        const int height = scaleForDpi(window, 36);
+        const int height = scaleForDpi(window, 32);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + width, top + height };
     }
@@ -2814,7 +2811,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!sidebarOpen)
             return;
 
-        const bool dark = darkTheme();
+        const bool dark = chromeDarkTheme();
         int width = scaleForDpi(window, 286);
         int top = contentTop();
         RECT client { };
@@ -3022,15 +3019,22 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
 
-        const bool dark = darkTheme();
-        HBRUSH pageBrush = CreateSolidBrush(dark ? RGB(28, 28, 30) : RGB(249, 249, 250));
+        const bool dark = chromeDarkTheme();
+        HBRUSH pageBrush = CreateSolidBrush(dark ? RGB(28, 28, 30) : RGB(250, 250, 251));
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(255, 255, 255));
+        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(250, 250, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
+
+        HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(61, 61, 64) : RGB(226, 228, 231));
+        HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
+        MoveToEx(dc, 0, toolbarH - 1, nullptr);
+        LineTo(dc, client.right, toolbarH - 1);
+        SelectObject(dc, oldToolbarDivider);
+        DeleteObject(toolbarDivider);
 
         drawSidebarPanel(dc);
 
@@ -3910,6 +3914,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     auto* state = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
     switch (message) {
+    case WM_NCCALCSIZE:
+        if (wParam)
+            return 0;
+        break;
+
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
             MessageBoxW(window, L"WebKit could not initialize Aurora.", windowTitle, MB_OK | MB_ICONERROR);
@@ -3932,11 +3941,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_CTLCOLOREDIT:
         if (state && (reinterpret_cast<HWND>(lParam) == state->addressBar || reinterpret_cast<HWND>(lParam) == state->findEdit)) {
             HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, state->darkTheme() ? RGB(240, 240, 242) : RGB(45, 49, 52));
-            SetBkColor(dc, state->darkTheme() ? RGB(57, 57, 60) : RGB(255, 255, 255));
-            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(255, 255, 255));
+            const bool addressControl = reinterpret_cast<HWND>(lParam) == state->addressBar;
+            const bool dark = addressControl ? state->chromeDarkTheme() : state->darkTheme();
+            SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
+            SetBkColor(dc, dark ? RGB(57, 57, 60) : RGB(250, 250, 251));
+            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(250, 250, 251));
             static HBRUSH darkAddressBrush = CreateSolidBrush(RGB(57, 57, 60));
-            return reinterpret_cast<LRESULT>(state->darkTheme() ? darkAddressBrush : lightAddressBrush);
+            return reinterpret_cast<LRESULT>(dark ? darkAddressBrush : lightAddressBrush);
         }
         break;
 
