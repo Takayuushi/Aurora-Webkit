@@ -1000,7 +1000,11 @@ struct BrowserState {
         const int pad = scaleForDpi(window, 13);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, 8);
-        const int left = client.right - pad - (3 - index) * button - (2 - index) * gap;
+        const int buttonCount = downloads.empty() ? 3 : 4;
+        if (index < 0 || index >= buttonCount)
+            return { 0, 0, 0, 0 };
+        const int left = client.right - pad - (buttonCount - index) * button
+            - (buttonCount - index - 1) * gap;
         return { left, titleBarHeight() + scaleForDpi(window, 3),
             left + button, contentTop() - scaleForDpi(window, 3) };
     }
@@ -1887,12 +1891,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(downloadsMenu, MF_STRING, 5996, L"Show All Downloads");
 
-        RECT client { };
-        GetClientRect(window, &client);
-        POINT point {
-            client.right - scaleForDpi(window, kToolbarHorizontalPadding) - scaleForDpi(window, kToolbarButtonSize) / 2,
-            contentTop()
-        };
+        const RECT button = rightToolbarButtonRect(0);
+        POINT point { button.right, button.bottom };
         ClientToScreen(window, &point);
         TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
         DestroyMenu(downloadsMenu);
@@ -2328,9 +2328,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const int gap = scaleForDpi(window, kToolbarGap);
         const RECT navigation = navigationPillRect();
-        const RECT share = rightToolbarButtonRect(0);
+        // The first right-side control is Downloads when the current window
+        // has downloads; otherwise Share is the first control.
+        const RECT firstRightButton = rightToolbarButtonRect(0);
         const int minLeft = navigation.right + gap * 2;
-        const int maxRight = share.left - gap * 2;
+        const int maxRight = firstRightButton.left - gap * 2;
         const int available = std::max(0, maxRight - minLeft);
         const int width = std::min(scaleForDpi(window, 668), available);
         int left = (static_cast<int>(client.right) - width) / 2;
@@ -2367,13 +2369,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (!viewWindow)
                 continue;
 
+            // Repaint the WebKit child after changing the sidebar offset. Without
+            // repainting here, the old viewport can remain visible over the sidebar
+            // until another WebKit paint or window event occurs.
             MoveWindow(
                 viewWindow,
                 contentLeft,
                 contentTop,
                 std::max<int>(0, static_cast<int>(client.right - contentLeft)),
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
-                FALSE
+                TRUE
             );
         }
 
@@ -2421,9 +2426,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     void handleCommand(UINT command)
     {
         if (command >= 6000 && command < 6000 + downloads.size()) {
-            size_t index = command - 6000;
-            if (index < downloads.size())
-                showFileInFolder(downloads[index].path);
+            const size_t index = command - 6000;
+            if (index < downloads.size()) {
+                const auto& item = downloads[index];
+                if (item.finished && !item.failed) {
+                    if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
+                        ShellExecuteW(window, L"open", item.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    else
+                        MessageBoxW(window, L"The downloaded file could not be found.", L"Downloads — Aurora", MB_OK | MB_ICONWARNING);
+                } else if (!item.path.empty() && GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    showFileInFolder(item.path);
+                }
+            }
             return;
         }
 
@@ -2832,9 +2846,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
-        const RECT shareButton = rightToolbarButtonRect(0);
-        const RECT newTabButton = rightToolbarButtonRect(1);
-        const RECT overviewButton = rightToolbarButtonRect(2);
+        const bool hasDownloads = !downloads.empty();
+        const RECT downloadButton = rightToolbarButtonRect(0);
+        const RECT shareButton = rightToolbarButtonRect(hasDownloads ? 1 : 0);
+        const RECT newTabButton = rightToolbarButtonRect(hasDownloads ? 2 : 1);
+        const RECT overviewButton = rightToolbarButtonRect(hasDownloads ? 3 : 2);
+        if (hasDownloads && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
@@ -3191,9 +3208,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
 
-        RECT shareRect = rightToolbarButtonRect(0);
-        RECT newTabRect = rightToolbarButtonRect(1);
-        RECT overviewRect = rightToolbarButtonRect(2);
+        const bool hasDownloads = !downloads.empty();
+        const int shareIndex = hasDownloads ? 1 : 0;
+        if (hasDownloads)
+            drawDownload(dc, rightToolbarButtonRect(0), dark);
+        RECT shareRect = rightToolbarButtonRect(shareIndex);
+        RECT newTabRect = rightToolbarButtonRect(shareIndex + 1);
+        RECT overviewRect = rightToolbarButtonRect(shareIndex + 2);
         drawShare(dc, shareRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
@@ -3722,6 +3743,9 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
         browser->downloads.push_back({ filename, path, 0, 0, false, false, download });
         if (browser->downloads.size() > 32)
             browser->downloads.erase(browser->downloads.begin());
+        // The Downloads control is added to the toolbar when the first item is
+        // registered, which also changes the smart-search field's available width.
+        browser->resize();
         InvalidateRect(browser->window, nullptr, TRUE);
     }
 
