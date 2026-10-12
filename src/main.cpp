@@ -1000,7 +1000,7 @@ struct BrowserState {
         const int pad = scaleForDpi(window, 13);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, 8);
-        const int buttonCount = downloads.empty() ? 3 : 4;
+        const int buttonCount = 4;
         if (index < 0 || index >= buttonCount)
             return { 0, 0, 0, 0 };
         const int left = client.right - pad - (buttonCount - index) * button
@@ -2846,12 +2846,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
-        const bool hasDownloads = !downloads.empty();
         const RECT downloadButton = rightToolbarButtonRect(0);
-        const RECT shareButton = rightToolbarButtonRect(hasDownloads ? 1 : 0);
-        const RECT newTabButton = rightToolbarButtonRect(hasDownloads ? 2 : 1);
-        const RECT overviewButton = rightToolbarButtonRect(hasDownloads ? 3 : 2);
-        if (hasDownloads && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
+        const RECT shareButton = rightToolbarButtonRect(1);
+        const RECT newTabButton = rightToolbarButtonRect(2);
+        const RECT overviewButton = rightToolbarButtonRect(3);
+        if (PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
@@ -3208,13 +3207,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
 
-        const bool hasDownloads = !downloads.empty();
-        const int shareIndex = hasDownloads ? 1 : 0;
-        if (hasDownloads)
-            drawDownload(dc, rightToolbarButtonRect(0), dark);
-        RECT shareRect = rightToolbarButtonRect(shareIndex);
-        RECT newTabRect = rightToolbarButtonRect(shareIndex + 1);
-        RECT overviewRect = rightToolbarButtonRect(shareIndex + 2);
+        drawDownload(dc, rightToolbarButtonRect(0), dark);
+        RECT shareRect = rightToolbarButtonRect(1);
+        RECT newTabRect = rightToolbarButtonRect(2);
+        RECT overviewRect = rightToolbarButtonRect(3);
         drawShare(dc, shareRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
@@ -3743,9 +3739,7 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
         browser->downloads.push_back({ filename, path, 0, 0, false, false, download });
         if (browser->downloads.size() > 32)
             browser->downloads.erase(browser->downloads.begin());
-        // The Downloads control is added to the toolbar when the first item is
-        // registered, which also changes the smart-search field's available width.
-        browser->resize();
+        // Refresh the download icon's popup contents and progress state.
         InvalidateRect(browser->window, nullptr, TRUE);
     }
 
