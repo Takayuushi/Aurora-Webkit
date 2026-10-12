@@ -138,7 +138,7 @@ constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
-constexpr int kTitleBarHeight = 36;
+constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 54;
 constexpr int kTabsBarHeight = 34;
 constexpr int kToolbarHorizontalPadding = 22;
@@ -576,6 +576,31 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(pen);
 }
 
+void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
+{
+    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(75, 80, 84);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+
+    Ellipse(dc, cx - 4, cy - 4, cx + 4, cy + 4);
+    Ellipse(dc, cx - 1, cy - 1, cx + 1, cy + 1);
+    MoveToEx(dc, cx, cy - 8, nullptr); LineTo(dc, cx, cy - 5);
+    MoveToEx(dc, cx, cy + 5, nullptr); LineTo(dc, cx, cy + 8);
+    MoveToEx(dc, cx - 8, cy, nullptr); LineTo(dc, cx - 5, cy);
+    MoveToEx(dc, cx + 5, cy, nullptr); LineTo(dc, cx + 8, cy);
+    MoveToEx(dc, cx - 6, cy - 6, nullptr); LineTo(dc, cx - 4, cy - 4);
+    MoveToEx(dc, cx + 4, cy + 4, nullptr); LineTo(dc, cx + 6, cy + 6);
+    MoveToEx(dc, cx + 4, cy - 4, nullptr); LineTo(dc, cx + 6, cy - 6);
+    MoveToEx(dc, cx - 6, cy + 6, nullptr); LineTo(dc, cx - 4, cy + 4);
+
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
 void drawShare(HDC dc, const RECT& rect, bool dark = false)
 {
     HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
@@ -642,29 +667,6 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
 
     SelectObject(dc, oldBrush);
     DeleteObject(brush);
-}
-
-void drawAuroraMenuMark(HDC dc, int x, int y, COLORREF color)
-{
-    const int size = 18;
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
-    Ellipse(dc, x, y, x + size, y + size);
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-
-    HFONT font = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, color);
-    RECT letter { x + 1, y, x + size - 1, y + size };
-    DrawTextW(dc, L"a", -1, &letter, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, oldFont);
-    DeleteObject(font);
 }
 
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
@@ -939,38 +941,6 @@ struct BrowserState {
     int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
     int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
 
-    RECT menuBarItemRect(int index) const
-    {
-        // Positions follow the spacing in the Safari menu-bar reference.
-        static const int lefts[] = { 58, 122, 166, 211, 264, 330, 498, 569 };
-        static const int widths[] = { 48, 28, 28, 31, 44, 66, 50, 34 };
-        if (index < 0 || index >= 8)
-            return { 0, 0, 0, titleBarHeight() };
-        const int left = scaleForDpi(window, lefts[index]);
-        const int width = scaleForDpi(window, widths[index]);
-        return { left, 0, left + width, titleBarHeight() };
-    }
-
-    int menuBarItemAt(POINT point) const
-    {
-        if (point.y < 0 || point.y >= titleBarHeight())
-            return -1;
-        RECT safariMenu = menuBarItemRect(0);
-        if (point.x >= scaleForDpi(window, 14) && point.x < safariMenu.right)
-            return 0;
-        for (int i = 1; i < 8; ++i) {
-            RECT item = menuBarItemRect(i);
-            if (PtInRect(&item, point))
-                return i;
-        }
-        return -1;
-    }
-
-    bool menuBarHasInteractiveHit(POINT point) const
-    {
-        return menuBarItemAt(point) >= 0;
-    }
-
     RECT sidebarButtonRect() const
     {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
@@ -982,6 +952,17 @@ struct BrowserState {
             top + scaleForDpi(window, 8),
             pad + light * 3 + lightGap * 2 + scaleForDpi(window, 21) + width,
             top + toolbarHeight() - scaleForDpi(window, 8) };
+    }
+
+    RECT sidebarSettingsRect() const
+    {
+        RECT client { };
+        GetClientRect(window, &client);
+        const int width = scaleForDpi(window, 286);
+        const int margin = scaleForDpi(window, 12);
+        const int height = scaleForDpi(window, 52);
+        const int bottomMargin = scaleForDpi(window, 8);
+        return { margin, client.bottom - height, width - margin, client.bottom - bottomMargin };
     }
 
     RECT navigationPillRect() const
@@ -2179,101 +2160,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         InvalidateRect(window, nullptr, TRUE);
     }
 
-    void showMenuBarPopup(int menuIndex, POINT clientPoint)
-    {
-        HMENU popup = CreatePopupMenu();
-        if (!popup)
-            return;
-
-        switch (menuIndex) {
-        case 0: // Aurora
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
-            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Settings...");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuThemeLight, L"Light Appearance");
-            AppendMenuW(popup, MF_STRING, kMenuThemeDark, L"Dark Appearance");
-            AppendMenuW(popup, MF_STRING, kMenuThemeSystem, L"Automatic Appearance");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
-            break;
-        case 1: // File
-            AppendMenuW(popup, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
-            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window\tCtrl+N");
-            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window\tCtrl+Shift+P");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab\tCtrl+W");
-            AppendMenuW(popup, MF_STRING, kMenuSavePage, L"Save Page As...");
-            AppendMenuW(popup, MF_STRING, kMenuPrint, L"Print...");
-            AppendMenuW(popup, MF_STRING, kMenuDownloads, L"Downloads");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
-            break;
-        case 2: // Edit
-            AppendMenuW(popup, MF_STRING, kEditUndo, L"Undo");
-            AppendMenuW(popup, MF_STRING, kEditRedo, L"Redo");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kEditCut, L"Cut");
-            AppendMenuW(popup, MF_STRING, kEditCopy, L"Copy");
-            AppendMenuW(popup, MF_STRING, kEditPaste, L"Paste");
-            AppendMenuW(popup, MF_STRING, kEditSelectAll, L"Select All");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuFindInPage, L"Find in Page...\tCtrl+F");
-            break;
-        case 3: // View
-            AppendMenuW(popup, MF_STRING, kCommandSidebar, L"Show Sidebar");
-            AppendMenuW(popup, MF_STRING, kMenuStartPage, L"Start Page");
-            AppendMenuW(popup, MF_STRING, kMenuHomePage, L"Home Page");
-            AppendMenuW(popup, MF_STRING, kCommandReader, L"Show Reader");
-            AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuZoomOut, L"Zoom Out");
-            AppendMenuW(popup, MF_STRING, kMenuResetZoom, L"Actual Size");
-            AppendMenuW(popup, MF_STRING, kMenuZoomIn, L"Zoom In");
-            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
-            break;
-        case 4: // History
-            AppendMenuW(popup, MF_STRING, kMenuHistory, L"Show All History");
-            AppendMenuW(popup, MF_STRING, kMenuClearHistory, L"Clear History...");
-            break;
-        case 5: // Bookmarks
-            AppendMenuW(popup, MF_STRING, kMenuAddBookmark, L"Add Bookmark...");
-            AppendMenuW(popup, MF_STRING, kMenuBookmarks, L"Show Bookmarks");
-            AppendMenuW(popup, MF_STRING, kMenuAddReadingList, L"Add to Reading List");
-            AppendMenuW(popup, MF_STRING, kMenuReadingList, L"Show Reading List");
-            break;
-        case 6: // Window
-            AppendMenuW(popup, MF_STRING, kMenuNewWindow, L"New Window");
-            AppendMenuW(popup, MF_STRING, kMenuNewPrivateWindow, L"New Private Window");
-            AppendMenuW(popup, MF_STRING, kCommandTabOverview, L"Show All Tabs");
-            AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab");
-            break;
-        case 7: // Help
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
-            AppendMenuW(popup, MF_STRING, kMenuSettings, L"Browser Settings");
-            break;
-        default:
-            DestroyMenu(popup);
-            return;
-        }
-
-        ClientToScreen(window, &clientPoint);
-        const UINT command = TrackPopupMenu(popup,
-            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-            clientPoint.x, clientPoint.y, 0, window, nullptr);
-        DestroyMenu(popup);
-        if (command)
-            handleCommand(command);
-    }
-
-    bool handleMenuBarHit(POINT point)
-    {
-        const int index = menuBarItemAt(point);
-        if (index < 0)
-            return false;
-        POINT popupPoint { point.x, titleBarHeight() };
-        showMenuBarPopup(index, popupPoint);
-        return true;
-    }
-
     void executeWebEditCommand(const char* command)
     {
         auto* tab = active();
@@ -2772,10 +2658,38 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         closeTab(activeTab);
     }
 
-    bool topBarHasInteractiveHit(POINT point) const
+    bool toolbarHasInteractiveHit(POINT point) const
     {
-        // The first row is a menu bar, not a draggable tab/title strip.
-        return menuBarHasInteractiveHit(point);
+        const int top = titleBarHeight();
+        if (point.y < top || point.y >= top + toolbarHeight())
+            return false;
+
+        const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+        const int light = scaleForDpi(window, kTrafficLightSize);
+        const int lightGap = scaleForDpi(window, kTrafficLightGap);
+        const int trafficHit = scaleForDpi(window, 20);
+        const int trafficY = top + (toolbarHeight() - trafficHit) / 2;
+        const RECT traffic[] = {
+            { pad - scaleForDpi(window, 3), trafficY, pad - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
+            { pad + light + lightGap - scaleForDpi(window, 3), trafficY, pad + light + lightGap - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit },
+            { pad + (light + lightGap) * 2 - scaleForDpi(window, 3), trafficY, pad + (light + lightGap) * 2 - scaleForDpi(window, 3) + trafficHit, trafficY + trafficHit }
+        };
+        for (const auto& rect : traffic) {
+            if (PtInRect(&rect, point))
+                return true;
+        }
+
+        const RECT sidebar = sidebarButtonRect();
+        const RECT navigation = navigationPillRect();
+        const RECT address = addressPillRect();
+        if (PtInRect(&sidebar, point) || PtInRect(&navigation, point) || PtInRect(&address, point))
+            return true;
+
+        for (int i = 0; i < 4; ++i) {
+            if (PtInRect(&rightToolbarButtonRect(i), point))
+                return true;
+        }
+        return false;
     }
 
     bool handleTopBarHit(POINT point)
@@ -2933,6 +2847,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         int rowTop = top + scaleForDpi(window, 100);
         int rowHeight = scaleForDpi(window, 62);
+        const RECT settingsRect = sidebarSettingsRect();
+        const int listBottom = settingsRect.top - scaleForDpi(window, 8);
+        const size_t visibleRows = listBottom > rowTop
+            ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
+            : 0;
         size_t count = sidebarSection == 0 ? bookmarks.size() : (sidebarSection == 1 ? readingList.size() : visits.size());
 
         if (!count) {
@@ -2943,7 +2862,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         } else {
             SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
             if (sidebarSection == 0) {
-                for (size_t i = 0; i < std::min<size_t>(10, bookmarks.size()); ++i) {
+                for (size_t i = 0; i < std::min(visibleRows, bookmarks.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2953,7 +2872,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
                 }
             } else if (sidebarSection == 1) {
-                for (size_t i = 0; i < std::min<size_t>(10, readingList.size()); ++i) {
+                for (size_t i = 0; i < std::min(visibleRows, readingList.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2965,7 +2884,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             } else {
                 auto sorted = visits;
                 std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
-                for (size_t i = 0; i < std::min<size_t>(10, sorted.size()); ++i) {
+                for (size_t i = 0; i < std::min(visibleRows, sorted.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
                     RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 6), width - scaleForDpi(window, 16), y + scaleForDpi(window, 28) };
                     DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2976,6 +2895,27 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 }
             }
         }
+
+        RECT settingsRect = sidebarSettingsRect();
+        RECT footer { 0, settingsRect.top - scaleForDpi(window, 8), width, client.bottom };
+        HBRUSH footerBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
+        FillRect(dc, &footer, footerBrush);
+        DeleteObject(footerBrush);
+
+        HPEN footerDivider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
+        HPEN oldFooterPen = static_cast<HPEN>(SelectObject(dc, footerDivider));
+        MoveToEx(dc, 0, footer.top, nullptr);
+        LineTo(dc, width, footer.top);
+        SelectObject(dc, oldFooterPen);
+        DeleteObject(footerDivider);
+
+        RECT gearRect { settingsRect.left + scaleForDpi(window, 8), settingsRect.top + scaleForDpi(window, 8),
+            settingsRect.left + scaleForDpi(window, 28), settingsRect.bottom - scaleForDpi(window, 4) };
+        drawSettingsGear(dc, gearRect, dark);
+        RECT settingsLabel { gearRect.right + scaleForDpi(window, 8), settingsRect.top,
+            settingsRect.right - scaleForDpi(window, 4), settingsRect.bottom };
+        SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
+        DrawTextW(dc, L"Settings", -1, &settingsLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(dc, oldFont);
         DeleteObject(font);
@@ -3000,6 +2940,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
+        const RECT settingsRect = sidebarSettingsRect();
+        if (PtInRect(&settingsRect, point)) {
+            openBrowserSettings(this);
+            return true;
+        }
+
         RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
             width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
         int part = (selector.right - selector.left) / 3;
@@ -3014,8 +2960,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         int rowTop = top + scaleForDpi(window, 100);
         int rowHeight = scaleForDpi(window, 62);
+        const int listBottom = settingsRect.top - scaleForDpi(window, 8);
+        const size_t visibleRows = listBottom > rowTop
+            ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
+            : 0;
         int index = (point.y - rowTop) / rowHeight;
-        if (index < 0)
+        if (index < 0 || static_cast<size_t>(index) >= visibleRows)
             return true;
 
         auto* tab = active();
@@ -3050,9 +3000,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
 
         int dpi = windowDpi(window);
-        int titleH = MulDiv(kTitleBarHeight, dpi, 96);
         int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
-        int button = MulDiv(kToolbarButtonSize, dpi, 96);
         int gap = MulDiv(kToolbarGap, dpi, 96);
         int pad = MulDiv(kToolbarHorizontalPadding, dpi, 96);
 
@@ -3061,13 +3009,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(121, 133, 151));
-        RECT titleRect { 0, 0, client.right, titleH };
-        FillRect(dc, &titleRect, titleBrush);
-        DeleteObject(titleBrush);
-
         HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(255, 255, 255));
-        RECT toolbarRect { 0, titleH, client.right, titleH + toolbarH };
+        RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
 
@@ -3075,27 +3018,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const int light = MulDiv(kTrafficLightSize, dpi, 96);
         const int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
-        const int menuH = titleBarHeight();
-        const int toolbarTop = menuH;
-        const int tabsTop = menuH + toolbarH;
+        const int toolbarTop = titleBarHeight();
+        const int tabsTop = toolbarTop + toolbarH;
         const int tabsH = tabsBarHeight();
-
-        HFONT menuFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
-        SetBkMode(dc, TRANSPARENT);
-        drawAuroraMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 9),
-            RGB(255, 255, 255));
-        const wchar_t* menuLabels[] = { L"Aurora", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
-        for (int i = 0; i < 8; ++i) {
-            RECT item = menuBarItemRect(i);
-            RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
-            SetTextColor(dc, RGB(255, 255, 255));
-            DrawTextW(dc, menuLabels[i], -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        }
-        SelectObject(dc, oldMenuFont);
-        DeleteObject(menuFont);
 
         const int lightY = toolbarTop + (toolbarH - light) / 2;
         drawTrafficLight(dc, pad, lightY, RGB(255, 95, 87));
@@ -4019,14 +3944,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (top) return HTTOP;
         if (bottom) return HTBOTTOM;
 
-        int titleH = scaleForDpi(window, kTitleBarHeight);
-        if (point.y < titleH) {
-            // WM_NCHITTEST is queried during mouse movement/hover. It must
-            // never execute a browser command. Only unused title-bar space
-            // should become draggable.
-            if (state && !state->topBarHasInteractiveHit(point))
+        if (state) {
+            const int toolbarTop = state->titleBarHeight();
+            const int toolbarBottom = toolbarTop + state->toolbarHeight();
+            if (point.y >= toolbarTop && point.y < toolbarBottom
+                && !state->toolbarHasInteractiveHit(point))
                 return HTCAPTION;
-            return HTCLIENT;
         }
 
         return HTCLIENT;
@@ -4038,8 +3961,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
-        if (state->handleMenuBarHit(point))
-            return 0;
         if (state->handleTopBarHit(point))
             return 0;
         if (state->handleToolbarHit(point))
