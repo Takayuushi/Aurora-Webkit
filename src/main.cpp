@@ -644,27 +644,27 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(brush);
 }
 
-void drawAppleMenuMark(HDC dc, int x, int y, COLORREF color)
+void drawAuroraMenuMark(HDC dc, int x, int y, COLORREF color)
 {
-    HBRUSH brush = CreateSolidBrush(color);
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
+    const int size = 18;
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    POINT body[] = {
-        { x + 8, y + 3 }, { x + 5, y + 1 }, { x + 2, y + 2 }, { x, y + 6 },
-        { x + 1, y + 11 }, { x + 4, y + 16 }, { x + 7, y + 17 },
-        { x + 9, y + 16 }, { x + 12, y + 17 }, { x + 15, y + 13 },
-        { x + 16, y + 8 }, { x + 14, y + 4 }, { x + 11, y + 2 }, { x + 8, y + 3 }
-    };
-    Polygon(dc, body, static_cast<int>(std::size(body)));
-    POINT leaf[] = { { x + 9, y }, { x + 14, y - 3 }, { x + 13, y + 1 }, { x + 9, y + 3 } };
-    Polygon(dc, leaf, static_cast<int>(std::size(leaf)));
-
-    SelectObject(dc, oldPen);
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    Ellipse(dc, x, y, x + size, y + size);
     SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
     DeleteObject(pen);
-    DeleteObject(brush);
+
+    HFONT font = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    RECT letter { x + 1, y, x + size - 1, y + size };
+    DrawTextW(dc, L"a", -1, &letter, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
 }
 
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
@@ -2186,15 +2186,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         switch (menuIndex) {
-        case 0: // Safari
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+        case 0: // Aurora
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
             AppendMenuW(popup, MF_STRING, kMenuSettings, L"Settings...");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(popup, MF_STRING, kMenuThemeLight, L"Light Appearance");
             AppendMenuW(popup, MF_STRING, kMenuThemeDark, L"Dark Appearance");
             AppendMenuW(popup, MF_STRING, kMenuThemeSystem, L"Automatic Appearance");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
             break;
         case 1: // File
             AppendMenuW(popup, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
@@ -2206,7 +2206,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             AppendMenuW(popup, MF_STRING, kMenuPrint, L"Print...");
             AppendMenuW(popup, MF_STRING, kMenuDownloads, L"Downloads");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
             break;
         case 2: // Edit
             AppendMenuW(popup, MF_STRING, kEditUndo, L"Undo");
@@ -2247,7 +2247,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab");
             break;
         case 7: // Help
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
             AppendMenuW(popup, MF_STRING, kMenuSettings, L"Browser Settings");
             break;
         default:
@@ -3085,9 +3085,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
         SetBkMode(dc, TRANSPARENT);
-        drawAppleMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 10),
+        drawAuroraMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 9),
             RGB(255, 255, 255));
-        const wchar_t* menuLabels[] = { L"Safari", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
+        const wchar_t* menuLabels[] = { L"Aurora", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
         for (int i = 0; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
             RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
