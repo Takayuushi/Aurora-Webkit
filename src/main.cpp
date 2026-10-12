@@ -2724,8 +2724,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int tabCount = static_cast<int>(tabs.size());
         const int available = std::max(0, GetClientWidth(window) - pad * 2 - gap * (tabCount + 1));
         const int desiredTabWidth = available / std::max(1, tabCount);
-        const int tabWidth = std::clamp(desiredTabWidth,
-            scaleForDpi(window, 120), scaleForDpi(window, 280));
+        const int tabWidth = std::min(desiredTabWidth, scaleForDpi(window, 280));
         for (size_t i = 0; i < tabs.size(); ++i) {
             const int left = pad + gap + static_cast<int>(i) * (tabWidth + gap);
             RECT tabRect { left, top + scaleForDpi(window, 3), left + tabWidth, top + stripHeight - scaleForDpi(window, 3) };
@@ -3091,8 +3090,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             const int tabCount = static_cast<int>(tabs.size());
             const int available = std::max(0, static_cast<int>(client.right) - tabPad * 2 - tabGap * (tabCount + 1));
             const int desiredTabWidth = available / std::max(1, tabCount);
-            const int tabWidth = std::clamp(desiredTabWidth,
-                scaleForDpi(window, 120), scaleForDpi(window, 280));
+            const int tabWidth = std::min(desiredTabWidth, scaleForDpi(window, 280));
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const int left = tabPad + tabGap + static_cast<int>(i) * (tabWidth + tabGap);
