@@ -600,7 +600,8 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
     const COLORREF color = dark ? RGB(220, 220, 224) : RGB(75, 80, 84);
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    HBRUSH gearBrush = CreateSolidBrush(color);
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, gearBrush));
 
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
@@ -622,11 +623,18 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
         };
     }
     Polygon(dc, teeth, static_cast<int>(std::size(teeth)));
-    const int hole = std::max(2, diameter / 7);
+    HBRUSH holeBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
+    HBRUSH oldGearBrush = static_cast<HBRUSH>(SelectObject(dc, holeBrush));
+    HPEN oldGearPen = static_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
+    const int hole = std::max(2, diameter / 4);
     Ellipse(dc, cx - hole, cy - hole, cx + hole, cy + hole);
+    SelectObject(dc, oldGearPen);
+    SelectObject(dc, oldGearBrush);
+    DeleteObject(holeBrush);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
+    DeleteObject(gearBrush);
     DeleteObject(pen);
 }
 
@@ -669,17 +677,18 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
+    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 36.0);
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int w = static_cast<int>(12 * scale);
-    const int h = static_cast<int>(11 * scale);
-    const int offset = static_cast<int>(3 * scale);
+    const int w = std::max(8, static_cast<int>(12 * scale));
+    const int h = std::max(8, static_cast<int>(11 * scale));
+    const int offsetX = std::max(2, static_cast<int>(2.5 * scale));
+    const int offsetY = std::max(2, static_cast<int>(2 * scale));
     const int radius = std::max(2, static_cast<int>(3 * scale));
-    RoundRect(dc, cx - w / 2 - offset, cy - h / 2 - offset / 2,
-        cx + w / 2 - offset, cy + h / 2 - offset / 2, radius, radius);
-    RoundRect(dc, cx - w / 2 + offset, cy - h / 2 + offset / 2,
-        cx + w / 2 + offset, cy + h / 2 + offset / 2, radius, radius);
+    RoundRect(dc, cx - w / 2 - offsetX, cy - h / 2 - offsetY,
+        cx + w / 2 - offsetX, cy + h / 2 - offsetY, radius, radius);
+    RoundRect(dc, cx - w / 2 + offsetX, cy - h / 2 + offsetY,
+        cx + w / 2 + offsetX, cy + h / 2 + offsetY, radius, radius);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -814,6 +823,7 @@ bool windowsPrefersDarkMode()
 struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
+    bool addressEditing { false };
     bool windowCounted { false };
     bool privateBrowsing { false };
     bool customMaximized { false };
@@ -1069,6 +1079,52 @@ struct BrowserState {
         return tabs[activeTab].get();
     }
 
+    std::wstring addressDisplayText() const
+    {
+        if (tabs.empty() || activeTab >= tabs.size())
+            return {};
+        const std::wstring& url = tabs[activeTab]->activeUrl;
+        if (url.empty() || url == L"about:blank")
+            return {};
+
+        const size_t scheme = url.find(L"://");
+        if (scheme == std::wstring::npos)
+            return url.rfind(L"file:", 0) == 0 ? L"Local File" : url;
+
+        const size_t hostStart = scheme + 3;
+        const size_t hostEnd = url.find_first_of(L"/?#", hostStart);
+        std::wstring host = url.substr(hostStart,
+            hostEnd == std::wstring::npos ? std::wstring::npos : hostEnd - hostStart);
+        const size_t credentials = host.rfind(L'@');
+        if (credentials != std::wstring::npos)
+            host.erase(0, credentials + 1);
+        if (host.rfind(L"www.", 0) == 0)
+            host.erase(0, 4);
+        return host;
+    }
+
+    void beginAddressEditing()
+    {
+        if (!addressBar)
+            return;
+        const TabState* tab = tabs.empty() || activeTab >= tabs.size() ? nullptr : tabs[activeTab].get();
+        const std::wstring current = tab && tab->activeUrl != L"about:blank" ? tab->activeUrl : L"";
+        SetWindowTextW(addressBar, current.c_str());
+        addressEditing = true;
+        ShowWindow(addressBar, SW_SHOW);
+        SetFocus(addressBar);
+        SendMessageW(addressBar, EM_SETSEL, 0, -1);
+    }
+
+    void endAddressEditing()
+    {
+        addressEditing = false;
+        if (addressBar)
+            ShowWindow(addressBar, SW_HIDE);
+        if (window)
+            InvalidateRect(window, nullptr, FALSE);
+    }
+
     void loadVisitData()
     {
         visits.clear();
@@ -1252,7 +1308,7 @@ struct BrowserState {
         WKPageConfigurationSetPreferences(pageConfiguration.get(), preferences.get());
 
         uiFont = CreateFontW(
-            -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            -MulDiv(12, windowDpi(window), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
         );
@@ -1294,7 +1350,7 @@ struct BrowserState {
             0,
             L"EDIT",
             L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_CENTER,
+            WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL | ES_CENTER,
             0, 0, 0, 0,
             window,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandAddress)),
@@ -2432,8 +2488,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             showMenu();
             break;
         case kCommandAddress:
-            SetFocus(addressBar);
-            SendMessageW(addressBar, EM_SETSEL, 0, -1);
+            beginAddressEditing();
             break;
         case kCommandCloseTab:
             closeActiveTab();
@@ -2810,8 +2865,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT reloadRect { pill.right - scaleForDpi(window, 32), pill.top, pill.right, pill.bottom };
         if (PtInRect(&reloadRect, point)) { handleCommand(kCommandReload); return true; }
         if (PtInRect(&pill, point)) {
-            SetFocus(addressBar);
-            SendMessageW(addressBar, EM_SETSEL, 0, -1);
+            beginAddressEditing();
             return true;
         }
 
@@ -3197,8 +3251,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(255, 255, 255));
-        HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(208, 212, 214));
+        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(244, 245, 247));
+        HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(231, 233, 236));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
         RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
@@ -3206,6 +3260,22 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         SelectObject(dc, oldPillPen);
         DeleteObject(pillBrush);
         DeleteObject(pillPen);
+
+        if (!addressEditing) {
+            const std::wstring addressText = addressDisplayText();
+            if (!addressText.empty()) {
+                RECT labelRect {
+                    pill.left + MulDiv(32, dpi, 96), pill.top,
+                    pill.right - MulDiv(32, dpi, 96), pill.bottom
+                };
+                HFONT oldAddressFont = static_cast<HFONT>(SelectObject(dc, uiFont));
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, dark ? RGB(225, 225, 229) : RGB(73, 77, 81));
+                DrawTextW(dc, addressText.c_str(), -1, &labelRect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                SelectObject(dc, oldAddressFont);
+            }
+        }
 
         RECT siteSettingsGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
         drawWebsiteSettings(dc, siteSettingsGlyph, dark);
@@ -3690,7 +3760,14 @@ LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, L
         wchar_t text[4096] { };
         GetWindowTextW(window, text, static_cast<int>(std::size(text)));
         browser->navigateInput(text);
+        browser->endAddressEditing();
         return 0;
+    }
+
+    if (browser && message == WM_KILLFOCUS && browser->addressEditing) {
+        LRESULT result = CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
+        browser->endAddressEditing();
+        return result;
     }
 
     if (browser && message == WM_SETFOCUS) {
@@ -4002,8 +4079,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             const bool addressControl = reinterpret_cast<HWND>(lParam) == state->addressBar;
             const bool dark = addressControl ? state->chromeDarkTheme() : state->darkTheme();
             SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
-            SetBkColor(dc, dark ? RGB(57, 57, 60) : RGB(250, 250, 251));
-            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(250, 250, 251));
+            SetBkColor(dc, dark ? RGB(57, 57, 60) : RGB(244, 245, 247));
+            static HBRUSH lightAddressBrush = CreateSolidBrush(RGB(244, 245, 247));
             static HBRUSH darkAddressBrush = CreateSolidBrush(RGB(57, 57, 60));
             return reinterpret_cast<LRESULT>(dark ? darkAddressBrush : lightAddressBrush);
         }
