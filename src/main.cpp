@@ -14,6 +14,7 @@
 #include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
+#include <WebKit/WKPageFullScreenClient.h>
 #include <WebKit/WKHTTPCookieStoreRef.h>
 #include <WebKit/WKData.h>
 #include "WKPagePrivate.h"
@@ -141,7 +142,7 @@ constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
 
 constexpr int kTitleBarHeight = 0;
-constexpr int kToolbarHeight = 44;
+constexpr int kToolbarHeight = 40;
 constexpr int kTabsBarHeight = 34;
 constexpr int kToolbarHorizontalPadding = 18;
 constexpr int kToolbarButtonSize = 20;
@@ -174,6 +175,10 @@ void websiteDataStorageCleared(void*);
 void websiteDataLocalStorageCleared(void*);
 void websiteDataNetworkCacheCleared(void*);
 void websiteDataMemoryCacheCleared(void*);
+void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef, const void*);
+void browserBeganEnterFullScreen(WKPageRef, WKRect, WKRect, const void*);
+void browserExitFullScreen(WKPageRef, const void*);
+void browserBeganExitFullScreen(WKPageRef, WKRect, WKRect, WKCompletionListenerRef, const void*);
 void websiteDataFetchCacheCleared(void*);
 
 struct FaviconResult {
@@ -814,6 +819,9 @@ struct BrowserState {
     bool privateBrowsing { false };
     bool customMaximized { false };
     RECT restoredWindowRect { };
+    bool webFullscreen { false };
+    bool fullscreenRestoreWasMaximized { false };
+    RECT fullscreenRestoreWindowRect { };
     WNDPROC addressBarOriginalProcedure { nullptr };
     WNDPROC findEditOriginalProcedure { nullptr };
     HWND findEdit { nullptr };
@@ -907,6 +915,12 @@ struct BrowserState {
         WKPreferencesSetJavaScriptCanOpenWindowsAutomatically(preferences.get(), allowPopups);
         WKPreferencesSetLocalStorageEnabled(preferences.get(), localStorageEnabled);
         WKPreferencesSetDeveloperExtrasEnabled(preferences.get(), developerToolsEnabled);
+
+        // The pinned Windows WebKit port disables the JavaScript Fullscreen API by default.
+        WKPreferencesSetFullScreenEnabled(preferences.get(), true);
+        // Allow sites to query capabilities from the decoders exposed by this build.
+        WKPreferencesSetMediaCapabilitiesEnabled(preferences.get(), true);
+        WKPreferencesSetVP9DecoderEnabled(preferences.get(), true);
     }
 
     std::wstring effectiveDownloadsDirectory() const
@@ -987,10 +1001,55 @@ struct BrowserState {
     std::vector<DownloadEntry> downloads;
     size_t activeTab { 0 };
 
-    int titleBarHeight() const { return scaleForDpi(window, kTitleBarHeight); }
-    int toolbarHeight() const { return scaleForDpi(window, kToolbarHeight); }
-    int tabsBarHeight() const { return tabs.size() > 1 ? scaleForDpi(window, kTabsBarHeight) : 0; }
+    int titleBarHeight() const { return webFullscreen ? 0 : scaleForDpi(window, kTitleBarHeight); }
+    int toolbarHeight() const { return webFullscreen ? 0 : scaleForDpi(window, kToolbarHeight); }
+    int tabsBarHeight() const { return webFullscreen || tabs.size() <= 1 ? 0 : scaleForDpi(window, kTabsBarHeight); }
     int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
+
+    void enterWebFullscreen()
+    {
+        if (webFullscreen || !window)
+            return;
+
+        GetWindowRect(window, &fullscreenRestoreWindowRect);
+        fullscreenRestoreWasMaximized = customMaximized;
+        webFullscreen = true;
+        if (addressEditing)
+            endAddressEditing();
+
+        HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info { };
+        info.cbSize = sizeof(info);
+        if (monitor && GetMonitorInfoW(monitor, &info)) {
+            SetWindowPos(window, HWND_TOP,
+                info.rcMonitor.left, info.rcMonitor.top,
+                info.rcMonitor.right - info.rcMonitor.left,
+                info.rcMonitor.bottom - info.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        }
+        resize();
+        SetForegroundWindow(window);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void exitWebFullscreen()
+    {
+        if (!webFullscreen || !window)
+            return;
+
+        webFullscreen = false;
+        if (fullscreenRestoreWindowRect.right > fullscreenRestoreWindowRect.left
+            && fullscreenRestoreWindowRect.bottom > fullscreenRestoreWindowRect.top) {
+            SetWindowPos(window, HWND_TOP,
+                fullscreenRestoreWindowRect.left, fullscreenRestoreWindowRect.top,
+                fullscreenRestoreWindowRect.right - fullscreenRestoreWindowRect.left,
+                fullscreenRestoreWindowRect.bottom - fullscreenRestoreWindowRect.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        }
+        customMaximized = fullscreenRestoreWasMaximized;
+        resize();
+        InvalidateRect(window, nullptr, TRUE);
+    }
 
     RECT trafficLightHitRect(int index) const
     {
@@ -1992,6 +2051,15 @@ search.addEventListener('keydown',e=>{
         navigationClient.contextMenuDidCreateDownload = contextMenuDidCreateDownload;
         WKPageSetPageNavigationClient(page, &navigationClient.base);
 
+        WKPageFullScreenClientV0 fullscreenClient { };
+        fullscreenClient.base.version = 0;
+        fullscreenClient.base.clientInfo = this;
+        fullscreenClient.willEnterFullScreen = browserWillEnterFullScreen;
+        fullscreenClient.beganEnterFullScreen = browserBeganEnterFullScreen;
+        fullscreenClient.exitFullScreen = browserExitFullScreen;
+        fullscreenClient.beganExitFullScreen = browserBeganExitFullScreen;
+        WKPageSetFullScreenClientForTesting(page, &fullscreenClient.base);
+
         WKPageStateClientV0 stateClient { };
         stateClient.base.version = 0;
         stateClient.base.clientInfo = tab.get();
@@ -2650,7 +2718,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int left = (static_cast<int>(client.right) - width) / 2;
         left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
-        const int height = scaleForDpi(window, 32);
+        const int height = scaleForDpi(window, 30);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + width, top + height };
     }
@@ -2675,7 +2743,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         );
 
         int contentTop = this->contentTop();
-        int contentLeft = sidebarOpen ? scaleForDpi(window, 286) : 0;
+        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 286) : 0);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
@@ -3420,6 +3488,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         RECT client { };
         GetClientRect(window, &client);
+        if (webFullscreen) {
+            HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+            FillRect(dc, &client, black);
+            DeleteObject(black);
+            return;
+        }
 
         int dpi = windowDpi(window);
         int toolbarH = MulDiv(kToolbarHeight, dpi, 96);
@@ -3556,7 +3630,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(231, 233, 236));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
-        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, MulDiv(11, dpi, 96), MulDiv(11, dpi, 96));
+        const int pillRadius = std::max(1, (pill.bottom - pill.top) / 2);
+        RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, pillRadius, pillRadius);
         SelectObject(dc, oldPillBrush);
         SelectObject(dc, oldPillPen);
         DeleteObject(pillBrush);
@@ -3595,6 +3670,34 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             drawTabOverviewPage(dc);
     }
 };
+
+void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef listener, const void* clientInfo)
+{
+    auto* browser = static_cast<BrowserState*>(const_cast<void*>(clientInfo));
+    if (browser)
+        browser->enterWebFullscreen();
+    WKCompletionListenerComplete(listener, nullptr);
+}
+
+void browserBeganEnterFullScreen(WKPageRef, WKRect, WKRect, const void*)
+{
+}
+
+void browserExitFullScreen(WKPageRef, const void* clientInfo)
+{
+    auto* browser = static_cast<BrowserState*>(const_cast<void*>(clientInfo));
+    if (browser)
+        browser->exitWebFullscreen();
+}
+
+void browserBeganExitFullScreen(WKPageRef, WKRect, WKRect,
+    WKCompletionListenerRef listener, const void* clientInfo)
+{
+    auto* browser = static_cast<BrowserState*>(const_cast<void*>(clientInfo));
+    if (browser)
+        browser->exitWebFullscreen();
+    WKCompletionListenerComplete(listener, nullptr);
+}
 
 std::vector<std::unique_ptr<BrowserState>> gAdditionalBrowserWindows;
 
@@ -4565,6 +4668,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         break;
 
     case WM_NCHITTEST: {
+        if (state && state->webFullscreen)
+            return HTCLIENT;
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
 
