@@ -3630,7 +3630,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(231, 233, 236));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
-        const int pillRadius = std::max(1, (pill.bottom - pill.top) / 2);
+        const int pillRadius = std::max(1, static_cast<int>((pill.bottom - pill.top) / 2));
         RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, pillRadius, pillRadius);
         SelectObject(dc, oldPillBrush);
         SelectObject(dc, oldPillPen);
@@ -3672,7 +3672,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(76, 76, 80) : RGB(220, 223, 227));
         HBRUSH oldActionBrush = static_cast<HBRUSH>(SelectObject(dc, actionGroupBrush));
         HPEN oldActionPen = static_cast<HPEN>(SelectObject(dc, actionGroupPen));
-        const int actionRadius = std::max(1, (actionGroup.bottom - actionGroup.top) / 2);
+        const int actionRadius = std::max(1, static_cast<int>((actionGroup.bottom - actionGroup.top) / 2));
         RoundRect(dc, actionGroup.left, actionGroup.top, actionGroup.right, actionGroup.bottom,
             actionRadius, actionRadius);
         SelectObject(dc, oldActionBrush);
