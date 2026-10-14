@@ -665,12 +665,14 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
     const int offset = std::max(2, static_cast<int>(3 * scale));
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int radius = std::max(2, static_cast<int>(3 * scale));
+    const int cornerDiameter = std::max(4, static_cast<int>(6 * scale));
 
+    // RoundRect takes the corner ellipse size, not a corner radius. A larger
+    // ellipse gives the overlapping-tab glyph the softer Safari-style corners.
     RoundRect(dc, cx - box / 2 - offset, cy - box / 2 - offset,
-        cx + box / 2 - offset, cy + box / 2 - offset, radius, radius);
+        cx + box / 2 - offset, cy + box / 2 - offset, cornerDiameter, cornerDiameter);
     RoundRect(dc, cx - box / 2 + offset, cy - box / 2 + offset,
-        cx + box / 2 + offset, cy + box / 2 + offset, radius, radius);
+        cx + box / 2 + offset, cy + box / 2 + offset, cornerDiameter, cornerDiameter);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -3535,8 +3537,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HPEN sidebarButtonPen = CreatePen(PS_SOLID, 1, dark ? RGB(73, 73, 77) : RGB(211, 214, 218));
         HBRUSH oldSidebarBrush = static_cast<HBRUSH>(SelectObject(dc, sidebarButtonBrush));
         HPEN oldSidebarPen = static_cast<HPEN>(SelectObject(dc, sidebarButtonPen));
+        // Safari's sidebar selector is a capsule, not a rounded rectangle.
+        const int sidebarCornerDiameter = static_cast<int>(sidebarRect.bottom - sidebarRect.top);
         RoundRect(dc, sidebarRect.left, sidebarRect.top, sidebarRect.right, sidebarRect.bottom,
-            MulDiv(9, dpi, 96), MulDiv(9, dpi, 96));
+            sidebarCornerDiameter, sidebarCornerDiameter);
         SelectObject(dc, oldSidebarBrush);
         SelectObject(dc, oldSidebarPen);
         DeleteObject(sidebarButtonBrush);
@@ -3565,8 +3569,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HPEN navPen = CreatePen(PS_SOLID, 1, dark ? RGB(76, 76, 80) : RGB(218, 220, 223));
         HBRUSH oldNavBrush = static_cast<HBRUSH>(SelectObject(dc, navBrush));
         HPEN oldNavPen = static_cast<HPEN>(SelectObject(dc, navPen));
+        // Use the complete control height for true capsule ends.
+        const int navigationCornerDiameter = static_cast<int>(navigationRect.bottom - navigationRect.top);
         RoundRect(dc, navigationRect.left, navigationRect.top, navigationRect.right, navigationRect.bottom,
-            MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
+            navigationCornerDiameter, navigationCornerDiameter);
         SelectObject(dc, oldNavBrush);
         SelectObject(dc, oldNavPen);
         DeleteObject(navBrush);
