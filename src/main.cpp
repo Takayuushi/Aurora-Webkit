@@ -3662,6 +3662,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT shareRect = rightToolbarButtonRect(0);
         RECT newTabRect = rightToolbarButtonRect(1);
         RECT overviewRect = rightToolbarButtonRect(2);
+
+        // Safari groups its trailing toolbar actions into a quiet rounded capsule.
+        const int groupInset = MulDiv(4, dpi, 96);
+        RECT actionGroup { shareRect.left - groupInset, shareRect.top,
+            overviewRect.right + groupInset, overviewRect.bottom };
+        HBRUSH actionGroupBrush = CreateSolidBrush(dark ? RGB(52, 52, 55) : RGB(255, 255, 255));
+        HPEN actionGroupPen = CreatePen(PS_SOLID, 1,
+            dark ? RGB(76, 76, 80) : RGB(220, 223, 227));
+        HBRUSH oldActionBrush = static_cast<HBRUSH>(SelectObject(dc, actionGroupBrush));
+        HPEN oldActionPen = static_cast<HPEN>(SelectObject(dc, actionGroupPen));
+        const int actionRadius = std::max(1, (actionGroup.bottom - actionGroup.top) / 2);
+        RoundRect(dc, actionGroup.left, actionGroup.top, actionGroup.right, actionGroup.bottom,
+            actionRadius, actionRadius);
+        SelectObject(dc, oldActionBrush);
+        SelectObject(dc, oldActionPen);
+        DeleteObject(actionGroupBrush);
+        DeleteObject(actionGroupPen);
+
         drawShare(dc, shareRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
