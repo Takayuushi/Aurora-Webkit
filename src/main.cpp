@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <gdiplus.h>
 
 #ifndef DWMWA_BORDER_COLOR
 #define DWMWA_BORDER_COLOR 34
@@ -8,6 +9,7 @@
 #include <WebKit/WKContext.h>
 #include <WebKit/WKDownloadClient.h>
 #include <WebKit/WKDownloadRef.h>
+#include <WebKit/WKErrorRef.h>
 #include <WebKit/WKNavigationActionRef.h>
 #include <WebKit/WKFramePolicyListener.h>
 #include <WebKit/WKFrameInfoRef.h>
@@ -536,81 +538,114 @@ void drawCompass(HDC dc, const RECT& rect)
     DeleteObject(outline);
 }
 
+Gdiplus::Color iconGdiColor(COLORREF color)
+{
+    return Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color));
+}
+
+void addRoundedIconRectangle(Gdiplus::GraphicsPath& path, float left, float top,
+    float width, float height, float radius)
+{
+    radius = std::min(radius, std::min(width, height) / 2.0f);
+    const float diameter = std::max(0.5f, radius * 2.0f);
+    path.StartFigure();
+    path.AddArc(left, top, diameter, diameter, 180.0f, 90.0f);
+    path.AddArc(left + width - diameter, top, diameter, diameter, 270.0f, 90.0f);
+    path.AddArc(left + width - diameter, top + height - diameter,
+        diameter, diameter, 0.0f, 90.0f);
+    path.AddArc(left, top + height - diameter, diameter, diameter, 90.0f, 90.0f);
+    path.CloseFigure();
+}
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, enabled ? (dark ? RGB(220, 220, 224) : RGB(55, 60, 63)) : (dark ? RGB(103, 103, 108) : RGB(171, 176, 179)));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    const COLORREF color = enabled
+        ? (dark ? RGB(222, 222, 226) : RGB(62, 66, 70))
+        : (dark ? RGB(105, 105, 110) : RGB(173, 176, 180));
+    const float scale = std::max(0.7f, static_cast<float>(rect.bottom - rect.top) / 28.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float direction = forward ? 1.0f : -1.0f;
 
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-
-    MoveToEx(dc, cx + (forward ? -4 : 4), cy - 7, nullptr);
-    LineTo(dc, cx + (forward ? 4 : -4), cy);
-    LineTo(dc, cx + (forward ? -4 : 4), cy + 7);
-
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.25f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    Gdiplus::PointF points[] = {
+        { cx - direction * 3.3f * scale, cy - 5.4f * scale },
+        { cx + direction * 2.5f * scale, cy },
+        { cx - direction * 3.3f * scale, cy + 5.4f * scale }
+    };
+    graphics.DrawLines(&pen, points, 3);
 }
 
 void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    const COLORREF color = dark ? RGB(224, 224, 228) : RGB(69, 73, 77);
+    const float scale = std::max(0.7f, static_cast<float>(rect.bottom - rect.top) / 28.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float radius = 7.0f * scale;
 
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.2f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
 
     if (loading) {
-        MoveToEx(dc, cx - 6, cy - 6, nullptr);
-        LineTo(dc, cx + 6, cy + 6);
-        MoveToEx(dc, cx + 6, cy - 6, nullptr);
-        LineTo(dc, cx - 6, cy + 6);
-    } else {
-        Arc(dc, cx - 9, cy - 9, cx + 9, cy + 9, cx + 8, cy - 7, cx + 9, cy + 7);
-        MoveToEx(dc, cx + 8, cy - 7, nullptr);
-        LineTo(dc, cx + 1, cy - 7);
-        LineTo(dc, cx + 8, cy - 1);
+        Gdiplus::PointF a[] = {
+            { cx - 4.2f * scale, cy - 4.2f * scale },
+            { cx + 4.2f * scale, cy + 4.2f * scale }
+        };
+        Gdiplus::PointF b[] = {
+            { cx + 4.2f * scale, cy - 4.2f * scale },
+            { cx - 4.2f * scale, cy + 4.2f * scale }
+        };
+        graphics.DrawLines(&pen, a, 2);
+        graphics.DrawLines(&pen, b, 2);
+        return;
     }
 
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    graphics.DrawArc(&pen, Gdiplus::RectF(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f),
+        45.0f, 282.0f);
+    const Gdiplus::PointF tip(cx + 6.06f * scale, cy - 4.01f * scale);
+    Gdiplus::PointF arrowHead[] = {
+        { tip.X - 4.3f * scale, tip.Y - 0.6f * scale },
+        tip,
+        { tip.X - 0.7f * scale, tip.Y + 4.0f * scale }
+    };
+    graphics.DrawLines(&pen, arrowHead, 3);
 }
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(228, 228, 232) : RGB(69, 73, 77);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(63, 67, 71);
+    const float scale = std::max(0.7f, static_cast<float>(rect.bottom - rect.top) / 26.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float left = cx - 9.0f * scale;
+    const float top = cy - 6.5f * scale;
+    const float width = 18.0f * scale;
+    const float height = 13.0f * scale;
+    const float radius = 2.1f * scale;
 
-    const int iconW = static_cast<int>(rect.right - rect.left);
-    const int iconH = static_cast<int>(rect.bottom - rect.top);
-    const int insetX = std::max(1, iconW / 12);
-    const int insetY = std::max(1, iconH / 10);
-    RECT outline { rect.left + insetX, rect.top + insetY,
-        rect.right - insetX, rect.bottom - insetY };
-    const int corner = std::max(3, static_cast<int>(iconH / 3));
-    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, corner, corner);
-
-    const int outlineWidth = static_cast<int>(outline.right - outline.left);
-    const int outlineHeight = static_cast<int>(outline.bottom - outline.top);
-    const int paneWidth = std::max(4, outlineWidth / 3);
-    HBRUSH paneBrush = CreateSolidBrush(dark ? RGB(88, 88, 92) : RGB(224, 227, 231));
-    RECT pane { outline.left + 1, outline.top + 1,
-        outline.left + paneWidth, outline.bottom - 1 };
-    FillRect(dc, &pane, paneBrush);
-    DeleteObject(paneBrush);
-
-    // Redraw the outline after filling the left pane so its rounded silhouette stays crisp.
-    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, corner, corner);
-    const int splitX = outline.left + paneWidth;
-    MoveToEx(dc, splitX, outline.top + 2, nullptr);
-    LineTo(dc, splitX, outline.bottom - 2);
-    (void)outlineHeight;
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.2f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    Gdiplus::GraphicsPath outline;
+    addRoundedIconRectangle(outline, left, top, width, height, radius);
+    graphics.DrawPath(&pen, &outline);
+    graphics.DrawLine(&pen, left + 5.3f * scale, top + 1.3f * scale,
+        left + 5.3f * scale, top + height - 1.3f * scale);
 }
 
 void drawSettingsGear(HDC dc, const RECT& rect, bool dark, int dpi)
@@ -767,32 +802,29 @@ void drawClose(HDC dc, const RECT& rect, bool dark = false)
 
 void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 {
-    // Compact site-controls/page glyph, scaled to the address field height.
-    const COLORREF color = dark ? RGB(226, 226, 230) : RGB(72, 76, 80);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(68, 72, 76);
+    const float scale = std::max(0.7f, static_cast<float>(rect.bottom - rect.top) / 28.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float halfWidth = 5.7f * scale;
+    const float knobRadius = 1.55f * scale;
+    const float rows[] = { cy - 4.7f * scale, cy, cy + 4.7f * scale };
+    const float knobX[] = { cx - 1.8f * scale, cx + 2.7f * scale, cx - 3.2f * scale };
 
-    const double scale = std::max(0.8, static_cast<double>(rect.bottom - rect.top) / 30.0);
-    const int cx = (rect.left + rect.right) / 2;
-    const int cy = (rect.top + rect.bottom) / 2;
-    const int pageW = std::max(8, static_cast<int>(10 * scale));
-    const int pageH = std::max(11, static_cast<int>(14 * scale));
-    const int corner = std::max(2, static_cast<int>(3 * scale));
-    const int left = cx - pageW / 2;
-    const int top = cy - pageH / 2;
-    RoundRect(dc, left, top, left + pageW, top + pageH, corner, corner);
+    // Safari-style website/page controls are light slider strokes, not a boxed document.
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.15f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    Gdiplus::SolidBrush knobBrush(iconGdiColor(color));
 
-    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(4 * scale), nullptr);
-    LineTo(dc, left + pageW - static_cast<int>(2 * scale), top + static_cast<int>(4 * scale));
-    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(7 * scale), nullptr);
-    LineTo(dc, left + pageW - static_cast<int>(2 * scale), top + static_cast<int>(7 * scale));
-    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(10 * scale), nullptr);
-    LineTo(dc, left + static_cast<int>(6 * scale), top + static_cast<int>(10 * scale));
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    for (int i = 0; i < 3; ++i) {
+        graphics.DrawLine(&pen, cx - halfWidth, rows[i], cx + halfWidth, rows[i]);
+        graphics.FillEllipse(&knobBrush, knobX[i] - knobRadius, rows[i] - knobRadius,
+            knobRadius * 2.0f, knobRadius * 2.0f);
+    }
 }
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
@@ -5105,40 +5137,138 @@ void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKType
 
 WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLResponseRef response, WKStringRef suggestedFilename, const void* clientInfo)
 {
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     std::wstring filename = createString(suggestedFilename);
 
-    if (filename.empty()) {
+    if (filename.empty() || filename == L"." || filename == L"..") {
         auto responseURL = adoptWK(WKURLResponseCopyURL(response));
-        filename = createString(adoptWK(WKURLCopyHostName(responseURL.get())).get());
+        if (responseURL) {
+            filename = createString(adoptWK(WKURLCopyLastPathComponent(responseURL.get()).get()).get());
+            if (filename.empty())
+                filename = createString(adoptWK(WKURLCopyHostName(responseURL.get()).get()).get());
+        }
     }
 
-    if (filename.empty())
-        filename = L"download";
-
+    const size_t lastSeparator = filename.find_last_of(L"/\\");
+    if (lastSeparator != std::wstring::npos)
+        filename = filename.substr(lastSeparator + 1);
     for (auto& ch : filename) {
-        if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
-            ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
+        if (ch < 32 || ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' ||
+            ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|')
             ch = L'_';
     }
+    while (!filename.empty() && (filename.back() == L'.' || filename.back() == L' '))
+        filename.pop_back();
+    if (filename.empty() || filename == L"." || filename == L"..")
+        filename = L"download";
 
-    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    const size_t originalDot = filename.find(L'.');
+    std::wstring deviceBase = filename.substr(0, originalDot);
+    std::transform(deviceBase.begin(), deviceBase.end(), deviceBase.begin(),
+        [](wchar_t ch) { return static_cast<wchar_t>(towupper(ch)); });
+    const bool reservedDeviceName = deviceBase == L"CON" || deviceBase == L"PRN"
+        || deviceBase == L"AUX" || deviceBase == L"NUL"
+        || deviceBase == L"COM1" || deviceBase == L"COM2" || deviceBase == L"COM3"
+        || deviceBase == L"COM4" || deviceBase == L"COM5" || deviceBase == L"COM6"
+        || deviceBase == L"COM7" || deviceBase == L"COM8" || deviceBase == L"COM9"
+        || deviceBase == L"LPT1" || deviceBase == L"LPT2" || deviceBase == L"LPT3"
+        || deviceBase == L"LPT4" || deviceBase == L"LPT5" || deviceBase == L"LPT6"
+        || deviceBase == L"LPT7" || deviceBase == L"LPT8" || deviceBase == L"LPT9";
+    if (reservedDeviceName)
+        filename.insert(filename.begin(), L'_');
+
+    auto splitName = [](const std::wstring& name) {
+        const size_t dot = name.find_last_of(L'.');
+        if (dot == std::wstring::npos || dot == 0 || name.size() - dot > 20)
+            return std::pair<std::wstring, std::wstring>(name, L"");
+        return std::pair<std::wstring, std::wstring>(name.substr(0, dot), name.substr(dot));
+    };
+
     std::wstring folder = browser ? browser->effectiveDownloadsDirectory() : downloadsDirectory();
-    if (folder.empty())
-        return nullptr;
+    auto isDirectory = [](const std::wstring& candidate) {
+        const DWORD attributes = GetFileAttributesW(candidate.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+    };
+    auto isWritableDirectory = [](const std::wstring& candidate) {
+        const std::wstring probe = candidate + L"\\.aurora-write-test-"
+            + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".tmp";
+        HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return false;
+        CloseHandle(file);
+        return true;
+    };
 
-    std::wstring path = folder + L"\\" + filename;
-    if (browser) {
-        browser->downloads.push_back({ filename, path, 0, 0, false, false, download });
-        if (browser->downloads.size() > 32)
-            browser->downloads.erase(browser->downloads.begin());
-        // Refresh the download icon's popup contents and progress state.
-        InvalidateRect(browser->window, nullptr, TRUE);
+    if (folder.empty() || folder.size() > 180 || !isDirectory(folder) || !isWritableDirectory(folder))
+        folder = downloadsDirectory();
+    if (folder.empty() || folder.size() > 180 || !isDirectory(folder) || !isWritableDirectory(folder)) {
+        folder = applicationDataDirectory() + L"\\Downloads";
+        CreateDirectoryW(folder.c_str(), nullptr);
+    }
+    if (folder.empty() || !isDirectory(folder) || !isWritableDirectory(folder)) {
+        if (browser)
+            MessageBoxW(browser->window,
+                L"Aurora could not find a writable download folder. Choose another location in Settings and retry.",
+                L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+        return nullptr;
     }
 
-    std::string utf8 = toUTF8(path);
-    return WKStringCreateWithUTF8CString(utf8.c_str());
-}
+    const size_t maximumFilenameLength = folder.size() < 180 ? 220 - folder.size() - 1 : 64;
+    if (filename.size() > maximumFilenameLength) {
+        auto parts = splitName(filename);
+        const size_t keptStem = maximumFilenameLength > parts.second.size()
+            ? maximumFilenameLength - parts.second.size() : maximumFilenameLength;
+        filename = parts.first.substr(0, keptStem) + parts.second;
+    }
+    const auto parts = splitName(filename);
+    const std::wstring baseName = parts.first.empty() ? L"download" : parts.first;
+    const std::wstring extension = parts.first.empty() ? L"" : parts.second;
 
+    auto pathFor = [&](const std::wstring& name) {
+        const wchar_t last = folder.back();
+        return folder + ((last == L'\\' || last == L'/') ? L"" : L"\\") + name;
+    };
+    auto isReservedPath = [&](const std::wstring& candidatePath) {
+        if (GetFileAttributesW(candidatePath.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return true;
+        if (!browser)
+            return false;
+        return std::any_of(browser->downloads.begin(), browser->downloads.end(),
+            [&](const DownloadEntry& entry) {
+                return CompareStringOrdinal(entry.path.c_str(), -1,
+                    candidatePath.c_str(), -1, TRUE) == CSTR_EQUAL;
+            });
+    };
+
+    std::wstring filenameCandidate;
+    std::wstring path;
+    for (unsigned int suffix = 1; suffix <= 10000; ++suffix) {
+        filenameCandidate = suffix == 1 ? filename
+            : baseName + L" (" + std::to_wstring(suffix) + L")" + extension;
+        path = pathFor(filenameCandidate);
+        if (path.size() < MAX_PATH - 8 && !isReservedPath(path))
+            break;
+        path.clear();
+    }
+    if (path.empty()) {
+        if (browser)
+            MessageBoxW(browser->window,
+                L"A unique, valid destination could not be chosen. Check the Downloads folder and retry.",
+                L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+        return nullptr;
+    }
+
+    if (browser) {
+        browser->downloads.push_back({ filenameCandidate, path, 0, 0, false, false, download });
+        if (browser->downloads.size() > 64)
+            browser->downloads.erase(browser->downloads.begin());
+        InvalidateRect(browser->window, nullptr, FALSE);
+    }
+
+    const std::string utf8Path = toUTF8(path);
+    return WKStringCreateWithUTF8CString(utf8Path.c_str());
+}
 void downloadDidWriteData(WKDownloadRef download, long long, long long totalBytesWritten, long long totalBytesExpectedToWrite, const void* clientInfo)
 {
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
@@ -5177,19 +5307,28 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     if (!browser)
         return;
 
+    std::wstring failedPath;
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
             it->failed = true;
+            failedPath = it->path;
             break;
         }
     }
 
-    InvalidateRect(browser->window, nullptr, TRUE);
+    InvalidateRect(browser->window, nullptr, FALSE);
 
-    std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
-    MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+    std::wstringstream details;
+    details << createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get()) << L"\n\n";
+    details << L"Error code: " << WKErrorGetErrorCode(error) << L"\n";
+    details << L"Domain: " << createString(adoptWK(WKErrorCopyDomain(error)).get()) << L"\n";
+    auto failingURL = adoptWK(WKErrorCopyFailingURL(error));
+    if (failingURL)
+        details << L"URL: " << createString(adoptWK(WKURLCopyString(failingURL.get()).get()).get()) << L"\n";
+    if (!failedPath.empty())
+        details << L"Destination: " << failedPath;
+    MessageBoxW(browser->window, details.str().c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
 }
-
 void installDownloadClient(WKDownloadRef download, BrowserState* browser)
 {
     if (!download || !browser)
@@ -5546,6 +5685,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    ULONG_PTR gdiplusToken = 0;
+    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
+        MessageBoxW(nullptr, L"Could not initialize smooth browser icon rendering.", windowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSEXW windowClass { };
@@ -5558,6 +5703,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     if (!RegisterClassExW(&windowClass)) {
         MessageBoxW(nullptr, L"Could not register the Aurora window class.", windowTitle, MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
     }
 
@@ -5580,6 +5726,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     if (!window) {
         MessageBoxW(nullptr, L"Could not create the Aurora window.", windowTitle, MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
     }
 
@@ -5634,5 +5781,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     if (acceleratorTable)
         DestroyAcceleratorTable(acceleratorTable);
 
+    Gdiplus::GdiplusShutdown(gdiplusToken);
     return static_cast<int>(message.wParam);
 }
