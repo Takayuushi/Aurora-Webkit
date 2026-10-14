@@ -1,8 +1,7 @@
-#ifdef WIN32_LEAN_AND_MEAN
-#undef WIN32_LEAN_AND_MEAN
-#endif
 #include <windows.h>
 #include <windowsx.h>
+#include <objidl.h>
+#include <propidl.h>
 #include <gdiplus.h>
 
 #ifndef DWMWA_BORDER_COLOR
