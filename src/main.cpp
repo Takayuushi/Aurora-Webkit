@@ -597,45 +597,20 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 
 void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(75, 80, 84);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH gearBrush = CreateSolidBrush(color);
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, gearBrush));
-
-    const int cx = (rect.left + rect.right) / 2;
-    const int cy = (rect.top + rect.bottom) / 2;
-    const int diameter = std::max(12, std::min(
-        static_cast<int>(rect.right - rect.left),
-        static_cast<int>(rect.bottom - rect.top)) - 3);
-    const double scale = static_cast<double>(diameter) / 20.0;
-    const int offsets[][2] = {
-        {-3,-9},{3,-9},{3,-6},{5,-5},{7,-5},{7,-2},{9,-2},{9,3},
-        {6,3},{5,5},{5,7},{2,7},{2,9},{-3,9},{-3,6},{-5,5},
-        {-7,5},{-7,2},{-9,2},{-9,-3},{-6,-3},{-5,-5},{-5,-7},
-        {-2,-7},{-2,-9},{-3,-9}
-    };
-    POINT teeth[static_cast<int>(std::size(offsets))];
-    for (size_t i = 0; i < std::size(offsets); ++i) {
-        teeth[i] = {
-            cx + static_cast<int>(offsets[i][0] * scale),
-            cy + static_cast<int>(offsets[i][1] * scale)
-        };
-    }
-    Polygon(dc, teeth, static_cast<int>(std::size(teeth)));
-    HBRUSH holeBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
-    HBRUSH oldGearBrush = static_cast<HBRUSH>(SelectObject(dc, holeBrush));
-    HPEN oldGearPen = static_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
-    const int hole = std::max(2, diameter / 4);
-    Ellipse(dc, cx - hole, cy - hole, cx + hole, cy + hole);
-    SelectObject(dc, oldGearPen);
-    SelectObject(dc, oldGearBrush);
-    DeleteObject(holeBrush);
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(gearBrush);
-    DeleteObject(pen);
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(68, 72, 76);
+    HFONT font = CreateFontW(-MulDiv(16, windowDpi(GetActiveWindow()), 96), 0, 0, 0,
+        FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe MDL2 Assets");
+    if (!font)
+        return;
+    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    RECT iconRect = rect;
+    DrawTextW(dc, L"\xE713", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
 }
 
 void drawShare(HDC dc, const RECT& rect, bool dark = false)
@@ -673,22 +648,21 @@ void drawShare(HDC dc, const RECT& rect, bool dark = false)
 
 void drawTabOverview(HDC dc, const RECT& rect, bool dark)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(225, 225, 229) : RGB(65, 69, 73));
+    const COLORREF color = dark ? RGB(226, 226, 230) : RGB(66, 70, 74);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 36.0);
+    const int box = std::max(9, MulDiv(13, windowDpi(GetActiveWindow()), 96));
+    const int offset = std::max(2, MulDiv(3, windowDpi(GetActiveWindow()), 96));
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int w = std::max(8, static_cast<int>(12 * scale));
-    const int h = std::max(8, static_cast<int>(11 * scale));
-    const int offsetX = std::max(2, static_cast<int>(2.5 * scale));
-    const int offsetY = std::max(2, static_cast<int>(2 * scale));
-    const int radius = std::max(2, static_cast<int>(3 * scale));
-    RoundRect(dc, cx - w / 2 - offsetX, cy - h / 2 - offsetY,
-        cx + w / 2 - offsetX, cy + h / 2 - offsetY, radius, radius);
-    RoundRect(dc, cx - w / 2 + offsetX, cy - h / 2 + offsetY,
-        cx + w / 2 + offsetX, cy + h / 2 + offsetY, radius, radius);
+    const int radius = std::max(2, MulDiv(3, windowDpi(GetActiveWindow()), 96));
+
+    RoundRect(dc, cx - box / 2 - offset, cy - box / 2 - offset,
+        cx + box / 2 - offset, cy + box / 2 - offset, radius, radius);
+    RoundRect(dc, cx - box / 2 + offset, cy - box / 2 + offset,
+        cx + box / 2 + offset, cy + box / 2 + offset, radius, radius);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -804,6 +778,15 @@ struct TabState {
     std::wstring fallbackURL;
     HICON favicon { nullptr };
     std::wstring faviconRequestURL;
+    HBITMAP previewBitmap { nullptr };
+    int previewWidth { 0 };
+    int previewHeight { 0 };
+
+    ~TabState()
+    {
+        if (previewBitmap)
+            DeleteObject(previewBitmap);
+    }
 };
 
 enum class ThemeMode { System, Light, Dark };
@@ -842,6 +825,7 @@ struct BrowserState {
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
     bool sidebarOpen { false };
+    bool tabOverviewVisible { false };
     int sidebarSection { 0 };
     ThemeMode themeMode { ThemeMode::System };
     std::wstring homePage { L"https://www.google.com" };
@@ -1069,6 +1053,299 @@ struct BrowserState {
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + button, top + height };
     }
+
+    RECT tabOverviewAreaRect() const
+    {
+        RECT client { };
+        GetClientRect(window, &client);
+        const int left = sidebarOpen ? scaleForDpi(window, 286) : 0;
+        return { left, contentTop(), client.right, client.bottom };
+    }
+
+    int tabOverviewColumns() const
+    {
+        const RECT area = tabOverviewAreaRect();
+        const int margin = scaleForDpi(window, 24);
+        const int gap = scaleForDpi(window, 18);
+        const int minimumCardWidth = scaleForDpi(window, 270);
+        const int available = std::max(1, static_cast<int>(area.right - area.left) - margin * 2);
+        return std::clamp((available + gap) / (minimumCardWidth + gap), 1, 4);
+    }
+
+    RECT tabOverviewNewTabRect() const
+    {
+        const RECT area = tabOverviewAreaRect();
+        const int margin = scaleForDpi(window, 24);
+        const int width = scaleForDpi(window, 112);
+        const int height = scaleForDpi(window, 32);
+        return { area.right - margin - width, area.top + scaleForDpi(window, 12),
+            area.right - margin, area.top + scaleForDpi(window, 12) + height };
+    }
+
+    RECT tabOverviewCardRect(size_t index) const
+    {
+        const RECT area = tabOverviewAreaRect();
+        const int columns = tabOverviewColumns();
+        const int margin = scaleForDpi(window, 24);
+        const int gap = scaleForDpi(window, 18);
+        const int headerHeight = scaleForDpi(window, 58);
+        const int areaWidth = static_cast<int>(area.right - area.left);
+        const int cardWidth = std::max(scaleForDpi(window, 150),
+            (areaWidth - margin * 2 - gap * (columns - 1)) / columns);
+        const int cardHeight = scaleForDpi(window, 226);
+        const int column = static_cast<int>(index % static_cast<size_t>(columns));
+        const int row = static_cast<int>(index / static_cast<size_t>(columns));
+        const int left = area.left + margin + column * (cardWidth + gap);
+        const int top = area.top + headerHeight + row * (cardHeight + gap);
+        return { left, top, left + cardWidth, top + cardHeight };
+    }
+
+    RECT tabOverviewCloseRect(size_t index) const
+    {
+        const RECT card = tabOverviewCardRect(index);
+        const int size = scaleForDpi(window, 24);
+        const int inset = scaleForDpi(window, 8);
+        return { card.right - inset - size, card.top + inset,
+            card.right - inset, card.top + inset + size };
+    }
+
+    void captureTabThumbnail(TabState& tab)
+    {
+        HWND viewWindow = WKViewGetWindow(tab.view.get());
+        if (!viewWindow)
+            return;
+
+        RECT client { };
+        if (!GetClientRect(viewWindow, &client))
+            return;
+        const int sourceWidth = static_cast<int>(client.right - client.left);
+        const int sourceHeight = static_cast<int>(client.bottom - client.top);
+        if (sourceWidth < 80 || sourceHeight < 60)
+            return;
+
+        HDC sourceDC = GetDC(viewWindow);
+        if (!sourceDC)
+            return;
+        HDC captureDC = CreateCompatibleDC(sourceDC);
+        HBITMAP captureBitmap = CreateCompatibleBitmap(sourceDC, sourceWidth, sourceHeight);
+        if (!captureDC || !captureBitmap) {
+            if (captureBitmap) DeleteObject(captureBitmap);
+            if (captureDC) DeleteDC(captureDC);
+            ReleaseDC(viewWindow, sourceDC);
+            return;
+        }
+
+        HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
+        BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
+        if (!captured)
+            captured = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight, sourceDC, 0, 0, SRCCOPY);
+
+        if (captured) {
+            const double factor = std::min(480.0 / sourceWidth, 270.0 / sourceHeight);
+            const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
+            const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
+            HDC previewDC = CreateCompatibleDC(sourceDC);
+            HBITMAP preview = CreateCompatibleBitmap(sourceDC, targetWidth, targetHeight);
+            if (previewDC && preview) {
+                HGDIOBJ oldPreview = SelectObject(previewDC, preview);
+                SetStretchBltMode(previewDC, HALFTONE);
+                StretchBlt(previewDC, 0, 0, targetWidth, targetHeight,
+                    captureDC, 0, 0, sourceWidth, sourceHeight, SRCCOPY);
+                SelectObject(previewDC, oldPreview);
+                if (tab.previewBitmap)
+                    DeleteObject(tab.previewBitmap);
+                tab.previewBitmap = preview;
+                tab.previewWidth = targetWidth;
+                tab.previewHeight = targetHeight;
+            } else if (preview) {
+                DeleteObject(preview);
+            }
+            if (previewDC)
+                DeleteDC(previewDC);
+        }
+
+        SelectObject(captureDC, oldCapture);
+        DeleteObject(captureBitmap);
+        DeleteDC(captureDC);
+        ReleaseDC(viewWindow, sourceDC);
+    }
+
+    bool handleTabOverviewHit(POINT point)
+    {
+        if (!tabOverviewVisible)
+            return false;
+        const RECT area = tabOverviewAreaRect();
+        if (!PtInRect(&area, point))
+            return false;
+
+        const RECT newTab = tabOverviewNewTabRect();
+        if (PtInRect(&newTab, point)) {
+            addTab(true);
+            return true;
+        }
+
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            const RECT card = tabOverviewCardRect(i);
+            if (!PtInRect(&card, point))
+                continue;
+            const RECT close = tabOverviewCloseRect(i);
+            if (PtInRect(&close, point))
+                closeTab(i);
+            else
+                activateTab(i);
+            return true;
+        }
+        return true;
+    }
+
+    void drawTabOverviewPage(HDC dc)
+    {
+        const RECT area = tabOverviewAreaRect();
+        const bool dark = chromeDarkTheme();
+        HBRUSH background = CreateSolidBrush(dark ? RGB(30, 30, 32) : RGB(240, 241, 244));
+        FillRect(dc, &area, background);
+        DeleteObject(background);
+
+        const int dpi = windowDpi(window);
+        HFONT headingFont = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT bodyFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
+        SetBkMode(dc, TRANSPARENT);
+
+        RECT titleRect { area.left + scaleForDpi(window, 24), area.top + scaleForDpi(window, 10),
+            area.right - scaleForDpi(window, 160), area.top + scaleForDpi(window, 40) };
+        SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(40, 43, 47));
+        DrawTextW(dc, L"Tab Overview", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        const RECT newTab = tabOverviewNewTabRect();
+        HBRUSH newTabBrush = CreateSolidBrush(dark ? RGB(58, 58, 61) : RGB(255, 255, 255));
+        HPEN newTabPen = CreatePen(PS_SOLID, 1, dark ? RGB(78, 78, 82) : RGB(213, 216, 220));
+        HBRUSH oldNewBrush = static_cast<HBRUSH>(SelectObject(dc, newTabBrush));
+        HPEN oldNewPen = static_cast<HPEN>(SelectObject(dc, newTabPen));
+        RoundRect(dc, newTab.left, newTab.top, newTab.right, newTab.bottom,
+            scaleForDpi(window, 8), scaleForDpi(window, 8));
+        SelectObject(dc, oldNewBrush);
+        SelectObject(dc, oldNewPen);
+        DeleteObject(newTabBrush);
+        DeleteObject(newTabPen);
+        RECT plusRect { newTab.left + scaleForDpi(window, 8), newTab.top,
+            newTab.left + scaleForDpi(window, 28), newTab.bottom };
+        drawPlus(dc, plusRect, dark);
+        HFONT oldBodyFont = static_cast<HFONT>(SelectObject(dc, bodyFont));
+        RECT newTabText { newTab.left + scaleForDpi(window, 30), newTab.top,
+            newTab.right - scaleForDpi(window, 6), newTab.bottom };
+        SetTextColor(dc, dark ? RGB(235, 235, 238) : RGB(47, 51, 55));
+        DrawTextW(dc, L"New Tab", -1, &newTabText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, oldBodyFont);
+
+        const int cardHeight = scaleForDpi(window, 226);
+        const int previewInset = scaleForDpi(window, 8);
+        const int metaHeight = scaleForDpi(window, 58);
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            const RECT card = tabOverviewCardRect(i);
+            if (card.top >= area.bottom || card.bottom <= area.top)
+                continue;
+
+            HBRUSH cardBrush = CreateSolidBrush(dark
+                ? (i == activeTab ? RGB(53, 53, 56) : RGB(43, 43, 46))
+                : (i == activeTab ? RGB(255, 255, 255) : RGB(253, 253, 254)));
+            HPEN cardPen = CreatePen(PS_SOLID, 1, dark
+                ? (i == activeTab ? RGB(102, 126, 164) : RGB(69, 69, 73))
+                : (i == activeTab ? RGB(133, 166, 211) : RGB(220, 222, 226)));
+            HBRUSH oldCardBrush = static_cast<HBRUSH>(SelectObject(dc, cardBrush));
+            HPEN oldCardPen = static_cast<HPEN>(SelectObject(dc, cardPen));
+            RoundRect(dc, card.left, card.top, card.right, card.bottom,
+                scaleForDpi(window, 9), scaleForDpi(window, 9));
+            SelectObject(dc, oldCardBrush);
+            SelectObject(dc, oldCardPen);
+            DeleteObject(cardBrush);
+            DeleteObject(cardPen);
+
+            RECT preview { card.left + previewInset, card.top + previewInset,
+                card.right - previewInset, card.bottom - metaHeight };
+            HBRUSH previewBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(248, 249, 251));
+            FillRect(dc, &preview, previewBrush);
+            DeleteObject(previewBrush);
+
+            if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0 && tabs[i]->previewHeight > 0) {
+                HDC previewDC = CreateCompatibleDC(dc);
+                if (previewDC) {
+                    HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
+                    const double scale = std::min(
+                        static_cast<double>(preview.right - preview.left) / tabs[i]->previewWidth,
+                        static_cast<double>(preview.bottom - preview.top) / tabs[i]->previewHeight);
+                    const int drawWidth = static_cast<int>(tabs[i]->previewWidth * scale);
+                    const int drawHeight = static_cast<int>(tabs[i]->previewHeight * scale);
+                    const int drawLeft = preview.left + ((preview.right - preview.left) - drawWidth) / 2;
+                    const int drawTop = preview.top + ((preview.bottom - preview.top) - drawHeight) / 2;
+                    SetStretchBltMode(dc, HALFTONE);
+                    StretchBlt(dc, drawLeft, drawTop, drawWidth, drawHeight,
+                        previewDC, 0, 0, tabs[i]->previewWidth, tabs[i]->previewHeight, SRCCOPY);
+                    SelectObject(previewDC, oldPreview);
+                    DeleteDC(previewDC);
+                }
+            } else {
+                RECT fakeBar { preview.left, preview.top, preview.right, preview.top + scaleForDpi(window, 18) };
+                HBRUSH fakeBarBrush = CreateSolidBrush(dark ? RGB(48, 48, 51) : RGB(236, 238, 241));
+                FillRect(dc, &fakeBar, fakeBarBrush);
+                DeleteObject(fakeBarBrush);
+                if (tabs[i]->favicon) {
+                    const int iconSize = scaleForDpi(window, 20);
+                    DrawIconEx(dc, preview.left + scaleForDpi(window, 12),
+                        preview.top + scaleForDpi(window, 32), tabs[i]->favicon,
+                        iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                }
+                RECT line1 { preview.left + scaleForDpi(window, 42), preview.top + scaleForDpi(window, 34),
+                    preview.right - scaleForDpi(window, 20), preview.top + scaleForDpi(window, 42) };
+                RECT line2 { preview.left + scaleForDpi(window, 42), preview.top + scaleForDpi(window, 48),
+                    preview.right - scaleForDpi(window, 50), preview.top + scaleForDpi(window, 55) };
+                HBRUSH lineBrush = CreateSolidBrush(dark ? RGB(72, 72, 75) : RGB(223, 226, 230));
+                FillRect(dc, &line1, lineBrush);
+                FillRect(dc, &line2, lineBrush);
+                DeleteObject(lineBrush);
+            }
+
+            RECT closeRect = tabOverviewCloseRect(i);
+            HBRUSH closeBrush = CreateSolidBrush(dark ? RGB(68, 68, 71) : RGB(255, 255, 255));
+            HPEN closePen = CreatePen(PS_SOLID, 1, dark ? RGB(95, 95, 98) : RGB(220, 222, 226));
+            HBRUSH oldCloseBrush = static_cast<HBRUSH>(SelectObject(dc, closeBrush));
+            HPEN oldClosePen = static_cast<HPEN>(SelectObject(dc, closePen));
+            RoundRect(dc, closeRect.left, closeRect.top, closeRect.right, closeRect.bottom,
+                closeRect.right - closeRect.left, closeRect.bottom - closeRect.top);
+            SelectObject(dc, oldCloseBrush);
+            SelectObject(dc, oldClosePen);
+            DeleteObject(closeBrush);
+            DeleteObject(closePen);
+            drawClose(dc, closeRect, dark);
+
+            RECT titleText { card.left + scaleForDpi(window, 12), card.bottom - metaHeight + scaleForDpi(window, 4),
+                card.right - scaleForDpi(window, 12), card.bottom - scaleForDpi(window, 30) };
+            SelectObject(dc, bodyFont);
+            SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(40, 43, 47));
+            const std::wstring title = tabs[i]->title.empty() ? L"New Tab" : tabs[i]->title;
+            DrawTextW(dc, title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            RECT urlText { card.left + scaleForDpi(window, 12), card.bottom - scaleForDpi(window, 26),
+                card.right - scaleForDpi(window, 12), card.bottom - scaleForDpi(window, 8) };
+            SelectObject(dc, urlFont);
+            SetTextColor(dc, dark ? RGB(162, 162, 167) : RGB(119, 124, 130));
+            const std::wstring url = tabs[i]->activeUrl.empty() ? L"about:blank" : tabs[i]->activeUrl;
+            DrawTextW(dc, url.c_str(), -1, &urlText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+
+        SelectObject(dc, oldFont);
+        DeleteObject(headingFont);
+        DeleteObject(bodyFont);
+        DeleteObject(urlFont);
+    }
+
 
     TabState* active()
     {
@@ -1743,6 +2020,11 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
+        if (!tabOverviewVisible && activeTab < tabs.size() && index != activeTab)
+            captureTabThumbnail(*tabs[activeTab]);
+        if (addressEditing)
+            endAddressEditing();
+        tabOverviewVisible = false;
         activeTab = index;
 
         for (size_t i = 0; i < tabs.size(); ++i) {
@@ -1770,6 +2052,10 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
+        const bool keepOverviewOpen = tabOverviewVisible;
+        if (!keepOverviewOpen && index == activeTab)
+            captureTabThumbnail(*tabs[index]);
+
         if (tabs.size() == 1) {
             PostMessageW(window, WM_CLOSE, 0, 0);
             return;
@@ -1791,7 +2077,20 @@ search.addEventListener('keydown',e=>{
         else if (activeTab > index)
             --activeTab;
 
-        activateTab(activeTab);
+        if (keepOverviewOpen) {
+            for (const auto& tab : tabs) {
+                if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
+                    ShowWindow(viewWindow, SW_HIDE);
+            }
+            if (auto* tab = active()) {
+                const std::wstring text = tab->activeUrl == L"about:blank" ? L"" : tab->activeUrl;
+                SetWindowTextW(addressBar, text.c_str());
+            }
+            resize();
+            InvalidateRect(window, nullptr, TRUE);
+        } else {
+            activateTab(activeTab);
+        }
     }
 
     void back()
@@ -2234,30 +2533,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (tabs.empty())
             return;
-        HMENU overview = CreatePopupMenu();
-        if (!overview)
-            return;
 
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            std::wstring label = tabs[i]->title.empty() ? L"New Tab" : tabs[i]->title;
-            if (label.size() > 72) {
-                label.resize(69);
-                label += L"...";
-            }
-            UINT flags = MF_STRING;
-            if (i == activeTab)
-                flags |= MF_CHECKED;
-            AppendMenuW(overview, flags, 3000 + static_cast<UINT>(i), label.c_str());
+        if (tabOverviewVisible) {
+            activateTab(activeTab);
+            return;
         }
 
-        int pad = scaleForDpi(window, kToolbarHorizontalPadding);
-        int button = scaleForDpi(window, kToolbarButtonSize);
-        int gap = scaleForDpi(window, kToolbarGap);
-        POINT point { GetClientWidth(window) - pad - button - gap - button / 2,
-            contentTop() };
-        ClientToScreen(window, &point);
-        TrackPopupMenu(overview, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
-        DestroyMenu(overview);
+        if (addressEditing)
+            endAddressEditing();
+        if (auto* tab = active())
+            captureTabThumbnail(*tab);
+
+        tabOverviewVisible = true;
+        for (const auto& tab : tabs) {
+            if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
+                ShowWindow(viewWindow, SW_HIDE);
+        }
+        SetFocus(window);
+        InvalidateRect(window, nullptr, TRUE);
     }
 
     void showSidebarSelectionMenu()
@@ -3289,6 +3582,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawShare(dc, shareRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
+
+        if (tabOverviewVisible)
+            drawTabOverviewPage(dc);
     }
 };
 
@@ -4119,6 +4415,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return HTCLIENT;
     }
 
+    case WM_KEYDOWN:
+        if (state && state->tabOverviewVisible && wParam == VK_ESCAPE) {
+            state->activateTab(state->activeTab);
+            return 0;
+        }
+        break;
+
     case WM_LBUTTONDOWN: {
         if (!state)
             break;
@@ -4128,6 +4431,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state->handleTopBarHit(point))
             return 0;
         if (state->handleToolbarHit(point))
+            return 0;
+        if (state->handleTabOverviewHit(point))
             return 0;
         if (state->handleSidebarHit(point))
             return 0;
