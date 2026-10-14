@@ -1,6 +1,9 @@
 name: build-aurora-windows
 
 on:
+  push:
+    branches:
+      - fix/safari-download-toolbar-sidebar
   workflow_dispatch:
     inputs:
       webkit_sha:
