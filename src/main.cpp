@@ -573,29 +573,35 @@ void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(73, 77, 81);
+    const COLORREF color = dark ? RGB(228, 228, 232) : RGB(69, 73, 77);
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const int rectWidth = static_cast<int>(rect.right - rect.left);
-    const int insetX = std::max(5, rectWidth / 5);
-    const int rectHeight = static_cast<int>(rect.bottom - rect.top);
-    const int insetY = std::max(4, rectHeight / 4);
-    RECT outline { rect.left + insetX, rect.top + insetY, rect.right - insetX, rect.bottom - insetY };
-    const int radius = std::max(2, rectHeight / 7);
-    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, radius, radius);
+    const int iconW = static_cast<int>(rect.right - rect.left);
+    const int iconH = static_cast<int>(rect.bottom - rect.top);
+    const int insetX = std::max(1, iconW / 12);
+    const int insetY = std::max(1, iconH / 10);
+    RECT outline { rect.left + insetX, rect.top + insetY,
+        rect.right - insetX, rect.bottom - insetY };
+    const int corner = std::max(3, static_cast<int>(iconH / 3));
+    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, corner, corner);
 
     const int outlineWidth = static_cast<int>(outline.right - outline.left);
-    const int sidebarWidth = std::max(3, outlineWidth / 3);
-    HBRUSH paneBrush = CreateSolidBrush(dark ? RGB(82, 82, 86) : RGB(219, 222, 226));
-    RECT pane { outline.left + 1, outline.top + 1, outline.left + sidebarWidth, outline.bottom - 1 };
+    const int outlineHeight = static_cast<int>(outline.bottom - outline.top);
+    const int paneWidth = std::max(4, outlineWidth / 3);
+    HBRUSH paneBrush = CreateSolidBrush(dark ? RGB(88, 88, 92) : RGB(224, 227, 231));
+    RECT pane { outline.left + 1, outline.top + 1,
+        outline.left + paneWidth, outline.bottom - 1 };
     FillRect(dc, &pane, paneBrush);
     DeleteObject(paneBrush);
 
-    const int splitX = outline.left + sidebarWidth;
-    MoveToEx(dc, splitX, outline.top + 1, nullptr);
-    LineTo(dc, splitX, outline.bottom - 1);
+    // Redraw the outline after filling the left pane so its rounded silhouette stays crisp.
+    RoundRect(dc, outline.left, outline.top, outline.right, outline.bottom, corner, corner);
+    const int splitX = outline.left + paneWidth;
+    MoveToEx(dc, splitX, outline.top + 2, nullptr);
+    LineTo(dc, splitX, outline.bottom - 2);
+    (void)outlineHeight;
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -661,18 +667,20 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
     const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
-    const int box = std::max(9, static_cast<int>(13 * scale));
-    const int offset = std::max(2, static_cast<int>(3 * scale));
+    const int boxW = std::max(12, static_cast<int>(14 * scale));
+    const int boxH = std::max(11, static_cast<int>(13 * scale));
+    const int offset = std::max(2, static_cast<int>(2.5 * scale));
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int cornerDiameter = std::max(4, static_cast<int>(6 * scale));
+    const int cornerDiameter = std::max(5, static_cast<int>(7 * scale));
 
-    // RoundRect takes the corner ellipse size, not a corner radius. A larger
-    // ellipse gives the overlapping-tab glyph the softer Safari-style corners.
-    RoundRect(dc, cx - box / 2 - offset, cy - box / 2 - offset,
-        cx + box / 2 - offset, cy + box / 2 - offset, cornerDiameter, cornerDiameter);
-    RoundRect(dc, cx - box / 2 + offset, cy - box / 2 + offset,
-        cx + box / 2 + offset, cy + box / 2 + offset, cornerDiameter, cornerDiameter);
+    // Safari's Tab Overview mark is a matched pair of rounded overlapping cards.
+    RECT rear { cx - boxW / 2 - offset, cy - boxH / 2 - offset,
+        cx + boxW / 2 - offset, cy + boxH / 2 - offset };
+    RECT front { cx - boxW / 2 + offset, cy - boxH / 2 + offset,
+        cx + boxW / 2 + offset, cy + boxH / 2 + offset };
+    RoundRect(dc, rear.left, rear.top, rear.right, rear.bottom, cornerDiameter, cornerDiameter);
+    RoundRect(dc, front.left, front.top, front.right, front.bottom, cornerDiameter, cornerDiameter);
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -754,20 +762,30 @@ void drawClose(HDC dc, const RECT& rect, bool dark = false)
 
 void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(220, 220, 224) : RGB(80, 84, 88);
+    // Compact site-controls/page glyph, scaled to the address field height.
+    const COLORREF color = dark ? RGB(226, 226, 230) : RGB(72, 76, 80);
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
+    const double scale = std::max(0.8, static_cast<double>(rect.bottom - rect.top) / 30.0);
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    // Safari's site/reader control is a compact text-lines mark.
-    MoveToEx(dc, cx - 5, cy - 4, nullptr);
-    LineTo(dc, cx + 3, cy - 4);
-    MoveToEx(dc, cx - 6, cy, nullptr);
-    LineTo(dc, cx + 5, cy);
-    MoveToEx(dc, cx - 4, cy + 4, nullptr);
-    LineTo(dc, cx + 1, cy + 4);
+    const int pageW = std::max(8, static_cast<int>(10 * scale));
+    const int pageH = std::max(11, static_cast<int>(14 * scale));
+    const int corner = std::max(2, static_cast<int>(3 * scale));
+    const int left = cx - pageW / 2;
+    const int top = cy - pageH / 2;
+    RoundRect(dc, left, top, left + pageW, top + pageH, corner, corner);
 
+    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(4 * scale), nullptr);
+    LineTo(dc, left + pageW - static_cast<int>(2 * scale), top + static_cast<int>(4 * scale));
+    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(7 * scale), nullptr);
+    LineTo(dc, left + pageW - static_cast<int>(2 * scale), top + static_cast<int>(7 * scale));
+    MoveToEx(dc, left + static_cast<int>(2 * scale), top + static_cast<int>(10 * scale), nullptr);
+    LineTo(dc, left + static_cast<int>(6 * scale), top + static_cast<int>(10 * scale));
+
+    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -3507,12 +3525,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(43, 43, 45) : RGB(250, 250, 251));
+        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(47, 47, 50) : RGB(250, 250, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
 
-        HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(61, 61, 64) : RGB(226, 228, 231));
+        HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(65, 65, 69) : RGB(226, 228, 231));
         HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
         MoveToEx(dc, 0, toolbarH - 1, nullptr);
         LineTo(dc, client.right, toolbarH - 1);
@@ -3533,8 +3551,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, light, RGB(39, 201, 63));
 
         RECT sidebarRect = sidebarButtonRect();
-        HBRUSH sidebarButtonBrush = CreateSolidBrush(dark ? RGB(55, 55, 58) : RGB(251, 251, 252));
-        HPEN sidebarButtonPen = CreatePen(PS_SOLID, 1, dark ? RGB(73, 73, 77) : RGB(211, 214, 218));
+        HBRUSH sidebarButtonBrush = CreateSolidBrush(dark ? RGB(59, 59, 63) : RGB(251, 251, 252));
+        HPEN sidebarButtonPen = CreatePen(PS_SOLID, 1, dark ? RGB(82, 82, 86) : RGB(211, 214, 218));
         HBRUSH oldSidebarBrush = static_cast<HBRUSH>(SelectObject(dc, sidebarButtonBrush));
         HPEN oldSidebarPen = static_cast<HPEN>(SelectObject(dc, sidebarButtonPen));
         // Safari's sidebar selector is a capsule, not a rounded rectangle.
@@ -3565,8 +3583,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(dropdownPen);
 
         RECT navigationRect = navigationPillRect();
-        HBRUSH navBrush = CreateSolidBrush(dark ? RGB(52, 52, 55) : RGB(249, 249, 250));
-        HPEN navPen = CreatePen(PS_SOLID, 1, dark ? RGB(76, 76, 80) : RGB(218, 220, 223));
+        HBRUSH navBrush = CreateSolidBrush(dark ? RGB(57, 57, 61) : RGB(249, 249, 250));
+        HPEN navPen = CreatePen(PS_SOLID, 1, dark ? RGB(83, 83, 87) : RGB(218, 220, 223));
         HBRUSH oldNavBrush = static_cast<HBRUSH>(SelectObject(dc, navBrush));
         HPEN oldNavPen = static_cast<HPEN>(SelectObject(dc, navPen));
         // Use the complete control height for true capsule ends.
@@ -3632,8 +3650,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT pill = addressPillRect();
-        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(57, 57, 60) : RGB(244, 245, 247));
-        HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(77, 77, 81) : RGB(231, 233, 236));
+        HBRUSH pillBrush = CreateSolidBrush(dark ? RGB(63, 63, 67) : RGB(247, 248, 250));
+        HPEN pillPen = CreatePen(PS_SOLID, 1, dark ? RGB(88, 88, 92) : RGB(226, 229, 233));
         HBRUSH oldPillBrush = static_cast<HBRUSH>(SelectObject(dc, pillBrush));
         HPEN oldPillPen = static_cast<HPEN>(SelectObject(dc, pillPen));
         // Win32 RoundRect expects the corner ellipse diameter, not its radius.
@@ -3676,9 +3694,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int groupInset = MulDiv(4, dpi, 96);
         RECT actionGroup { shareRect.left - groupInset, shareRect.top,
             overviewRect.right + groupInset, overviewRect.bottom };
-        HBRUSH actionGroupBrush = CreateSolidBrush(dark ? RGB(52, 52, 55) : RGB(255, 255, 255));
+        HBRUSH actionGroupBrush = CreateSolidBrush(dark ? RGB(57, 57, 61) : RGB(255, 255, 255));
         HPEN actionGroupPen = CreatePen(PS_SOLID, 1,
-            dark ? RGB(76, 76, 80) : RGB(220, 223, 227));
+            dark ? RGB(83, 83, 87) : RGB(220, 223, 227));
         HBRUSH oldActionBrush = static_cast<HBRUSH>(SelectObject(dc, actionGroupBrush));
         HPEN oldActionPen = static_cast<HPEN>(SelectObject(dc, actionGroupPen));
         // Use the full control height for the capsule's corner ellipse.
