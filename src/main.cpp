@@ -1,3 +1,6 @@
+#ifdef WIN32_LEAN_AND_MEAN
+#undef WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <windowsx.h>
 #include <gdiplus.h>
@@ -666,84 +669,107 @@ void drawSettingsGear(HDC dc, const RECT& rect, bool dark, int dpi)
     DeleteObject(font);
 }
 
+
 void drawShare(HDC dc, const RECT& rect, bool dark = false)
 {
-    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(65, 69, 73);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
+    const float scale = std::max(0.75f,
+        static_cast<float>(std::min(rect.right - rect.left, rect.bottom - rect.top)) / 30.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
 
-    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
-    const int cx = (rect.left + rect.right) / 2;
-    const int cy = (rect.top + rect.bottom) / 2;
-    const auto p = [&](int x, int y) -> POINT {
-        return { cx + static_cast<int>(x * scale), cy + static_cast<int>(y * scale) };
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.45f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    graphics.DrawLine(&pen, cx, cy + 1.0f * scale, cx, cy - 7.5f * scale);
+    graphics.DrawLine(&pen, cx, cy - 7.5f * scale,
+        cx - 4.1f * scale, cy - 3.6f * scale);
+    graphics.DrawLine(&pen, cx, cy - 7.5f * scale,
+        cx + 4.1f * scale, cy - 3.6f * scale);
+
+    const Gdiplus::PointF tray[] = {
+        { cx - 7.0f * scale, cy + 0.5f * scale },
+        { cx - 7.0f * scale, cy + 6.7f * scale },
+        { cx + 7.0f * scale, cy + 6.7f * scale },
+        { cx + 7.0f * scale, cy + 0.5f * scale }
     };
-    const POINT stemTop = p(0, -8), stemBottom = p(0, 1);
-    const POINT arrowLeft = p(-4, -4), arrowRight = p(4, -4);
-    MoveToEx(dc, stemBottom.x, stemBottom.y, nullptr);
-    LineTo(dc, stemTop.x, stemTop.y);
-    MoveToEx(dc, stemTop.x, stemTop.y, nullptr);
-    LineTo(dc, arrowLeft.x, arrowLeft.y);
-    MoveToEx(dc, stemTop.x, stemTop.y, nullptr);
-    LineTo(dc, arrowRight.x, arrowRight.y);
-    const POINT trayLeftTop = p(-7, 1), trayLeftBottom = p(-7, 8);
-    const POINT trayRightBottom = p(7, 8), trayRightTop = p(7, 1);
-    MoveToEx(dc, trayLeftTop.x, trayLeftTop.y, nullptr);
-    LineTo(dc, trayLeftBottom.x, trayLeftBottom.y);
-    LineTo(dc, trayRightBottom.x, trayRightBottom.y);
-    LineTo(dc, trayRightTop.x, trayRightTop.y);
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    graphics.DrawLines(&pen, tray, static_cast<INT>(std::size(tray)));
 }
+
 
 void drawTabOverview(HDC dc, const RECT& rect, bool dark)
 {
-    const COLORREF color = dark ? RGB(226, 226, 230) : RGB(66, 70, 74);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
+    const COLORREF fillColor = dark ? RGB(57, 57, 61) : RGB(255, 255, 255);
+    const float scale = std::max(0.75f,
+        static_cast<float>(rect.bottom - rect.top) / 30.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float boxWidth = 13.0f * scale;
+    const float boxHeight = 12.0f * scale;
+    const float offset = 2.4f * scale;
+    const float radius = 3.0f * scale;
 
-    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
-    const int boxW = std::max(12, static_cast<int>(14 * scale));
-    const int boxH = std::max(11, static_cast<int>(13 * scale));
-    const int offset = std::max(2, static_cast<int>(2.5 * scale));
-    const int cx = (rect.left + rect.right) / 2;
-    const int cy = (rect.top + rect.bottom) / 2;
-    const int cornerDiameter = std::max(5, static_cast<int>(7 * scale));
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.45f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    Gdiplus::SolidBrush frontFill(iconGdiColor(fillColor));
 
-    // Safari's Tab Overview mark is a matched pair of rounded overlapping cards.
-    RECT rear { cx - boxW / 2 - offset, cy - boxH / 2 - offset,
-        cx + boxW / 2 - offset, cy + boxH / 2 - offset };
-    RECT front { cx - boxW / 2 + offset, cy - boxH / 2 + offset,
-        cx + boxW / 2 + offset, cy + boxH / 2 + offset };
-    RoundRect(dc, rear.left, rear.top, rear.right, rear.bottom, cornerDiameter, cornerDiameter);
-    RoundRect(dc, front.left, front.top, front.right, front.bottom, cornerDiameter, cornerDiameter);
+    Gdiplus::GraphicsPath rear;
+    addRoundedIconRectangle(rear,
+        cx - boxWidth / 2.0f - offset,
+        cy - boxHeight / 2.0f - offset,
+        boxWidth, boxHeight, radius);
+    graphics.DrawPath(&pen, &rear);
 
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    Gdiplus::GraphicsPath front;
+    addRoundedIconRectangle(front,
+        cx - boxWidth / 2.0f + offset,
+        cy - boxHeight / 2.0f + offset,
+        boxWidth, boxHeight, radius);
+    graphics.FillPath(&frontFill, &front);
+    graphics.DrawPath(&pen, &front);
 }
+
 
 void drawDownload(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
+    const float scale = std::max(0.75f,
+        static_cast<float>(rect.bottom - rect.top) / 30.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
 
-    int x = (rect.left + rect.right) / 2;
-    int shaftBottom = rect.bottom - 12;
-    MoveToEx(dc, x, rect.top + 7, nullptr);
-    LineTo(dc, x, shaftBottom);
-    MoveToEx(dc, x - 6, shaftBottom - 6, nullptr);
-    LineTo(dc, x, shaftBottom);
-    LineTo(dc, x + 6, shaftBottom - 6);
-    MoveToEx(dc, rect.left + 8, rect.bottom - 7, nullptr);
-    LineTo(dc, rect.right - 8, rect.bottom - 7);
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.5f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
 
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    graphics.DrawLine(&pen, cx, cy - 8.0f * scale, cx, cy + 2.5f * scale);
+    graphics.DrawLine(&pen, cx - 4.5f * scale, cy - 1.0f * scale,
+        cx, cy + 3.5f * scale);
+    graphics.DrawLine(&pen, cx, cy + 3.5f * scale,
+        cx + 4.5f * scale, cy - 1.0f * scale);
+
+    const Gdiplus::PointF tray[] = {
+        { cx - 7.0f * scale, cy + 1.0f * scale },
+        { cx - 7.0f * scale, cy + 6.5f * scale },
+        { cx + 7.0f * scale, cy + 6.5f * scale },
+        { cx + 7.0f * scale, cy + 1.0f * scale }
+    };
+    graphics.DrawLines(&pen, tray, static_cast<INT>(std::size(tray)));
 }
 
 void drawMenu(HDC dc, const RECT& rect, bool dark = false)
@@ -770,20 +796,25 @@ void drawTrafficLight(HDC dc, int x, int y, int size, COLORREF color)
     DeleteObject(brush);
 }
 
+
 void drawPlus(HDC dc, const RECT& rect, bool dark = false)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(70, 74, 77));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
-    const int cx = (rect.left + rect.right) / 2;
-    const int cy = (rect.top + rect.bottom) / 2;
-    const int radius = static_cast<int>(6 * scale);
-    MoveToEx(dc, cx - radius, cy, nullptr);
-    LineTo(dc, cx + radius, cy);
-    MoveToEx(dc, cx, cy - radius, nullptr);
-    LineTo(dc, cx, cy + radius);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
+    const float scale = std::max(0.75f,
+        static_cast<float>(rect.bottom - rect.top) / 30.0f);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    const float arm = 5.4f * scale;
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.45f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    graphics.DrawLine(&pen, cx - arm, cy, cx + arm, cy);
+    graphics.DrawLine(&pen, cx, cy - arm, cx, cy + arm);
 }
 
 void drawClose(HDC dc, const RECT& rect, bool dark = false)
@@ -1196,7 +1227,7 @@ struct BrowserState {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, kToolbarGap);
-        const int buttonCount = 3;
+        const int buttonCount = 4;
         if (index < 0 || index >= buttonCount)
             return { 0, 0, 0, 0 };
         const int left = client.right - pad - (buttonCount - index) * button
@@ -2788,7 +2819,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(downloadsMenu, MF_STRING, 5996, L"Show All Downloads");
 
-        const RECT button = rightToolbarButtonRect(0);
+        const RECT button = rightToolbarButtonRect(1);
         POINT point { button.right, button.bottom };
         ClientToScreen(window, &point);
         TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
@@ -3584,7 +3615,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&sidebar, point) || PtInRect(&navigation, point) || PtInRect(&address, point))
             return true;
 
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 4; ++i) {
             const RECT buttonRect = rightToolbarButtonRect(i);
             if (PtInRect(&buttonRect, point))
                 return true;
@@ -3648,9 +3679,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         const RECT shareButton = rightToolbarButtonRect(0);
-        const RECT newTabButton = rightToolbarButtonRect(1);
-        const RECT overviewButton = rightToolbarButtonRect(2);
+        const RECT downloadButton = rightToolbarButtonRect(1);
+        const RECT newTabButton = rightToolbarButtonRect(2);
+        const RECT overviewButton = rightToolbarButtonRect(3);
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
+        if (PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
@@ -4073,8 +4106,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawReload(dc, reloadRect, loading, dark);
 
         RECT shareRect = rightToolbarButtonRect(0);
-        RECT newTabRect = rightToolbarButtonRect(1);
-        RECT overviewRect = rightToolbarButtonRect(2);
+        RECT downloadRect = rightToolbarButtonRect(1);
+        RECT newTabRect = rightToolbarButtonRect(2);
+        RECT overviewRect = rightToolbarButtonRect(3);
 
         // Safari groups its trailing toolbar actions into a quiet rounded capsule.
         const int groupInset = MulDiv(4, dpi, 96);
@@ -4095,6 +4129,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(actionGroupPen);
 
         drawShare(dc, shareRect, dark);
+        drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
 
