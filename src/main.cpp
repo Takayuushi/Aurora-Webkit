@@ -595,10 +595,10 @@ void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(pen);
 }
 
-void drawSettingsGear(HDC dc, const RECT& rect, bool dark = false)
+void drawSettingsGear(HDC dc, const RECT& rect, bool dark, int dpi)
 {
     const COLORREF color = dark ? RGB(225, 225, 229) : RGB(68, 72, 76);
-    HFONT font = CreateFontW(-MulDiv(16, windowDpi(GetActiveWindow()), 96), 0, 0, 0,
+    HFONT font = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0,
         FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
         L"Segoe MDL2 Assets");
@@ -653,11 +653,12 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
 
-    const int box = std::max(9, MulDiv(13, windowDpi(GetActiveWindow()), 96));
-    const int offset = std::max(2, MulDiv(3, windowDpi(GetActiveWindow()), 96));
+    const double scale = std::max(0.75, static_cast<double>(rect.bottom - rect.top) / 30.0);
+    const int box = std::max(9, static_cast<int>(13 * scale));
+    const int offset = std::max(2, static_cast<int>(3 * scale));
     const int cx = (rect.left + rect.right) / 2;
     const int cy = (rect.top + rect.bottom) / 2;
-    const int radius = std::max(2, MulDiv(3, windowDpi(GetActiveWindow()), 96));
+    const int radius = std::max(2, static_cast<int>(3 * scale));
 
     RoundRect(dc, cx - box / 2 - offset, cy - box / 2 - offset,
         cx + box / 2 - offset, cy + box / 2 - offset, radius, radius);
@@ -2002,6 +2003,11 @@ search.addEventListener('keydown',e=>{
 
         WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
 
+        // Save the previous page before addTab changes activeTab. Otherwise
+        // newly-created tabs skip the thumbnail that Safari's overview displays.
+        if (select && !tabOverviewVisible && activeTab < tabs.size())
+            captureTabThumbnail(*tabs[activeTab]);
+
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
         if (select)
@@ -3323,7 +3329,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT gearRect { settingsRect.left + scaleForDpi(window, 8), settingsRect.top + scaleForDpi(window, 8),
             settingsRect.left + scaleForDpi(window, 28), settingsRect.bottom - scaleForDpi(window, 4) };
-        drawSettingsGear(dc, gearRect, dark);
+        drawSettingsGear(dc, gearRect, dark, dpi);
         RECT settingsLabel { gearRect.right + scaleForDpi(window, 8), settingsRect.top,
             settingsRect.right - scaleForDpi(window, 4), settingsRect.bottom };
         SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
