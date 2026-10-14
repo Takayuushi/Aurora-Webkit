@@ -5143,9 +5143,9 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
     if (filename.empty() || filename == L"." || filename == L"..") {
         auto responseURL = adoptWK(WKURLResponseCopyURL(response));
         if (responseURL) {
-            filename = createString(adoptWK(WKURLCopyLastPathComponent(responseURL.get()).get()).get());
+            filename = createString(adoptWK(WKURLCopyLastPathComponent(responseURL.get())).get());
             if (filename.empty())
-                filename = createString(adoptWK(WKURLCopyHostName(responseURL.get()).get()).get());
+                filename = createString(adoptWK(WKURLCopyHostName(responseURL.get())).get());
         }
     }
 
@@ -5324,7 +5324,7 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     details << L"Domain: " << createString(adoptWK(WKErrorCopyDomain(error)).get()) << L"\n";
     auto failingURL = adoptWK(WKErrorCopyFailingURL(error));
     if (failingURL)
-        details << L"URL: " << createString(adoptWK(WKURLCopyString(failingURL.get()).get()).get()) << L"\n";
+        details << L"URL: " << createString(adoptWK(WKURLCopyString(failingURL.get())).get()) << L"\n";
     if (!failedPath.empty())
         details << L"Destination: " << failedPath;
     MessageBoxW(browser->window, details.str().c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
