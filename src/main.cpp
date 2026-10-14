@@ -10,6 +10,7 @@
 #include <WebKit/WKDownloadRef.h>
 #include <WebKit/WKNavigationActionRef.h>
 #include <WebKit/WKFramePolicyListener.h>
+#include <WebKit/WKFrameInfoRef.h>
 #include <WebKit/WKURLRequest.h>
 #include <WebKit/WKNavigationResponseRef.h>
 #include <WebKit/WKPageNavigationClient.h>
@@ -167,6 +168,7 @@ void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
 void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void*);
+void decidePolicyForNavigationResponse(WKPageRef, WKNavigationResponseRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
@@ -794,6 +796,7 @@ void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 }
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
@@ -838,6 +841,9 @@ bool windowsPrefersDarkMode()
 struct BrowserState {
     HWND window { nullptr };
     HWND addressBar { nullptr };
+    HWND addressSuggestionWindow { nullptr };
+    std::vector<VisitEntry> addressSuggestionEntries;
+    int selectedAddressSuggestion { -1 };
     bool addressEditing { false };
     bool windowCounted { false };
     bool privateBrowsing { false };
@@ -1513,11 +1519,202 @@ struct BrowserState {
 
     void endAddressEditing()
     {
+        hideAddressSuggestions();
         addressEditing = false;
         if (addressBar)
             ShowWindow(addressBar, SW_HIDE);
         if (window)
             InvalidateRect(window, nullptr, FALSE);
+    }
+
+    void hideAddressSuggestions()
+    {
+        selectedAddressSuggestion = -1;
+        if (addressSuggestionWindow && IsWindow(addressSuggestionWindow))
+            ShowWindow(addressSuggestionWindow, SW_HIDE);
+    }
+
+    void moveAddressSuggestionSelection(int direction)
+    {
+        if (!addressEditing || addressSuggestionEntries.empty()) {
+            if (addressEditing && addressBar) {
+                wchar_t text[4096] { };
+                GetWindowTextW(addressBar, text, static_cast<int>(std::size(text)));
+                updateAddressSuggestions(text);
+            }
+        }
+        if (addressSuggestionEntries.empty() || !addressSuggestionWindow
+            || !IsWindowVisible(addressSuggestionWindow))
+            return;
+
+        const int count = static_cast<int>(addressSuggestionEntries.size());
+        if (selectedAddressSuggestion < 0)
+            selectedAddressSuggestion = direction > 0 ? 0 : count - 1;
+        else
+            selectedAddressSuggestion = (selectedAddressSuggestion + direction + count) % count;
+        InvalidateRect(addressSuggestionWindow, nullptr, TRUE);
+    }
+
+    void chooseAddressSuggestion(size_t index)
+    {
+        if (index >= addressSuggestionEntries.size())
+            return;
+        const std::wstring target = addressSuggestionEntries[index].url;
+        hideAddressSuggestions();
+        if (!target.empty()) {
+            navigateInput(target);
+            endAddressEditing();
+        }
+    }
+
+    void updateAddressSuggestions(const std::wstring& queryText)
+    {
+        if (!addressEditing || !addressBar || privateBrowsing) {
+            hideAddressSuggestions();
+            return;
+        }
+
+        auto lowercase = [](std::wstring value) {
+            std::transform(value.begin(), value.end(), value.begin(),
+                [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
+            return value;
+        };
+        auto hostFor = [](const std::wstring& url) {
+            const size_t scheme = url.find(L"://");
+            if (scheme == std::wstring::npos)
+                return url;
+            const size_t begin = scheme + 3;
+            const size_t end = url.find_first_of(L"/?#:", begin);
+            std::wstring host = url.substr(begin, end == std::wstring::npos ? end : end - begin);
+            if (host.rfind(L"www.", 0) == 0)
+                host.erase(0, 4);
+            return host;
+        };
+
+        std::wstring query = queryText;
+        while (!query.empty() && iswspace(query.front()))
+            query.erase(query.begin());
+        while (!query.empty() && iswspace(query.back()))
+            query.pop_back();
+        const std::wstring loweredQuery = lowercase(query);
+        addressSuggestionEntries.clear();
+        selectedAddressSuggestion = -1;
+
+        if (loweredQuery.empty()) {
+            // With an empty field show the most frequently visited distinct sites.
+            const auto frequent = frequentVisits(32);
+            std::vector<std::wstring> seenHosts;
+            for (const auto& entry : frequent) {
+                const std::wstring host = lowercase(hostFor(entry.url));
+                if (host.empty() || std::find(seenHosts.begin(), seenHosts.end(), host) != seenHosts.end())
+                    continue;
+                seenHosts.push_back(host);
+                addressSuggestionEntries.push_back(entry);
+                if (addressSuggestionEntries.size() >= 6)
+                    break;
+            }
+        } else {
+            struct RankedVisit {
+                int rank { 99 };
+                VisitEntry entry;
+            };
+            std::vector<RankedVisit> candidates;
+            candidates.reserve(visits.size());
+            for (const auto& entry : visits) {
+                const std::wstring url = lowercase(entry.url);
+                const std::wstring title = lowercase(entry.title);
+                const std::wstring host = lowercase(hostFor(entry.url));
+                int rank = 99;
+                if (url.rfind(loweredQuery, 0) == 0)
+                    rank = 0;
+                else if (host.rfind(loweredQuery, 0) == 0)
+                    rank = 1;
+                else if (title.rfind(loweredQuery, 0) == 0)
+                    rank = 2;
+                else if (host.find(loweredQuery) != std::wstring::npos)
+                    rank = 3;
+                else if (title.find(loweredQuery) != std::wstring::npos)
+                    rank = 4;
+                else if (url.find(loweredQuery) != std::wstring::npos)
+                    rank = 5;
+                if (rank < 99)
+                    candidates.push_back({ rank, entry });
+            }
+
+            std::sort(candidates.begin(), candidates.end(), [](const RankedVisit& a, const RankedVisit& b) {
+                if (a.rank != b.rank)
+                    return a.rank < b.rank;
+                if (a.entry.visits != b.entry.visits)
+                    return a.entry.visits > b.entry.visits;
+                return a.entry.lastVisited > b.entry.lastVisited;
+            });
+            for (const auto& candidate : candidates) {
+                if (std::find_if(addressSuggestionEntries.begin(), addressSuggestionEntries.end(),
+                    [&](const VisitEntry& entry) { return entry.url == candidate.entry.url; })
+                    != addressSuggestionEntries.end())
+                    continue;
+                addressSuggestionEntries.push_back(candidate.entry);
+                if (addressSuggestionEntries.size() >= 6)
+                    break;
+            }
+        }
+
+        if (addressSuggestionEntries.empty()) {
+            hideAddressSuggestions();
+            return;
+        }
+
+        static bool classRegistered = false;
+        if (!classRegistered) {
+            WNDCLASSEXW cls { };
+            cls.cbSize = sizeof(cls);
+            cls.lpfnWndProc = addressSuggestionsProcedure;
+            cls.hInstance = GetModuleHandleW(nullptr);
+            cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            cls.lpszClassName = L"AuroraAddressSuggestions";
+            if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+                return;
+            classRegistered = true;
+        }
+
+        if (!addressSuggestionWindow || !IsWindow(addressSuggestionWindow)) {
+            addressSuggestionWindow = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                L"AuroraAddressSuggestions", L"",
+                WS_POPUP,
+                0, 0, 400, 300,
+                window, nullptr, GetModuleHandleW(nullptr), this);
+            if (!addressSuggestionWindow)
+                return;
+        }
+
+        RECT editRect { };
+        GetWindowRect(addressBar, &editRect);
+        HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo { };
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        RECT work { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+        if (monitor && GetMonitorInfoW(monitor, &monitorInfo))
+            work = monitorInfo.rcWork;
+
+        const int dpi = windowDpi(window);
+        const int rowHeight = MulDiv(50, dpi, 96);
+        const int popupHeight = rowHeight * static_cast<int>(addressSuggestionEntries.size()) + MulDiv(2, dpi, 96);
+        const int editWidth = static_cast<int>(editRect.right - editRect.left);
+        const int popupWidth = std::min(static_cast<int>(work.right - work.left),
+            std::max(editWidth, MulDiv(420, dpi, 96)));
+        int popupLeft = static_cast<int>(editRect.left) - (popupWidth - editWidth) / 2;
+        popupLeft = std::clamp(popupLeft, static_cast<int>(work.left),
+            std::max(static_cast<int>(work.left), static_cast<int>(work.right) - popupWidth));
+        int popupTop = static_cast<int>(editRect.bottom);
+        if (popupTop + popupHeight > work.bottom)
+            popupTop = static_cast<int>(editRect.top) - popupHeight;
+        popupTop = std::clamp(popupTop, static_cast<int>(work.top),
+            std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - popupHeight));
+
+        SetWindowPos(addressSuggestionWindow, HWND_TOPMOST, popupLeft, popupTop,
+            popupWidth, popupHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(addressSuggestionWindow, nullptr, TRUE);
     }
 
     void loadVisitData()
@@ -1727,6 +1924,8 @@ struct BrowserState {
 
     ~BrowserState()
     {
+        if (addressSuggestionWindow && IsWindow(addressSuggestionWindow))
+            DestroyWindow(addressSuggestionWindow);
         if (addressBar && addressBarOriginalProcedure)
             SetWindowLongPtrW(addressBar, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(addressBarOriginalProcedure));
         if (findEdit && findEditOriginalProcedure)
@@ -2228,6 +2427,7 @@ search.addEventListener('keydown',e=>{
         navigationClient.base.version = 3;
         navigationClient.base.clientInfo = tab.get();
         navigationClient.decidePolicyForNavigationAction = decidePolicyForNavigationAction;
+        navigationClient.decidePolicyForNavigationResponse = decidePolicyForNavigationResponse;
         navigationClient.didFailProvisionalNavigation = didFailProvisionalNavigation;
         navigationClient.navigationActionDidBecomeDownload = navigationActionDidBecomeDownload;
         navigationClient.navigationResponseDidBecomeDownload = navigationResponseDidBecomeDownload;
@@ -4489,6 +4689,137 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
     }).detach();
 }
 
+LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        browser = static_cast<BrowserState*>(createInfo->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(browser));
+    }
+
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE:
+        if (browser && !browser->addressSuggestionEntries.empty()) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int rowHeight = MulDiv(50, windowDpi(browser->window), 96);
+            const int row = GET_Y_LPARAM(lParam) / std::max(1, rowHeight);
+            if (row >= 0 && row < static_cast<int>(browser->addressSuggestionEntries.size())
+                && browser->selectedAddressSuggestion != row) {
+                browser->selectedAddressSuggestion = row;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (browser) {
+            const int rowHeight = MulDiv(50, windowDpi(browser->window), 96);
+            const int row = GET_Y_LPARAM(lParam) / std::max(1, rowHeight);
+            if (row >= 0 && row < static_cast<int>(browser->addressSuggestionEntries.size()))
+                browser->chooseAddressSuggestion(static_cast<size_t>(row));
+        }
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps { };
+        HDC dc = BeginPaint(window, &ps);
+        RECT client { };
+        GetClientRect(window, &client);
+        const bool dark = browser && browser->chromeDarkTheme();
+        const COLORREF background = dark ? RGB(39, 39, 42) : RGB(255, 255, 255);
+        const COLORREF border = dark ? RGB(75, 75, 79) : RGB(219, 222, 226);
+        const COLORREF primary = dark ? RGB(241, 241, 244) : RGB(34, 37, 41);
+        const COLORREF secondary = dark ? RGB(164, 164, 170) : RGB(112, 117, 123);
+        HBRUSH backgroundBrush = CreateSolidBrush(background);
+        FillRect(dc, &client, backgroundBrush);
+        DeleteObject(backgroundBrush);
+        HPEN borderPen = CreatePen(PS_SOLID, 1, border);
+        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, borderPen));
+        Rectangle(dc, client.left, client.top, client.right, client.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(borderPen);
+        SetBkMode(dc, TRANSPARENT);
+
+        const int dpi = browser ? windowDpi(browser->window) : 96;
+        HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        const int rowHeight = MulDiv(50, dpi, 96);
+        if (browser) {
+            for (size_t i = 0; i < browser->addressSuggestionEntries.size(); ++i) {
+                const int top = static_cast<int>(i) * rowHeight;
+                RECT row { client.left + 1, top, client.right - 1,
+                    std::min(static_cast<int>(client.bottom) - 1, top + rowHeight) };
+                if (static_cast<int>(i) == browser->selectedAddressSuggestion) {
+                    HBRUSH selectedBrush = CreateSolidBrush(dark ? RGB(62, 62, 66) : RGB(235, 240, 247));
+                    FillRect(dc, &row, selectedBrush);
+                    DeleteObject(selectedBrush);
+                }
+                if (i > 0) {
+                    HPEN separatorPen = CreatePen(PS_SOLID, 1, border);
+                    HPEN priorPen = static_cast<HPEN>(SelectObject(dc, separatorPen));
+                    MoveToEx(dc, row.left + MulDiv(44, dpi, 96), row.top, nullptr);
+                    LineTo(dc, row.right - MulDiv(12, dpi, 96), row.top);
+                    SelectObject(dc, priorPen);
+                    DeleteObject(separatorPen);
+                }
+
+                // A simple outlined site glyph keeps suggestions native to Aurora.
+                const int iconSize = MulDiv(22, dpi, 96);
+                const int iconLeft = row.left + MulDiv(12, dpi, 96);
+                const int iconTop = row.top + (rowHeight - iconSize) / 2;
+                HPEN iconPen = CreatePen(PS_SOLID, 1, secondary);
+                HPEN priorIconPen = static_cast<HPEN>(SelectObject(dc, iconPen));
+                HBRUSH priorIconBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+                Ellipse(dc, iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize);
+                MoveToEx(dc, iconLeft + iconSize / 2, iconTop + 1, nullptr);
+                LineTo(dc, iconLeft + iconSize / 2, iconTop + iconSize - 1);
+                Arc(dc, iconLeft + iconSize / 4, iconTop + 1, iconLeft + iconSize * 3 / 4,
+                    iconTop + iconSize - 1, iconLeft + iconSize / 2, iconTop + 1,
+                    iconLeft + iconSize / 2, iconTop + iconSize - 1);
+                SelectObject(dc, priorIconBrush);
+                SelectObject(dc, priorIconPen);
+                DeleteObject(iconPen);
+
+                const auto& entry = browser->addressSuggestionEntries[i];
+                const std::wstring title = entry.title.empty() ? entry.url : entry.title;
+                RECT titleRect { iconLeft + iconSize + MulDiv(12, dpi, 96), row.top + MulDiv(6, dpi, 96),
+                    row.right - MulDiv(12, dpi, 96), row.top + MulDiv(27, dpi, 96) };
+                SelectObject(dc, titleFont);
+                SetTextColor(dc, primary);
+                DrawTextW(dc, title.c_str(), -1, &titleRect,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                RECT urlRect { titleRect.left, row.top + MulDiv(26, dpi, 96),
+                    row.right - MulDiv(12, dpi, 96), row.top + MulDiv(45, dpi, 96) };
+                SelectObject(dc, urlFont);
+                SetTextColor(dc, secondary);
+                DrawTextW(dc, entry.url.c_str(), -1, &urlRect,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+        }
+
+        if (titleFont) DeleteObject(titleFont);
+        if (urlFont) DeleteObject(urlFont);
+        EndPaint(window, &ps);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+
 LRESULT CALLBACK findEditProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -4511,12 +4842,31 @@ LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, L
 {
     auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
-    if (browser && message == WM_KEYDOWN && wParam == VK_RETURN) {
-        wchar_t text[4096] { };
-        GetWindowTextW(window, text, static_cast<int>(std::size(text)));
-        browser->navigateInput(text);
-        browser->endAddressEditing();
-        return 0;
+    if (browser && message == WM_KEYDOWN) {
+        if (wParam == VK_DOWN || wParam == VK_UP) {
+            browser->moveAddressSuggestionSelection(wParam == VK_DOWN ? 1 : -1);
+            return 0;
+        }
+        if (wParam == VK_ESCAPE) {
+            if (browser->addressSuggestionWindow && IsWindowVisible(browser->addressSuggestionWindow)) {
+                browser->hideAddressSuggestions();
+            } else {
+                browser->endAddressEditing();
+            }
+            return 0;
+        }
+        if (wParam == VK_RETURN) {
+            if (browser->addressSuggestionWindow && IsWindowVisible(browser->addressSuggestionWindow)
+                && browser->selectedAddressSuggestion >= 0) {
+                browser->chooseAddressSuggestion(static_cast<size_t>(browser->selectedAddressSuggestion));
+                return 0;
+            }
+            wchar_t text[4096] { };
+            GetWindowTextW(window, text, static_cast<int>(std::size(text)));
+            browser->navigateInput(text);
+            browser->endAddressEditing();
+            return 0;
+        }
     }
 
     if (browser && message == WM_KILLFOCUS && browser->addressEditing) {
@@ -4528,14 +4878,27 @@ LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, L
     if (browser && message == WM_SETFOCUS) {
         LRESULT result = CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
         SendMessageW(window, EM_SETSEL, 0, -1);
+        if (browser->addressEditing)
+            browser->updateAddressSuggestions(L"");
         return result;
     }
 
-    if (browser && browser->addressBarOriginalProcedure)
-        return CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
+    if (browser && browser->addressBarOriginalProcedure) {
+        LRESULT result = CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
+        const bool textChanged = message == WM_CHAR || message == WM_PASTE
+            || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO;
+        if (textChanged && browser->addressEditing) {
+            wchar_t text[4096] { };
+            GetWindowTextW(window, text, static_cast<int>(std::size(text)));
+            browser->updateAddressSuggestions(text);
+        }
+        return result;
+    }
 
     return DefWindowProcW(window, message, wParam, lParam);
 }
+
+
 
 void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigationAction,
     WKFramePolicyListenerRef listener, WKTypeRef, const void* clientInfo)
@@ -4675,6 +5038,57 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->applyTheme();
     if (auto* current = browser->active(); current && current->internalPage == L"settings")
         browser->loadSettingsPage(*current);
+}
+
+
+void decidePolicyForNavigationResponse(WKPageRef, WKNavigationResponseRef navigationResponse,
+    WKFramePolicyListenerRef listener, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (!tab || !tab->browser) {
+        WKFramePolicyListenerUse(listener);
+        return;
+    }
+
+    auto frameInfo = adoptWK(WKNavigationResponseCopyFrameInfo(navigationResponse));
+    if (!frameInfo || !WKFrameInfoGetIsMainFrame(frameInfo.get())) {
+        WKFramePolicyListenerUse(listener);
+        return;
+    }
+
+    auto response = adoptWK(WKNavigationResponseCopyResponse(navigationResponse));
+    if (!response) {
+        WKFramePolicyListenerUse(listener);
+        return;
+    }
+
+    const bool attachment = WKURLResponseIsAttachment(response.get());
+    const bool canDisplay = WKNavigationResponseCanShowMIMEType(navigationResponse);
+    const std::wstring mime = createString(adoptWK(WKURLResponseCopyMIMEType(response.get())).get());
+    std::wstring normalizedMime = mime;
+    std::transform(normalizedMime.begin(), normalizedMime.end(), normalizedMime.begin(),
+        [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
+
+    // GitHub release assets and many direct download links are served as octet-stream.
+    // Route these and all explicit Content-Disposition attachments through WKDownload.
+    const bool binaryPayload = normalizedMime == L"application/octet-stream"
+        || normalizedMime == L"application/zip"
+        || normalizedMime == L"application/x-7z-compressed"
+        || normalizedMime == L"application/x-rar-compressed"
+        || normalizedMime == L"application/x-msdownload"
+        || normalizedMime == L"application/vnd.microsoft.portable-executable"
+        || normalizedMime == L"application/gzip"
+        || normalizedMime == L"application/x-gzip"
+        || normalizedMime == L"application/x-tar"
+        || normalizedMime == L"application/x-bzip2"
+        || normalizedMime == L"application/x-xz";
+
+    if (attachment || !canDisplay || binaryPayload) {
+        WKFramePolicyListenerDownload(listener);
+        return;
+    }
+
+    WKFramePolicyListenerUse(listener);
 }
 
 
