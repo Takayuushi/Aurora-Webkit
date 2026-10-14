@@ -3847,7 +3847,7 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         for (int i = 0; i < kSettingsPageCount; ++i) {
             HWND button = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                12, 76 + i * 40, 180, 36, window,
+                12 + i * 141, 10, 132, 64, window,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsNavBase + i)),
                 GetModuleHandleW(nullptr), nullptr);
             if (font) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -3855,61 +3855,61 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         }
 
         // General
-        label(0, L"Homepage", 226, 112, 570, 22);
-        dialog->homeEdit = edit(0, kSettingsHomePageEdit, 226, 140, 570, browser->homePage);
-        label(0, L"Downloads location", 226, 202, 570, 22);
+        label(0, L"Homepage", 32, 174, 790, 22);
+        dialog->homeEdit = edit(0, kSettingsHomePageEdit, 32, 202, 790, browser->homePage);
+        label(0, L"Downloads location", 32, 260, 790, 22);
         const std::wstring downloads = browser->effectiveDownloadsDirectory();
-        dialog->downloadsEdit = edit(0, kSettingsDownloadsEdit, 226, 230, 440, downloads);
-        actionButton(0, L"Choose…", kSettingsBrowse, 680, 229, 116);
-        label(0, L"Downloaded files are saved to this folder.", 226, 270, 570, 22);
+        dialog->downloadsEdit = edit(0, kSettingsDownloadsEdit, 32, 288, 620, downloads);
+        actionButton(0, L"Choose…", kSettingsBrowse, 666, 287, 156);
+        label(0, L"Downloaded files are saved to this folder.", 32, 328, 790, 22);
 
         // Appearance
-        label(1, L"Browser appearance", 226, 112, 570, 22);
-        dialog->themeCombo = combo(1, kSettingsThemeCombo, 226, 140, 380);
+        label(1, L"Browser appearance", 32, 174, 790, 22);
+        dialog->themeCombo = combo(1, kSettingsThemeCombo, 32, 202, 440);
         SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic (follow Windows)"));
         SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Light"));
         SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Dark"));
         SendMessageW(dialog->themeCombo, CB_SETCURSEL,
             browser->themeMode == ThemeMode::System ? 0 : (browser->themeMode == ThemeMode::Light ? 1 : 2), 0);
-        label(1, L"Choose the appearance for browser chrome and built-in pages.", 226, 180, 570, 36);
+        label(1, L"Choose the appearance for browser chrome and built-in pages.", 32, 242, 790, 36);
 
         // Search
-        label(2, L"Default search engine", 226, 112, 570, 22);
-        dialog->searchCombo = combo(2, kSettingsSearchCombo, 226, 140, 380);
+        label(2, L"Default search engine", 32, 174, 790, 22);
+        dialog->searchCombo = combo(2, kSettingsSearchCombo, 32, 202, 440);
         SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Google"));
         SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Bing"));
         SendMessageW(dialog->searchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"DuckDuckGo"));
         const int searchIndex = browser->searchEngine == L"Bing" ? 1 : (browser->searchEngine == L"DuckDuckGo" ? 2 : 0);
         SendMessageW(dialog->searchCombo, CB_SETCURSEL, searchIndex, 0);
-        label(2, L"Used when you type search terms in Smart Search.", 226, 180, 570, 36);
+        label(2, L"Used when you type search terms in Smart Search.", 32, 242, 790, 36);
 
         // Websites
-        label(3, L"Default website permissions", 226, 104, 570, 24);
-        dialog->javascriptCheck = check(3, L"Enable JavaScript", kSettingsJavaScript, 226, 142, 230, browser->javascriptEnabled);
-        dialog->imagesCheck = check(3, L"Load images automatically", kSettingsImages, 226, 180, 250, browser->imagesEnabled);
-        dialog->popupsCheck = check(3, L"Allow pop-up windows", kSettingsPopups, 492, 142, 260, browser->allowPopups);
-        dialog->localStorageCheck = check(3, L"Allow website storage", kSettingsLocalStorage, 492, 180, 260, browser->localStorageEnabled);
-        label(3, L"These settings are used as the default for new websites.", 226, 228, 570, 36);
+        label(3, L"Default website permissions", 32, 172, 790, 24);
+        dialog->javascriptCheck = check(3, L"Enable JavaScript", kSettingsJavaScript, 32, 210, 310, browser->javascriptEnabled);
+        dialog->imagesCheck = check(3, L"Load images automatically", kSettingsImages, 32, 248, 310, browser->imagesEnabled);
+        dialog->popupsCheck = check(3, L"Allow pop-up windows", kSettingsPopups, 370, 210, 300, browser->allowPopups);
+        dialog->localStorageCheck = check(3, L"Allow website storage", kSettingsLocalStorage, 370, 248, 300, browser->localStorageEnabled);
+        label(3, L"These settings are used as the default for new websites.", 32, 292, 790, 36);
 
         // Privacy
-        label(4, L"Browsing data", 226, 112, 570, 22);
-        label(4, L"Clear saved history and local website data such as cookies and storage.", 226, 142, 570, 42);
-        actionButton(4, L"Clear History…", kSettingsClearHistory, 226, 198, 150);
-        actionButton(4, L"Clear Website Data…", kSettingsClearWebsiteData, 390, 198, 190);
+        label(4, L"Browsing data", 32, 174, 790, 22);
+        label(4, L"Clear saved history and local website data such as cookies and storage.", 32, 204, 790, 42);
+        actionButton(4, L"Clear History…", kSettingsClearHistory, 32, 258, 160);
+        actionButton(4, L"Clear Website Data…", kSettingsClearWebsiteData, 206, 258, 205);
 
         // Advanced
         dialog->developerToolsCheck = check(5, L"Enable Web Inspector / developer tools",
-            kSettingsDeveloperTools, 226, 116, 350, browser->developerToolsEnabled);
+            kSettingsDeveloperTools, 32, 184, 410, browser->developerToolsEnabled);
         label(5, L"Some developer tools depend on the capabilities of the pinned Windows WebKit build.",
-            226, 160, 570, 42);
+            32, 228, 790, 42);
 
         HWND save = CreateWindowExW(0, L"BUTTON", L"Save",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            692, 540, 90, 32, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsSave)),
+            680, 532, 82, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsSave)),
             GetModuleHandleW(nullptr), nullptr);
         HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            790, 540, 78, 32, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsCancel)),
+            770, 532, 72, 30, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingsCancel)),
             GetModuleHandleW(nullptr), nullptr);
         if (font) {
             SendMessageW(save, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -3926,27 +3926,24 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         GetClientRect(window, &client);
         const bool dark = dialog && dialog->browser && dialog->browser->darkTheme();
         const COLORREF background = dark ? RGB(29, 29, 31) : RGB(250, 250, 252);
-        const COLORREF sidebarColor = dark ? RGB(38, 38, 40) : RGB(242, 243, 246);
         const COLORREF textColor = dark ? RGB(238, 238, 241) : RGB(37, 40, 44);
         const COLORREF mutedColor = dark ? RGB(164, 165, 170) : RGB(111, 116, 123);
         HBRUSH backgroundBrush = CreateSolidBrush(background);
         FillRect(dc, &client, backgroundBrush);
         DeleteObject(backgroundBrush);
-        RECT sidebar { 0, 0, 204, client.bottom };
-        HBRUSH sidebarBrush = CreateSolidBrush(sidebarColor);
-        FillRect(dc, &sidebar, sidebarBrush);
-        DeleteObject(sidebarBrush);
+        RECT categoryBar { 0, 0, client.right, 82 };
+        HBRUSH categoryBrush = CreateSolidBrush(dark ? RGB(34, 34, 36) : RGB(247, 248, 250));
+        FillRect(dc, &categoryBar, categoryBrush);
+        DeleteObject(categoryBrush);
 
         HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(59, 59, 62) : RGB(226, 228, 232));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
-        MoveToEx(dc, sidebar.right - 1, 0, nullptr);
-        LineTo(dc, sidebar.right - 1, client.bottom);
-        MoveToEx(dc, 0, 54, nullptr);
-        LineTo(dc, sidebar.right, 54);
-        MoveToEx(dc, sidebar.right + 20, 88, nullptr);
-        LineTo(dc, client.right - 24, 88);
-        MoveToEx(dc, sidebar.right + 20, client.bottom - 62, nullptr);
-        LineTo(dc, client.right - 20, client.bottom - 62);
+        MoveToEx(dc, 0, 82, nullptr);
+        LineTo(dc, client.right, 82);
+        MoveToEx(dc, 30, 164, nullptr);
+        LineTo(dc, client.right - 30, 164);
+        MoveToEx(dc, 30, client.bottom - 54, nullptr);
+        LineTo(dc, client.right - 30, client.bottom - 54);
         SelectObject(dc, oldPen);
         DeleteObject(divider);
 
@@ -3960,15 +3957,14 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, titleFont));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, textColor);
-        RECT sidebarTitle { 20, 10, 185, 42 };
-        DrawTextW(dc, L"Aurora Settings", -1, &sidebarTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         const int page = dialog ? dialog->activePage : 0;
-        RECT pageTitle { 226, 12, client.right - 24, 42 };
+        RECT pageTitle { 32, 96, client.right - 30, 126 };
         DrawTextW(dc, kSettingsPageTitles[page], -1, &pageTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, subtitleFont);
         SetTextColor(dc, mutedColor);
-        RECT description { 228, 46, client.right - 24, 72 };
-        DrawTextW(dc, kSettingsPageDescriptions[page], -1, &description, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        RECT description { 32, 128, client.right - 30, 154 };
+        DrawTextW(dc, kSettingsPageDescriptions[page], -1, &description,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         SelectObject(dc, oldFont);
         DeleteObject(titleFont);
         DeleteObject(subtitleFont);
@@ -3998,11 +3994,12 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         if (iconFont) {
             HFONT oldIcon = static_cast<HFONT>(SelectObject(item->hDC, iconFont));
             RECT iconRect = item->rcItem;
-            iconRect.left += 8;
-            iconRect.right = iconRect.left + 26;
+            iconRect.top += 4;
+            iconRect.bottom = iconRect.top + 28;
             SetBkMode(item->hDC, TRANSPARENT);
-            SetTextColor(item->hDC, dark ? RGB(238, 238, 241) : RGB(52, 57, 63));
-            DrawTextW(item->hDC, kSettingsPageIcons[page], -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SetTextColor(item->hDC, selected ? RGB(28, 99, 210) : (dark ? RGB(218, 218, 223) : RGB(76, 81, 87)));
+            DrawTextW(item->hDC, kSettingsPageIcons[page], -1, &iconRect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             SelectObject(item->hDC, oldIcon);
             DeleteObject(iconFont);
         }
@@ -4012,10 +4009,11 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldText = static_cast<HFONT>(SelectObject(item->hDC, textFont));
         RECT labelRect = item->rcItem;
-        labelRect.left += 42;
+        labelRect.top += 32;
         SetBkMode(item->hDC, TRANSPARENT);
-        SetTextColor(item->hDC, dark ? RGB(238, 238, 241) : RGB(42, 45, 49));
-        DrawTextW(item->hDC, kSettingsPageTitles[page], -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(item->hDC, selected ? RGB(28, 99, 210) : (dark ? RGB(238, 238, 241) : RGB(42, 45, 49)));
+        DrawTextW(item->hDC, kSettingsPageTitles[page], -1, &labelRect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         SelectObject(item->hDC, oldText);
         DeleteObject(textFont);
         if (item->itemState & ODS_FOCUS)
