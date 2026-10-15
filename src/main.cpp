@@ -4201,8 +4201,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(83, 83, 87) : RGB(218, 220, 223),
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
         RECT backRect { navigationRect.left + gap, navigationRect.top,
-
-        RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
         RECT forwardRect { backRect.right, navigationRect.top, navigationRect.right - gap, navigationRect.bottom };
         drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
@@ -4224,8 +4222,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                         ? (i == activeTab ? RGB(91, 91, 95) : RGB(55, 55, 58))
                         : (i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232)),
                     static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
-                const int iconSize = MulDiv(16, dpi, 96);
-
                 const int iconSize = MulDiv(16, dpi, 96);
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
                 RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
@@ -4251,8 +4247,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(63, 63, 67) : RGB(247, 248, 250),
             dark ? RGB(88, 88, 92) : RGB(226, 229, 233),
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
-        if (!addressEditing) {
-
         if (!addressEditing) {
             const std::wstring addressText = addressDisplayText();
             if (!addressText.empty()) {
@@ -4288,8 +4282,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(57, 57, 61) : RGB(255, 255, 255),
             dark ? RGB(83, 83, 87) : RGB(220, 223, 227),
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
-        drawShare(dc, shareRect, dark);
-
         drawShare(dc, shareRect, dark);
         drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
