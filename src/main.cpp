@@ -1434,8 +1434,10 @@ struct BrowserState {
 
         int nextTrafficLight = -1;
         for (int i = 0; i < 3; ++i) {
-            const RECT hit = trafficLightHitRect(i);
-            if (PtInRect(&hit, point)) {
+            RECT painted = trafficLightHitRect(i);
+            const int hoverPadding = scaleForDpi(window, 6);
+            InflateRect(&painted, -hoverPadding, -hoverPadding);
+            if (PtInRect(&painted, point)) {
                 nextTrafficLight = i;
                 break;
             }
@@ -2868,9 +2870,9 @@ search.addEventListener('keydown',e=>{
         }
         resize();
         if (selectedView) {
-            // The WC compositor may not schedule a fresh child frame just because a
-            // hidden tab HWND became visible. Force its invalid region through WebKit's
-            // normal WM_PAINT path after the resize has settled.
+            // A hidden Win32 child can retain an invalid region while it is inactive.
+            // Request a paint through WebKit's normal WM_PAINT path after it is raised
+            // and resized so the selected page does not remain visually stale.
             RedrawWindow(selectedView, nullptr, nullptr,
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
@@ -6568,8 +6570,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 if (rect.right > rect.left && rect.bottom > rect.top)
                     InvalidateRect(window, &rect, FALSE);
             }
-            if (previousLight >= 0)
-                InvalidateRect(window, &state->trafficLightHitRect(previousLight), FALSE);
+            if (previousLight >= 0) {
+                const RECT rect = state->trafficLightHitRect(previousLight);
+                InvalidateRect(window, &rect, FALSE);
+            }
         }
         return 0;
 
