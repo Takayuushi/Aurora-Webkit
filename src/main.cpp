@@ -5967,6 +5967,7 @@ void showSharePopover(BrowserState* browser)
     if (!classRegistered) {
         WNDCLASSEXW cls { };
         cls.cbSize = sizeof(cls);
+        cls.style = CS_DROPSHADOW;
         cls.lpfnWndProc = sharePopoverProcedure;
         cls.hInstance = GetModuleHandleW(nullptr);
         cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -6040,12 +6041,21 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
         return 1;
     case WM_TIMER:
         if (state && wParam == kSharePopoverTimerId) {
+            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+                POINT cursor { };
+                RECT popupRect { };
+                if (GetCursorPos(&cursor) && GetWindowRect(window, &popupRect)
+                    && !PtInRect(&popupRect, cursor)) {
+                    DestroyWindow(window);
+                    return 0;
+                }
+            }
             const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
             const float t = std::clamp(static_cast<float>(elapsed) / 145.0f, 0.0f, 1.0f);
             const float eased = t * t * (3.0f - 2.0f * t);
             const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
             const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
-            const int lift = static_cast<int>(std::lround(MulDiv(5, dpi, 96) * (1.0f - eased)));
+            const int lift = static_cast<int>(MulDiv(5, dpi, 96) * (1.0f - eased) + 0.5f);
             SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
             SetWindowPos(window, HWND_TOPMOST,
                 state->targetRect.left, state->targetRect.top - lift,
@@ -6069,10 +6079,6 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
                 state->trackingMouse = TrackMouseEvent(&track) != FALSE;
             }
             const int y = GET_Y_LPARAM(lParam);
-            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
-            const int padding = MulDiv(5, dpi, 96);
-            const int rowHeight = MulDiv(27, dpi, 96);
-            const int separatorGap = MulDiv(7, dpi, 96);
             int row = -1;
             for (int i = 0; i < 3; ++i) {
                 const RECT rect = sharePopoverRowRect(state, i);
@@ -6092,9 +6098,6 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
                     InvalidateRect(window, &newRect, FALSE);
                 }
             }
-            (void)padding;
-            (void)rowHeight;
-            (void)separatorGap;
         }
         return 0;
     case WM_MOUSELEAVE:
