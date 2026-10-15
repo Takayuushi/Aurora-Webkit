@@ -2705,7 +2705,7 @@ search.addEventListener('keydown',e=>{
 
         WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
 
-        // activateTab captures the previous tab before changing activeTab.
+        // The live WebKit surface is not captured during ordinary tab switches.
 
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
@@ -6392,10 +6392,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     auto* state = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
     switch (message) {
-    case WM_ERASEBKGND:
-        // WM_PAINT draws the complete invalid region; skip the system brush erase.
-        return 1;
-
     case WM_NCCALCSIZE:
         if (wParam)
             return 0;
