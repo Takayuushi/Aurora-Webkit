@@ -856,7 +856,7 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
 }
 
 
-void drawTrafficLight(HDC dc, int x, int y, int size, COLORREF color)
+void drawTrafficLight(HDC dc, int x, int y, int size, COLORREF color, bool hovered = false)
 {
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -865,6 +865,20 @@ void drawTrafficLight(HDC dc, int x, int y, int size, COLORREF color)
     const Gdiplus::RectF circle(
         static_cast<float>(x) + inset, static_cast<float>(y) + inset,
         static_cast<float>(size) - inset * 2.0f, static_cast<float>(size) - inset * 2.0f);
+    if (hovered) {
+        const BYTE red = GetRValue(color);
+        const BYTE green = GetGValue(color);
+        const BYTE blue = GetBValue(color);
+        // Layer translucent, anti-aliased ellipses for a restrained native-style glow.
+        for (int ring = 6; ring >= 1; --ring) {
+            const BYTE alpha = static_cast<BYTE>(8 + (6 - ring) * 5);
+            const float spread = static_cast<float>(ring) * std::max(0.75f, size / 13.0f);
+            Gdiplus::SolidBrush glow(Gdiplus::Color(alpha, red, green, blue));
+            graphics.FillEllipse(&glow,
+                circle.X - spread, circle.Y - spread,
+                circle.Width + spread * 2.0f, circle.Height + spread * 2.0f);
+        }
+    }
     const COLORREF borderColor = RGB(
         std::max(0, static_cast<int>(GetRValue(color)) - 28),
         std::max(0, static_cast<int>(GetGValue(color)) - 28),
@@ -1011,6 +1025,8 @@ struct BrowserState {
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     int hoveredToolbarButton { -1 };
+    int hoveredLeftControl { -1 }; // Sidebar, navigation capsule, website settings
+    int hoveredTrafficLight { -1 };
     float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
     bool mouseTrackingForChrome { false };
     bool chromeAnimationTimerActive { false };
@@ -1339,6 +1355,20 @@ struct BrowserState {
         return { left, top, left + button, top + height };
     }
 
+    RECT leftToolbarControlRect(int index) const
+    {
+        if (index == 0)
+            return sidebarButtonRect();
+        if (index == 1)
+            return navigationPillRect();
+        if (index == 2) {
+            RECT pill = addressPillRect();
+            pill.right = std::min(pill.right, pill.left + scaleForDpi(window, 30));
+            return pill;
+        }
+        return { 0, 0, 0, 0 };
+    }
+
     void startChromeAnimationTimer()
     {
         if (!window || chromeAnimationTimerActive)
@@ -1361,23 +1391,66 @@ struct BrowserState {
                 }
             }
         }
-        if (nextHovered == hoveredToolbarButton)
-            return;
+        if (nextHovered != hoveredToolbarButton) {
+            const int previousHovered = hoveredToolbarButton;
+            hoveredToolbarButton = nextHovered;
+            for (int i = 0; i < 4; ++i)
+                toolbarHoverOpacity[i] = i == nextHovered ? 1.0f : 0.0f;
 
-        const int previousHovered = hoveredToolbarButton;
-        hoveredToolbarButton = nextHovered;
-        for (int i = 0; i < 4; ++i)
-            toolbarHoverOpacity[i] = i == nextHovered ? 1.0f : 0.0f;
-
-        if (previousHovered >= 0) {
-            const RECT previousRect = rightToolbarButtonRect(previousHovered);
-            if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
-                InvalidateRect(window, &previousRect, FALSE);
+            if (previousHovered >= 0) {
+                const RECT previousRect = rightToolbarButtonRect(previousHovered);
+                if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
+                    InvalidateRect(window, &previousRect, FALSE);
+            }
+            if (nextHovered >= 0) {
+                const RECT nextRect = rightToolbarButtonRect(nextHovered);
+                if (nextRect.right > nextRect.left && nextRect.bottom > nextRect.top)
+                    InvalidateRect(window, &nextRect, FALSE);
+            }
         }
-        if (nextHovered >= 0) {
-            const RECT nextRect = rightToolbarButtonRect(nextHovered);
-            if (nextRect.right > nextRect.left && nextRect.bottom > nextRect.top)
-                InvalidateRect(window, &nextRect, FALSE);
+
+        int nextLeftControl = -1;
+        for (int i = 0; i < 3; ++i) {
+            const RECT control = leftToolbarControlRect(i);
+            if (control.right > control.left && control.bottom > control.top && PtInRect(&control, point)) {
+                nextLeftControl = i;
+                break;
+            }
+        }
+        if (nextLeftControl != hoveredLeftControl) {
+            const int previous = hoveredLeftControl;
+            hoveredLeftControl = nextLeftControl;
+            if (previous >= 0) {
+                const RECT rect = leftToolbarControlRect(previous);
+                if (rect.right > rect.left && rect.bottom > rect.top)
+                    InvalidateRect(window, &rect, FALSE);
+            }
+            if (nextLeftControl >= 0) {
+                const RECT rect = leftToolbarControlRect(nextLeftControl);
+                if (rect.right > rect.left && rect.bottom > rect.top)
+                    InvalidateRect(window, &rect, FALSE);
+            }
+        }
+
+        int nextTrafficLight = -1;
+        for (int i = 0; i < 3; ++i) {
+            const RECT hit = trafficLightHitRect(i);
+            if (PtInRect(&hit, point)) {
+                nextTrafficLight = i;
+                break;
+            }
+        }
+        if (nextTrafficLight != hoveredTrafficLight) {
+            const int previous = hoveredTrafficLight;
+            hoveredTrafficLight = nextTrafficLight;
+            if (previous >= 0) {
+                const RECT rect = trafficLightHitRect(previous);
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (nextTrafficLight >= 0) {
+                const RECT rect = trafficLightHitRect(nextTrafficLight);
+                InvalidateRect(window, &rect, FALSE);
+            }
         }
     }
 
@@ -2687,7 +2760,6 @@ search.addEventListener('keydown',e=>{
             ShowWindow(newViewWindow, SW_HIDE);
 
         WKViewSetIsInWindow(tab->view.get(), true);
-        WKViewSetUsesOffscreenRendering(tab->view.get(), true);
 
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
@@ -2724,7 +2796,7 @@ search.addEventListener('keydown',e=>{
         stateClient.didChangeCanGoForward = didChangeCanGoForward;
         WKPageSetPageStateClient(page, &stateClient.base);
 
-        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+        WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
 
         // The live WebKit surface is not captured during ordinary tab switches.
 
@@ -4499,14 +4571,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int tabsH = tabsBarHeight();
 
         const int lightY = toolbarTop + (toolbarH - light) / 2;
-        drawTrafficLight(dc, pad, lightY, light, RGB(255, 95, 87));
-        drawTrafficLight(dc, pad + light + lightGap, lightY, light, RGB(255, 189, 46));
-        drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, light, RGB(39, 201, 63));
+        drawTrafficLight(dc, pad, lightY, light, RGB(255, 95, 87), hoveredTrafficLight == 0);
+        drawTrafficLight(dc, pad + light + lightGap, lightY, light, RGB(255, 189, 46), hoveredTrafficLight == 1);
+        drawTrafficLight(dc, pad + (light + lightGap) * 2, lightY, light, RGB(39, 201, 63), hoveredTrafficLight == 2);
 
         RECT sidebarRect = sidebarButtonRect();
+        const bool sidebarHovered = hoveredLeftControl == 0;
         drawRoundedControl(dc, sidebarRect,
-            dark ? RGB(59, 59, 63) : RGB(251, 251, 252),
-            dark ? RGB(82, 82, 86) : RGB(211, 214, 218),
+            sidebarHovered ? (dark ? RGB(79, 79, 84) : RGB(234, 237, 241))
+                : (dark ? RGB(59, 59, 63) : RGB(251, 251, 252)),
+            sidebarHovered ? (dark ? RGB(103, 103, 109) : RGB(205, 210, 216))
+                : (dark ? RGB(82, 82, 86) : RGB(211, 214, 218)),
             static_cast<float>(sidebarRect.bottom - sidebarRect.top) / 2.0f);
 
         const int sidebarIconWidth = MulDiv(22, dpi, 96);
@@ -4529,9 +4604,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(dropdownPen);
 
         RECT navigationRect = navigationPillRect();
+        const bool navigationHovered = hoveredLeftControl == 1;
         drawRoundedControl(dc, navigationRect,
-            dark ? RGB(57, 57, 61) : RGB(249, 249, 250),
-            dark ? RGB(83, 83, 87) : RGB(218, 220, 223),
+            navigationHovered ? (dark ? RGB(74, 74, 79) : RGB(239, 241, 244))
+                : (dark ? RGB(57, 57, 61) : RGB(249, 249, 250)),
+            navigationHovered ? (dark ? RGB(100, 100, 105) : RGB(206, 211, 217))
+                : (dark ? RGB(83, 83, 87) : RGB(218, 220, 223)),
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
         RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
@@ -4603,6 +4681,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT siteSettingsGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
+        if (hoveredLeftControl == 2) {
+            RECT hoverRect { pill.left + MulDiv(4, dpi, 96), pill.top + MulDiv(3, dpi, 96),
+                pill.left + MulDiv(28, dpi, 96), pill.bottom - MulDiv(3, dpi, 96) };
+            drawRoundedControl(dc, hoverRect,
+                dark ? RGB(82, 82, 87) : RGB(230, 233, 237),
+                dark ? RGB(82, 82, 87) : RGB(230, 233, 237),
+                static_cast<float>(hoverRect.bottom - hoverRect.top) / 2.0f);
+        }
         drawWebsiteSettings(dc, siteSettingsGlyph, dark);
         const bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
@@ -6465,14 +6551,25 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state) {
             state->mouseTrackingForChrome = false;
             const int previousHovered = state->hoveredToolbarButton;
+            const int previousLeft = state->hoveredLeftControl;
+            const int previousLight = state->hoveredTrafficLight;
             state->hoveredToolbarButton = -1;
+            state->hoveredLeftControl = -1;
+            state->hoveredTrafficLight = -1;
             for (float& opacity : state->toolbarHoverOpacity)
                 opacity = 0.0f;
             if (previousHovered >= 0) {
-                const RECT previousRect = state->rightToolbarButtonRect(previousHovered);
-                if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
-                    InvalidateRect(window, &previousRect, FALSE);
+                const RECT rect = state->rightToolbarButtonRect(previousHovered);
+                if (rect.right > rect.left && rect.bottom > rect.top)
+                    InvalidateRect(window, &rect, FALSE);
             }
+            if (previousLeft >= 0) {
+                const RECT rect = state->leftToolbarControlRect(previousLeft);
+                if (rect.right > rect.left && rect.bottom > rect.top)
+                    InvalidateRect(window, &rect, FALSE);
+            }
+            if (previousLight >= 0)
+                InvalidateRect(window, &state->trafficLightHitRect(previousLight), FALSE);
         }
         return 0;
 
@@ -6616,7 +6713,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             for (auto& tab : state->tabs) {
                 auto page = WKViewGetPage(tab->view.get());
                 if (page)
-                    WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+                    WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
             }
             state->resize();
         }
