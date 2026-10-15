@@ -5148,15 +5148,26 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         size_t index = browser->downloads.size();
         const size_t idPosition = url.find(L"id=", queryStart == std::wstring::npos ? 0 : queryStart);
         if (idPosition != std::wstring::npos) {
-            try {
-                const size_t idStart = idPosition + 3;
-                const size_t idEnd = url.find_first_of(L"&#", idStart);
-                const std::wstring idText = url.substr(idStart,
-                    idEnd == std::wstring::npos ? std::wstring::npos : idEnd - idStart);
-                index = static_cast<size_t>(std::stoull(idText));
-            } catch (...) {
-                index = browser->downloads.size();
+            const size_t idStart = idPosition + 3;
+            const size_t idEnd = url.find_first_of(L"&#", idStart);
+            const size_t end = idEnd == std::wstring::npos ? url.size() : idEnd;
+            size_t parsedIndex = 0;
+            bool validIndex = idStart < end;
+            for (size_t pos = idStart; validIndex && pos < end; ++pos) {
+                const wchar_t ch = url[pos];
+                if (ch < L'0' || ch > L'9') {
+                    validIndex = false;
+                    break;
+                }
+                const size_t digit = static_cast<size_t>(ch - L'0');
+                const size_t maxSize = static_cast<size_t>(-1);
+                if (parsedIndex > (maxSize - digit) / 10) {
+                    validIndex = false;
+                    break;
+                }
+                parsedIndex = parsedIndex * 10 + digit;
             }
+            index = validIndex ? parsedIndex : browser->downloads.size();
         }
         if (index >= browser->downloads.size())
             return;
