@@ -1209,6 +1209,7 @@ struct BrowserState {
     std::vector<ScriptExtension> extensionScripts;
     std::vector<std::unique_ptr<TabState>> retiredTabs;
     std::vector<DownloadEntry> downloads;
+    std::wstring pendingContextMenuLinkURL;
     size_t activeTab { 0 };
 
     int titleBarHeight() const { return webFullscreen ? 0 : scaleForDpi(window, kTitleBarHeight); }
@@ -6407,8 +6408,11 @@ WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationA
 }
 
 void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef proposedMenu, WKArrayRef* newMenu,
-    WKHitTestResultRef hitTestResult, WKTypeRef, const void*)
+    WKHitTestResultRef hitTestResult, WKTypeRef, const void* clientInfo)
 {
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (browser)
+        browser->pendingContextMenuLinkURL.clear();
     if (!newMenu)
         return;
 
@@ -6420,11 +6424,11 @@ void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef proposedMenu, WKArrayR
     if (linkURL) {
         linkString = adoptWK(WKURLCopyString(linkURL.get()));
         if (linkString) {
+            if (browser)
+                browser->pendingContextMenuLinkURL = createString(linkString.get());
             WKRetainPtr<WKStringRef> title = createWKString(L"Open Link in New Tab");
             newTabItem = adoptWK(WKContextMenuItemCreateAsAction(
                 kAuroraOpenLinkInNewTabTag, title.get(), true));
-            if (newTabItem)
-                WKContextMenuItemSetUserData(newTabItem.get(), reinterpret_cast<WKTypeRef>(linkString.get()));
         }
     }
 
@@ -6458,16 +6462,16 @@ void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef item, const v
     if (!item || WKContextMenuItemGetTag(item) != kAuroraOpenLinkInNewTabTag)
         return;
 
-    WKTypeRef userData = WKContextMenuItemGetUserData(item);
-    if (!userData || WKGetTypeID(userData) != WKStringGetTypeID())
-        return;
-
-    const std::wstring targetURL = createString(reinterpret_cast<WKStringRef>(userData));
-    if (targetURL.empty())
-        return;
-
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
-    if (!browser || !browser->addTab(true, false))
+    if (!browser)
+        return;
+
+    // WebKit reconstructs menu items before this callback, so application user data
+    // is not guaranteed to survive that conversion. Keep the hit-tested URL in
+    // BrowserState while the context menu is open instead.
+    const std::wstring targetURL = browser->pendingContextMenuLinkURL;
+    browser->pendingContextMenuLinkURL.clear();
+    if (targetURL.empty() || !browser->addTab(true, false))
         return;
 
     if (auto* tab = browser->active())
