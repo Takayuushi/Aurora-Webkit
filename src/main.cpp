@@ -97,6 +97,7 @@ constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
+constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -181,6 +182,8 @@ void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownl
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*, int requestedSection = 0);
+void showSharePopover(BrowserState*);
+LRESULT CALLBACK sharePopoverProcedure(HWND, UINT, WPARAM, LPARAM);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void websiteDataCleared(void*);
 void websiteDataStorageCleared(void*);
@@ -1004,6 +1007,7 @@ struct BrowserState {
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
     HMENU downloadsPopupMenu { nullptr };
+    HWND sharePopoverWindow { nullptr };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     int hoveredToolbarButton { -1 };
@@ -1372,6 +1376,7 @@ struct BrowserState {
         return t * t * (3.0f - 2.0f * t);
     }
 
+
     void animateChrome()
     {
         if (!window)
@@ -1381,29 +1386,37 @@ struct BrowserState {
         for (int i = 0; i < 4; ++i) {
             const RECT button = rightToolbarButtonRect(i);
             const float target = hoveredToolbarButton == i && button.right > button.left ? 1.0f : 0.0f;
-            const float delta = target - toolbarHoverOpacity[i];
-            if (delta > -0.015f && delta < 0.015f) {
+            const float before = toolbarHoverOpacity[i];
+            const float delta = target - before;
+            if (delta > -0.015f && delta < 0.015f)
                 toolbarHoverOpacity[i] = target;
-            } else {
+            else {
                 toolbarHoverOpacity[i] += delta * 0.28f;
                 continueAnimation = true;
             }
+            if (std::abs(toolbarHoverOpacity[i] - before) > 0.001f
+                && button.right > button.left && button.bottom > button.top)
+                InvalidateRect(window, &button, FALSE);
         }
 
         if (tabSwitchAnimating) {
-            if (GetTickCount64() - tabSwitchAnimationStart >= 180) {
-                tabSwitchAnimating = false;
-            } else {
-                continueAnimation = true;
+            const bool transitionStillActive = GetTickCount64() - tabSwitchAnimationStart < 180;
+            const RECT activeRect = tabBarItemRect(activeTab);
+            if (activeRect.right > activeRect.left)
+                InvalidateRect(window, &activeRect, FALSE);
+            if (previousActiveTab < tabs.size() && previousActiveTab != activeTab) {
+                const RECT previousRect = tabBarItemRect(previousActiveTab);
+                if (previousRect.right > previousRect.left)
+                    InvalidateRect(window, &previousRect, FALSE);
             }
+            if (transitionStillActive)
+                continueAnimation = true;
+            else
+                tabSwitchAnimating = false;
         }
 
-        RECT client { };
-        GetClientRect(window, &client);
-        RECT chromeRect { 0, 0, client.right,
-            titleBarHeight() + toolbarHeight() + tabsBarHeight() };
-        InvalidateRect(window, &chromeRect, FALSE);
-
+        // Do not invalidate the whole chrome band here: it includes Smart Search,
+        // whose surface was visibly flashing during unrelated hover transitions.
         if (!continueAnimation) {
             KillTimer(window, kChromeAnimationTimerId);
             chromeAnimationTimerActive = false;
@@ -3442,21 +3455,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         MessageBoxW(window, L"The page was opened in your default browser. Use Ctrl+P there to print it.", L"Print", MB_OK | MB_ICONINFORMATION);
     }
 
+
     void showShareMenu()
     {
-        HMENU shareMenu = CreatePopupMenu();
-        if (!shareMenu)
-            return;
-        AppendMenuW(shareMenu, MF_STRING, kShareCopyLink, L"Copy Link");
-        AppendMenuW(shareMenu, MF_STRING, kShareEmailLink, L"Email Link");
-        AppendMenuW(shareMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(shareMenu, MF_STRING, kMenuAddBookmark, L"Add Bookmark");
-        RECT client { };
-        GetClientRect(window, &client);
-        POINT point { client.right - scaleForDpi(window, 190), contentTop() };
-        ClientToScreen(window, &point);
-        TrackPopupMenu(shareMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
-        DestroyMenu(shareMenu);
+        showSharePopover(this);
     }
 
     void copyActiveUrl()
@@ -5930,6 +5932,265 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef download, const void*
         installDownloadClient(download, tab->browser);
 }
 
+struct SharePopoverWindowState {
+    BrowserState* browser { nullptr };
+    RECT targetRect { };
+    ULONGLONG openedAt { 0 };
+    int hoveredRow { -1 };
+    bool trackingMouse { false };
+    bool animating { true };
+};
+
+RECT sharePopoverRowRect(const SharePopoverWindowState* state, int index)
+{
+    if (!state || index < 0 || index > 2)
+        return { 0, 0, 0, 0 };
+    const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+    const int padding = scaleForDpi(state->browser ? state->browser->window : nullptr, 5);
+    const int rowHeight = MulDiv(27, dpi, 96);
+    const int separatorGap = MulDiv(7, dpi, 96);
+    const int top = padding + index * rowHeight + (index >= 2 ? separatorGap : 0);
+    return { padding, top, state->targetRect.right - state->targetRect.left - padding, top + rowHeight };
+}
+
+void showSharePopover(BrowserState* browser)
+{
+    if (!browser || !browser->window)
+        return;
+    if (browser->sharePopoverWindow && IsWindow(browser->sharePopoverWindow)) {
+        DestroyWindow(browser->sharePopoverWindow);
+        browser->sharePopoverWindow = nullptr;
+        return;
+    }
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSEXW cls { };
+        cls.cbSize = sizeof(cls);
+        cls.lpfnWndProc = sharePopoverProcedure;
+        cls.hInstance = GetModuleHandleW(nullptr);
+        cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        cls.lpszClassName = L"AuroraSharePopover";
+        if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return;
+        classRegistered = true;
+    }
+
+    const int dpi = windowDpi(browser->window);
+    const int width = MulDiv(216, dpi, 96);
+    const int rowHeight = MulDiv(27, dpi, 96);
+    const int padding = MulDiv(5, dpi, 96);
+    const int separatorGap = MulDiv(7, dpi, 96);
+    const int height = padding * 2 + rowHeight * 3 + separatorGap;
+    RECT anchor = browser->rightToolbarButtonRect(0);
+    POINT screen { anchor.right, anchor.bottom + MulDiv(4, dpi, 96) };
+    ClientToScreen(browser->window, &screen);
+    HMONITOR monitor = MonitorFromWindow(browser->window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo { };
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    RECT work { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (monitor && GetMonitorInfoW(monitor, &monitorInfo))
+        work = monitorInfo.rcWork;
+    int left = screen.x - width;
+    int top = screen.y;
+    if (left < work.left) left = work.left;
+    if (left + width > work.right) left = std::max(work.left, work.right - width);
+    if (top + height > work.bottom) top = screen.y - height - MulDiv(8, dpi, 96);
+    top = std::clamp(top, static_cast<int>(work.top), std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height));
+
+    auto* popupState = new SharePopoverWindowState;
+    popupState->browser = browser;
+    popupState->targetRect = { left, top, left + width, top + height };
+    popupState->openedAt = GetTickCount64();
+
+    HWND popup = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+        L"AuroraSharePopover", L"",
+        WS_POPUP,
+        left, top - MulDiv(5, dpi, 96), width, height,
+        browser->window, nullptr, GetModuleHandleW(nullptr), popupState);
+    if (!popup) {
+        delete popupState;
+        return;
+    }
+
+    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, MulDiv(12, dpi, 96), MulDiv(12, dpi, 96));
+    if (region)
+        SetWindowRgn(popup, region, TRUE);
+    SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
+    browser->sharePopoverWindow = popup;
+    ShowWindow(popup, SW_SHOWNOACTIVATE);
+    SetTimer(popup, kSharePopoverTimerId, 15, nullptr);
+    InvalidateRect(popup, nullptr, FALSE);
+}
+
+LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* state = reinterpret_cast<SharePopoverWindowState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const auto* createInfo = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        state = static_cast<SharePopoverWindowState*>(createInfo->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_TIMER:
+        if (state && wParam == kSharePopoverTimerId) {
+            const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
+            const float t = std::clamp(static_cast<float>(elapsed) / 145.0f, 0.0f, 1.0f);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const int lift = static_cast<int>(std::lround(MulDiv(5, dpi, 96) * (1.0f - eased)));
+            SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
+            SetWindowPos(window, HWND_TOPMOST,
+                state->targetRect.left, state->targetRect.top - lift,
+                state->targetRect.right - state->targetRect.left,
+                state->targetRect.bottom - state->targetRect.top,
+                SWP_NOACTIVATE | SWP_NOZORDER);
+            if (t >= 1.0f) {
+                state->animating = false;
+                KillTimer(window, kSharePopoverTimerId);
+            }
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+        if (state) {
+            if (!state->trackingMouse) {
+                TRACKMOUSEEVENT track { };
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = window;
+                state->trackingMouse = TrackMouseEvent(&track) != FALSE;
+            }
+            const int y = GET_Y_LPARAM(lParam);
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const int padding = MulDiv(5, dpi, 96);
+            const int rowHeight = MulDiv(27, dpi, 96);
+            const int separatorGap = MulDiv(7, dpi, 96);
+            int row = -1;
+            for (int i = 0; i < 3; ++i) {
+                const RECT rect = sharePopoverRowRect(state, i);
+                if (y >= rect.top && y < rect.bottom) {
+                    row = i;
+                    break;
+                }
+            }
+            if (row != state->hoveredRow) {
+                if (state->hoveredRow >= 0) {
+                    const RECT oldRect = sharePopoverRowRect(state, state->hoveredRow);
+                    InvalidateRect(window, &oldRect, FALSE);
+                }
+                state->hoveredRow = row;
+                if (row >= 0) {
+                    const RECT newRect = sharePopoverRowRect(state, row);
+                    InvalidateRect(window, &newRect, FALSE);
+                }
+            }
+            (void)padding;
+            (void)rowHeight;
+            (void)separatorGap;
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (state) {
+            state->trackingMouse = false;
+            if (state->hoveredRow >= 0) {
+                const RECT oldRect = sharePopoverRowRect(state, state->hoveredRow);
+                state->hoveredRow = -1;
+                InvalidateRect(window, &oldRect, FALSE);
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (state && state->browser) {
+            const int y = GET_Y_LPARAM(lParam);
+            int row = -1;
+            for (int i = 0; i < 3; ++i) {
+                const RECT rect = sharePopoverRowRect(state, i);
+                if (y >= rect.top && y < rect.bottom) {
+                    row = i;
+                    break;
+                }
+            }
+            BrowserState* browser = state->browser;
+            UINT command = row == 0 ? kShareCopyLink : row == 1 ? kShareEmailLink : row == 2 ? kMenuAddBookmark : 0;
+            if (command)
+                browser->handleCommand(command);
+            DestroyWindow(window);
+            return 0;
+        }
+        return 0;
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+    case WM_PAINT: {
+        PAINTSTRUCT paint { };
+        HDC dc = BeginPaint(window, &paint);
+        RECT client { };
+        GetClientRect(window, &client);
+        const bool dark = state && state->browser && state->browser->chromeDarkTheme();
+        const COLORREF fill = dark ? RGB(39, 39, 42) : RGB(255, 255, 255);
+        const COLORREF border = dark ? RGB(70, 70, 75) : RGB(222, 225, 229);
+        drawRoundedControl(dc, client, fill, border, static_cast<float>(MulDiv(11, state && state->browser ? windowDpi(state->browser->window) : 96, 96)));
+        if (state) {
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const int topPadding = MulDiv(5, dpi, 96);
+            const int rowHeight = MulDiv(27, dpi, 96);
+            const int sepGap = MulDiv(7, dpi, 96);
+            const COLORREF textColor = dark ? RGB(239, 239, 243) : RGB(38, 41, 45);
+            const COLORREF hoverFill = dark ? RGB(60, 60, 65) : RGB(239, 242, 246);
+            HFONT font = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
+                FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HGDIOBJ oldFont = SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT);
+            const wchar_t* labels[] = { L"Copy Link", L"Email Link", L"Add Bookmark" };
+            for (int i = 0; i < 3; ++i) {
+                const RECT row = sharePopoverRowRect(state, i);
+                if (i == state->hoveredRow) {
+                    RECT hover = row;
+                    InflateRect(&hover, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
+                    drawRoundedControl(dc, hover, hoverFill, hoverFill, static_cast<float>(MulDiv(6, dpi, 96)));
+                }
+                RECT label { row.left + MulDiv(12, dpi, 96), row.top, row.right - MulDiv(8, dpi, 96), row.bottom };
+                SetTextColor(dc, textColor);
+                DrawTextW(dc, labels[i], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            HPEN separatorPen = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 66) : RGB(232, 234, 237));
+            HGDIOBJ oldPen = SelectObject(dc, separatorPen);
+            const int separatorY = topPadding + rowHeight * 2 + sepGap / 2;
+            MoveToEx(dc, client.left + MulDiv(10, dpi, 96), separatorY, nullptr);
+            LineTo(dc, client.right - MulDiv(10, dpi, 96), separatorY);
+            SelectObject(dc, oldPen);
+            DeleteObject(separatorPen);
+            SelectObject(dc, oldFont);
+            DeleteObject(font);
+        }
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        if (state) {
+            if (state->browser && state->browser->sharePopoverWindow == window)
+                state->browser->sharePopoverWindow = nullptr;
+            delete state;
+        }
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return DefWindowProcW(window, message, wParam, lParam);
+    default:
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+}
+
 void didChangeIsLoading(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
@@ -6204,6 +6465,9 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_LBUTTONDOWN: {
         if (!state)
             break;
+
+        if (state->sharePopoverWindow && IsWindow(state->sharePopoverWindow))
+            DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
