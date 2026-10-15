@@ -776,6 +776,9 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
 
 void drawDownload(HDC dc, const RECT& rect, bool dark = false)
 {
+    if (rect.right <= rect.left || rect.bottom <= rect.top)
+        return;
+
     const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
     const float scale = std::max(0.7f,
         static_cast<float>(std::min(rect.right - rect.left, rect.bottom - rect.top)) / 30.0f);
@@ -785,35 +788,35 @@ void drawDownload(HDC dc, const RECT& rect, bool dark = false)
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-    Gdiplus::Pen pen(iconGdiColor(color), 1.35f * scale);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.2f * scale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     pen.SetLineJoin(Gdiplus::LineJoinRound);
 
-    graphics.DrawLine(&pen, cx, cy - 7.2f * scale, cx, cy + 1.5f * scale);
-    graphics.DrawLine(&pen, cx - 3.8f * scale, cy - 1.8f * scale,
-        cx, cy + 2.0f * scale);
-    graphics.DrawLine(&pen, cx, cy + 2.0f * scale,
-        cx + 3.8f * scale, cy - 1.8f * scale);
+    // Compact Safari-like arrow into an open, rounded download tray.
+    const Gdiplus::PointF tip(cx, cy + 2.0f * scale);
+    graphics.DrawLine(&pen, cx, cy - 6.6f * scale, tip.X, tip.Y);
+    graphics.DrawLine(&pen, cx - 3.4f * scale, cy - 1.4f * scale, tip.X, tip.Y);
+    graphics.DrawLine(&pen, tip.X, tip.Y, cx + 3.4f * scale, cy - 1.4f * scale);
 
-    const float trayLeft = cx - 6.5f * scale;
-    const float trayRight = cx + 6.5f * scale;
-    const float trayTop = cy + 0.6f * scale;
-    const float trayBottom = cy + 6.2f * scale;
-    const float corner = 1.7f * scale;
+    const float trayLeft = cx - 6.4f * scale;
+    const float trayRight = cx + 6.4f * scale;
+    const float trayTop = cy + 0.3f * scale;
+    const float trayBottom = cy + 6.0f * scale;
+    const float corner = 1.5f * scale;
     Gdiplus::GraphicsPath tray;
     tray.StartFigure();
     tray.AddLine(trayLeft, trayTop, trayLeft, trayBottom - corner);
     tray.AddBezier(
         Gdiplus::PointF(trayLeft, trayBottom - corner),
-        Gdiplus::PointF(trayLeft, trayBottom - corner * 0.25f),
-        Gdiplus::PointF(trayLeft + corner * 0.25f, trayBottom),
+        Gdiplus::PointF(trayLeft, trayBottom - corner * 0.2f),
+        Gdiplus::PointF(trayLeft + corner * 0.2f, trayBottom),
         Gdiplus::PointF(trayLeft + corner, trayBottom));
     tray.AddLine(trayLeft + corner, trayBottom, trayRight - corner, trayBottom);
     tray.AddBezier(
         Gdiplus::PointF(trayRight - corner, trayBottom),
-        Gdiplus::PointF(trayRight - corner * 0.25f, trayBottom),
-        Gdiplus::PointF(trayRight, trayBottom - corner * 0.25f),
+        Gdiplus::PointF(trayRight - corner * 0.2f, trayBottom),
+        Gdiplus::PointF(trayRight, trayBottom - corner * 0.2f),
         Gdiplus::PointF(trayRight, trayBottom - corner));
     tray.AddLine(trayRight, trayBottom - corner, trayRight, trayTop);
     graphics.DrawPath(&pen, &tray);
@@ -986,6 +989,7 @@ struct BrowserState {
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
     HMENU downloadsPopupMenu { nullptr };
+    bool lastDownloadsButtonVisible { false };
     bool sidebarOpen { false };
     bool tabOverviewVisible { false };
     int sidebarSection { 0 };
@@ -1278,6 +1282,13 @@ struct BrowserState {
     }
 
 
+    bool downloadsButtonVisible() const
+    {
+        return std::any_of(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
+            return !item.finished && !item.failed && !item.cancelled;
+        });
+    }
+
     RECT rightToolbarButtonRect(int index) const
     {
         RECT client { };
@@ -1285,11 +1296,17 @@ struct BrowserState {
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, kToolbarGap);
-        const int buttonCount = 4;
-        if (index < 0 || index >= buttonCount)
+        const bool showDownloads = downloadsButtonVisible();
+        const int buttonCount = showDownloads ? 4 : 3;
+        if (index < 0 || index > 3 || (!showDownloads && index == 1))
             return { 0, 0, 0, 0 };
-        const int left = client.right - pad - (buttonCount - index) * button
-            - (buttonCount - index - 1) * gap;
+
+        // Keep logical indices stable for routing: Share, Downloads, New Tab,
+        // Tab Overview. When Downloads is hidden, close the gap and shift later
+        // controls one slot to the left.
+        const int physicalIndex = (!showDownloads && index > 1) ? index - 1 : index;
+        const int left = client.right - pad - (buttonCount - physicalIndex) * button
+            - (buttonCount - physicalIndex - 1) * gap;
         const int height = scaleForDpi(window, 30);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + button, top + height };
@@ -3020,13 +3037,38 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (javascript)
                 WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), javascript.get(), nullptr, nullptr);
         }
+        const bool shouldShowDownloadsButton = downloadsButtonVisible();
+        if (shouldShowDownloadsButton != lastDownloadsButtonVisible) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
+            const int button = scaleForDpi(window, kToolbarButtonSize + 6);
+            const int gap = scaleForDpi(window, kToolbarGap);
+            const int fullGroupWidth = button * 4 + gap * 3;
+            RECT actionArea {
+                std::max(0, static_cast<int>(client.right) - pad - fullGroupWidth - scaleForDpi(window, 6)),
+                titleBarHeight(),
+                client.right,
+                titleBarHeight() + toolbarHeight()
+            };
+            // Repaint only when the button appears/disappears, not for every chunk.
+            InvalidateRect(window, &actionArea, FALSE);
+            lastDownloadsButtonVisible = shouldShowDownloadsButton;
+        }
+
         if (downloadsPopupMenu) {
-            // Redraw the native popup itself. Invalidating the toolbar icon on every
-            // chunk made the icon flicker and did not refresh the owner-drawn menu rows.
             HWND popupWindow = FindWindowW(L"#32768", nullptr);
-            if (popupWindow && IsWindowVisible(popupWindow)) {
-                InvalidateRect(popupWindow, nullptr, FALSE);
-                UpdateWindow(popupWindow);
+            RECT popupBounds { };
+            if (popupWindow && IsWindowVisible(popupWindow) && GetWindowRect(popupWindow, &popupBounds)) {
+                const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
+                for (size_t i = first; i < downloads.size(); ++i) {
+                    RECT itemScreenRect { };
+                    if (!GetMenuItemRect(window, downloadsPopupMenu, 6000 + static_cast<UINT>(i), &itemScreenRect))
+                        continue;
+                    OffsetRect(&itemScreenRect, -popupBounds.left, -popupBounds.top);
+                    InvalidateRect(popupWindow, &itemScreenRect, FALSE);
+                }
+                // No UpdateWindow: let the message loop coalesce row paints to avoid flicker.
             }
         }
     }
@@ -3939,7 +3981,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const RECT newTabButton = rightToolbarButtonRect(2);
         const RECT overviewButton = rightToolbarButtonRect(3);
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
-        if (PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
+        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
@@ -4347,7 +4389,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(83, 83, 87) : RGB(220, 223, 227),
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
         drawShare(dc, shareRect, dark);
-        drawDownload(dc, downloadRect, dark);
+        if (downloadsButtonVisible())
+            drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
 
@@ -5579,7 +5622,7 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
     const std::string utf8Path = toUTF8(path);
     return WKStringCreateWithUTF8CString(utf8Path.c_str());
 }
-void downloadDidWriteData(WKDownloadRef download, long long, long long totalBytesWritten, long long totalBytesExpectedToWrite, const void* clientInfo)
+void downloadDidWriteData(WKDownloadRef download, long long bytesWritten, long long totalBytesWritten, long long totalBytesExpectedToWrite, const void* clientInfo)
 {
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (!browser)
@@ -5587,8 +5630,13 @@ void downloadDidWriteData(WKDownloadRef download, long long, long long totalByte
 
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
-            it->bytesWritten = totalBytesWritten;
-            it->totalBytes = totalBytesExpectedToWrite;
+            const long long reportedTotal = std::max(0LL, totalBytesWritten);
+            const long long reportedDelta = std::max(0LL, bytesWritten);
+            if (reportedTotal > it->bytesWritten)
+                it->bytesWritten = reportedTotal;
+            else if (reportedTotal == 0 && reportedDelta > 0)
+                it->bytesWritten += reportedDelta;
+            it->totalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0;
             browser->refreshDownloadsPresentation();
             return;
         }
