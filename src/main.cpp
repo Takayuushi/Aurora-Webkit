@@ -95,6 +95,8 @@ constexpr UINT kSidebarBookmarks = 2230;
 constexpr UINT kSidebarReadingList = 2231;
 constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
+constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
+constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -250,6 +252,7 @@ struct DownloadEntry {
     bool failed { false };
     WKDownloadRef download { nullptr };
     bool cancelled { false };
+    double displayedProgressPercent { 0.0 };
 };
 
 std::string formatDownloadBytes(long long bytes)
@@ -594,6 +597,18 @@ void drawRoundedControl(HDC dc, const RECT& rect, COLORREF fillColor,
     Gdiplus::Pen border(iconGdiColor(borderColor), borderWidth);
     graphics.FillPath(&fill, &path);
     graphics.DrawPath(&border, &path);
+}
+
+COLORREF blendColor(COLORREF from, COLORREF to, float amount)
+{
+    amount = std::clamp(amount, 0.0f, 1.0f);
+    const auto blend = [amount](BYTE a, BYTE b) -> BYTE {
+        return static_cast<BYTE>(static_cast<float>(a)
+            + (static_cast<float>(b) - static_cast<float>(a)) * amount + 0.5f);
+    };
+    return RGB(blend(GetRValue(from), GetRValue(to)),
+        blend(GetGValue(from), GetGValue(to)),
+        blend(GetBValue(from), GetBValue(to)));
 }
 
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
@@ -989,7 +1004,15 @@ struct BrowserState {
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
     HMENU downloadsPopupMenu { nullptr };
+    bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
+    int hoveredToolbarButton { -1 };
+    float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool mouseTrackingForChrome { false };
+    bool chromeAnimationTimerActive { false };
+    bool tabSwitchAnimating { false };
+    size_t previousActiveTab { 0 };
+    ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
     bool tabOverviewVisible { false };
     int sidebarSection { 0 };
@@ -1310,6 +1333,81 @@ struct BrowserState {
         const int height = scaleForDpi(window, 30);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + button, top + height };
+    }
+
+    void startChromeAnimationTimer()
+    {
+        if (!window || chromeAnimationTimerActive)
+            return;
+        if (SetTimer(window, kChromeAnimationTimerId, 16, nullptr))
+            chromeAnimationTimerActive = true;
+    }
+
+    void updateToolbarHover(POINT point)
+    {
+        int nextHovered = -1;
+        const int toolbarTop = titleBarHeight();
+        const int toolbarBottom = toolbarTop + toolbarHeight();
+        if (point.y >= toolbarTop && point.y < toolbarBottom) {
+            for (int i = 0; i < 4; ++i) {
+                const RECT button = rightToolbarButtonRect(i);
+                if (button.right > button.left && button.bottom > button.top && PtInRect(&button, point)) {
+                    nextHovered = i;
+                    break;
+                }
+            }
+        }
+        if (nextHovered == hoveredToolbarButton)
+            return;
+        hoveredToolbarButton = nextHovered;
+        startChromeAnimationTimer();
+    }
+
+    float tabSwitchEase() const
+    {
+        if (!tabSwitchAnimating)
+            return 1.0f;
+        const ULONGLONG elapsed = GetTickCount64() - tabSwitchAnimationStart;
+        const float t = std::clamp(static_cast<float>(elapsed) / 180.0f, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    void animateChrome()
+    {
+        if (!window)
+            return;
+
+        bool continueAnimation = false;
+        for (int i = 0; i < 4; ++i) {
+            const RECT button = rightToolbarButtonRect(i);
+            const float target = hoveredToolbarButton == i && button.right > button.left ? 1.0f : 0.0f;
+            const float delta = target - toolbarHoverOpacity[i];
+            if (delta > -0.015f && delta < 0.015f) {
+                toolbarHoverOpacity[i] = target;
+            } else {
+                toolbarHoverOpacity[i] += delta * 0.28f;
+                continueAnimation = true;
+            }
+        }
+
+        if (tabSwitchAnimating) {
+            if (GetTickCount64() - tabSwitchAnimationStart >= 180) {
+                tabSwitchAnimating = false;
+            } else {
+                continueAnimation = true;
+            }
+        }
+
+        RECT client { };
+        GetClientRect(window, &client);
+        RECT chromeRect { 0, 0, client.right,
+            titleBarHeight() + toolbarHeight() + tabsBarHeight() };
+        InvalidateRect(window, &chromeRect, FALSE);
+
+        if (!continueAnimation) {
+            KillTimer(window, kChromeAnimationTimerId);
+            chromeAnimationTimerActive = false;
+        }
     }
 
     RECT tabOverviewAreaRect() const
@@ -2601,8 +2699,6 @@ search.addEventListener('keydown',e=>{
 
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
-        if (select)
-            activeTab = index;
 
         loadStartPage(*tabs[index]);
         if (select)
@@ -2617,12 +2713,19 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
+        const size_t previouslyActive = activeTab;
         if (!tabOverviewVisible && activeTab < tabs.size() && index != activeTab)
             captureTabThumbnail(*tabs[activeTab]);
         if (addressEditing)
             endAddressEditing();
         tabOverviewVisible = false;
         activeTab = index;
+        if (previouslyActive != index && previouslyActive < tabs.size()) {
+            previousActiveTab = previouslyActive;
+            tabSwitchAnimationStart = GetTickCount64();
+            tabSwitchAnimating = true;
+            startChromeAnimationTimer();
+        }
 
         for (size_t i = 0; i < tabs.size(); ++i) {
             HWND viewWindow = WKViewGetWindow(tabs[i]->view.get());
@@ -2641,7 +2744,10 @@ search.addEventListener('keydown',e=>{
 
         SetFocus(WKViewGetWindow(tab->view.get()));
         resize();
-        InvalidateRect(window, nullptr, TRUE);
+        RECT client { };
+        GetClientRect(window, &client);
+        RECT chromeRect { 0, 0, client.right, titleBarHeight() + toolbarHeight() + tabsBarHeight() };
+        InvalidateRect(window, &chromeRect, FALSE);
     }
 
     void closeTab(size_t index)
@@ -2812,11 +2918,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             "<style>:root{color-scheme:" + std::string(dark ? "dark" : "light") + "}*{box-sizing:border-box}body{margin:0;background:"
             + (dark ? "#1c1c1e" : "#f5f6f7") + ";color:" + (dark ? "#f5f5f7" : "#202428")
             + ";font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif}"
-            ".wrap{max-width:1040px;margin:auto;padding:48px 32px 64px}"
+            ".wrap{max-width:1040px;margin:auto;padding:48px 32px 64px;animation:downloads-enter 190ms cubic-bezier(.2,.75,.25,1) both}"
             "h1{font-size:30px;font-weight:600;letter-spacing:-.4px;margin:0 0 8px}"
             ".intro{font-size:13px;color:" + std::string(dark ? "#a1a1a6" : "#6e737a") + ";line-height:1.5;margin:0 0 26px}"
             ".item{background:" + std::string(dark ? "#29292c" : "#fff") + ";border:1px solid " + (dark ? "#414145" : "#e0e3e7")
-            + ";border-radius:14px;padding:17px 18px;margin:11px 0;box-shadow:0 1px 2px rgba(0,0,0,.025)}"
+            + ";border-radius:14px;padding:17px 18px;margin:11px 0;box-shadow:0 1px 2px rgba(0,0,0,.025);animation:download-card-enter 220ms cubic-bezier(.2,.75,.25,1) both}"
+            ".item:nth-of-type(2){animation-delay:18ms}.item:nth-of-type(3){animation-delay:36ms}.item:nth-of-type(4){animation-delay:54ms}"
+            "@keyframes downloads-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}"
+            "@keyframes download-card-enter{from{opacity:0;transform:translateY(7px) scale(.995)}to{opacity:1;transform:translateY(0) scale(1)}}"
             ".name{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".path{font-size:12px;color:" + std::string(dark ? "#a1a1a6" : "#73777d") + ";margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".meta{font-size:12px;color:" + std::string(dark ? "#b8b8bd" : "#666b72") + ";margin-top:11px}"
@@ -2974,8 +3083,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             graphics.FillPath(&trackBrush, &track);
             const int trackWidth = std::max(1, barRight - barLeft);
             if (download.totalBytes > 0) {
-                const float fillWidth = static_cast<float>(std::max<long long>(0,
-                    (static_cast<long long>(trackWidth) * percent) / 100));
+                const double shownPercent = std::clamp(download.displayedProgressPercent, 0.0, 100.0);
+                const float fillWidth = static_cast<float>(trackWidth * shownPercent / 100.0);
                 if (fillWidth > 0.5f) {
                     Gdiplus::GraphicsPath fill;
                     addRoundedIconRectangle(fill, static_cast<float>(barLeft), static_cast<float>(barTop),
@@ -2983,11 +3092,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     Gdiplus::SolidBrush fillBrush(iconGdiColor(RGB(75, 139, 230)));
                     graphics.FillPath(&fillBrush, &fill);
                 }
-            } else if (download.bytesWritten > 0) {
-                const int segmentWidth = std::max(scaleForDpi(window, 64), trackWidth / 4);
+            } else if (inProgress) {
+                // Time-based movement is independent from transfer callback frequency.
+                const int segmentWidth = std::min(trackWidth,
+                    std::max(scaleForDpi(window, 64), trackWidth / 4));
                 const int travel = std::max(1, trackWidth - segmentWidth);
-                const auto steps = static_cast<unsigned long long>(download.bytesWritten / (32 * 1024));
-                const int segmentLeft = barLeft + static_cast<int>(steps % static_cast<unsigned long long>(travel + 1));
+                const ULONGLONG phase = GetTickCount64() % 1400ULL;
+                const double phaseProgress = phase < 700ULL
+                    ? static_cast<double>(phase) / 700.0
+                    : static_cast<double>(1400ULL - phase) / 700.0;
+                const int segmentLeft = barLeft + static_cast<int>(phaseProgress * travel);
                 Gdiplus::GraphicsPath segment;
                 addRoundedIconRectangle(segment, static_cast<float>(segmentLeft), static_cast<float>(barTop),
                     static_cast<float>(std::min(segmentWidth, barRight - segmentLeft)),
@@ -3003,6 +3117,78 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         SelectObject(item.hDC, oldPen);
         DeleteObject(dividerPen);
         return true;
+    }
+
+    void startDownloadsAnimationTimer()
+    {
+        if (window && downloadsPopupMenu && !downloadsAnimationTimerActive) {
+            if (SetTimer(window, kDownloadsAnimationTimerId, 16, nullptr))
+                downloadsAnimationTimerActive = true;
+        }
+    }
+
+    void stopDownloadsAnimationTimer()
+    {
+        if (window && downloadsAnimationTimerActive)
+            KillTimer(window, kDownloadsAnimationTimerId);
+        downloadsAnimationTimerActive = false;
+    }
+
+    void invalidateDownloadPopupRows()
+    {
+        if (!downloadsPopupMenu)
+            return;
+        HWND popupWindow = FindWindowW(L"#32768", nullptr);
+        RECT popupBounds { };
+        if (!popupWindow || !IsWindowVisible(popupWindow) || !GetWindowRect(popupWindow, &popupBounds))
+            return;
+
+        const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
+        for (size_t i = first; i < downloads.size(); ++i) {
+            RECT itemScreenRect { };
+            if (!GetMenuItemRect(window, downloadsPopupMenu, 6000 + static_cast<UINT>(i), &itemScreenRect))
+                continue;
+            OffsetRect(&itemScreenRect, -popupBounds.left, -popupBounds.top);
+            InvalidateRect(popupWindow, &itemScreenRect, FALSE);
+        }
+    }
+
+    void animateDownloadsPopup()
+    {
+        if (!downloadsPopupMenu) {
+            stopDownloadsAnimationTimer();
+            return;
+        }
+
+        bool animationPending = false;
+        const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
+        for (size_t i = first; i < downloads.size(); ++i) {
+            auto& item = downloads[i];
+            const bool inProgress = !item.finished && !item.failed && !item.cancelled;
+            if (!inProgress)
+                continue;
+
+            if (item.totalBytes > 0) {
+                const double target = std::clamp(
+                    static_cast<double>(item.bytesWritten) * 100.0 / static_cast<double>(item.totalBytes),
+                    0.0, 100.0);
+                const double delta = target - item.displayedProgressPercent;
+                if (delta > -0.12 && delta < 0.12)
+                    item.displayedProgressPercent = target;
+                else {
+                    item.displayedProgressPercent += delta * 0.24;
+                    animationPending = true;
+                }
+            } else {
+                // Unknown content length needs a continuously moving segment.
+                animationPending = true;
+            }
+        }
+
+        if (animationPending)
+            invalidateDownloadPopupRows();
+        else
+            stopDownloadsAnimationTimer();
     }
 
     void refreshDownloadsPresentation()
@@ -3057,19 +3243,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (downloadsPopupMenu) {
-            HWND popupWindow = FindWindowW(L"#32768", nullptr);
-            RECT popupBounds { };
-            if (popupWindow && IsWindowVisible(popupWindow) && GetWindowRect(popupWindow, &popupBounds)) {
-                const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
-                for (size_t i = first; i < downloads.size(); ++i) {
-                    RECT itemScreenRect { };
-                    if (!GetMenuItemRect(window, downloadsPopupMenu, 6000 + static_cast<UINT>(i), &itemScreenRect))
-                        continue;
-                    OffsetRect(&itemScreenRect, -popupBounds.left, -popupBounds.top);
-                    InvalidateRect(popupWindow, &itemScreenRect, FALSE);
-                }
-                // No UpdateWindow: let the message loop coalesce row paints to avoid flicker.
-            }
+            if (downloadsButtonVisible())
+                startDownloadsAnimationTimer();
+            invalidateDownloadPopupRows();
         }
     }
 
@@ -3093,7 +3269,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         POINT point { button.right, button.bottom };
         ClientToScreen(window, &point);
         downloadsPopupMenu = downloadsMenu;
+        if (downloadsButtonVisible())
+            startDownloadsAnimationTimer();
         TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        stopDownloadsAnimationTimer();
         downloadsPopupMenu = nullptr;
         DestroyMenu(downloadsMenu);
     }
@@ -4315,13 +4494,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
+                float activeWeight = i == activeTab ? 1.0f : 0.0f;
+                if (tabSwitchAnimating) {
+                    const float progress = tabSwitchEase();
+                    if (i == activeTab)
+                        activeWeight = progress;
+                    else if (i == previousActiveTab)
+                        activeWeight = 1.0f - progress;
+                    else
+                        activeWeight = 0.0f;
+                }
+                const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
+                const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
+                const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
+                const COLORREF activeBorder = dark ? RGB(91, 91, 95) : RGB(211, 214, 216);
                 drawRoundedControl(dc, tabRect,
-                    dark
-                        ? (i == activeTab ? RGB(66, 66, 69) : RGB(47, 47, 49))
-                        : (i == activeTab ? RGB(255, 255, 255) : RGB(233, 234, 236)),
-                    dark
-                        ? (i == activeTab ? RGB(91, 91, 95) : RGB(55, 55, 58))
-                        : (i == activeTab ? RGB(211, 214, 216) : RGB(229, 231, 232)),
+                    blendColor(inactiveFill, activeFill, activeWeight),
+                    blendColor(inactiveBorder, activeBorder, activeWeight),
                     static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
                 const int iconSize = MulDiv(16, dpi, 96);
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
@@ -4384,10 +4573,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int groupInset = MulDiv(4, dpi, 96);
         RECT actionGroup { shareRect.left - groupInset, shareRect.top,
             overviewRect.right + groupInset, overviewRect.bottom };
-        drawRoundedControl(dc, actionGroup,
-            dark ? RGB(57, 57, 61) : RGB(255, 255, 255),
-            dark ? RGB(83, 83, 87) : RGB(220, 223, 227),
+        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(255, 255, 255);
+        const COLORREF groupBorder = dark ? RGB(83, 83, 87) : RGB(220, 223, 227);
+        drawRoundedControl(dc, actionGroup, groupFill, groupBorder,
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
+        const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
+        const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
+        for (int i = 0; i < 4; ++i) {
+            const RECT button = rightToolbarButtonRect(i);
+            if (button.right <= button.left || toolbarHoverOpacity[i] < 0.025f)
+                continue;
+            RECT hoverRect { button.left + MulDiv(2, dpi, 96), button.top + MulDiv(2, dpi, 96),
+                button.right - MulDiv(2, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
+            drawRoundedControl(dc, hoverRect,
+                blendColor(groupFill, hoverFill, toolbarHoverOpacity[i]),
+                blendColor(groupBorder, hoverBorder, toolbarHoverOpacity[i]),
+                static_cast<float>(MulDiv(7, dpi, 96)));
+        }
         drawShare(dc, shareRect, dark);
         if (downloadsButtonVisible())
             drawDownload(dc, downloadRect, dark);
@@ -5902,6 +6104,39 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         break;
     }
+    case WM_TIMER:
+        if (state && wParam == kDownloadsAnimationTimerId) {
+            state->animateDownloadsPopup();
+            return 0;
+        }
+        if (state && wParam == kChromeAnimationTimerId) {
+            state->animateChrome();
+            return 0;
+        }
+        break;
+
+    case WM_MOUSEMOVE:
+        if (state) {
+            if (!state->mouseTrackingForChrome) {
+                TRACKMOUSEEVENT tracking { };
+                tracking.cbSize = sizeof(tracking);
+                tracking.dwFlags = TME_LEAVE;
+                tracking.hwndTrack = window;
+                state->mouseTrackingForChrome = TrackMouseEvent(&tracking) != FALSE;
+            }
+            POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            state->updateToolbarHover(point);
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        if (state) {
+            state->mouseTrackingForChrome = false;
+            state->hoveredToolbarButton = -1;
+            state->startChromeAnimationTimer();
+        }
+        return 0;
+
     case WM_PAINT: {
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(window, &paint);
