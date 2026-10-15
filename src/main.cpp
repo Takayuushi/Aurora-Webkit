@@ -2692,10 +2692,7 @@ search.addEventListener('keydown',e=>{
 
         WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
 
-        // Save the previous page before addTab changes activeTab. Otherwise
-        // newly-created tabs skip the thumbnail that Safari's overview displays.
-        if (select && !tabOverviewVisible && activeTab < tabs.size())
-            captureTabThumbnail(*tabs[activeTab]);
+        // activateTab captures the previous tab before changing activeTab.
 
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
