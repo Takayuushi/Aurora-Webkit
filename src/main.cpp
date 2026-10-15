@@ -21,6 +21,12 @@
 #include <WebKit/WKURLResponse.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKPage.h>
+#include <WebKit/WKPageUIClient.h>
+#include <WebKit/WKPageContextMenuClient.h>
+#include <WebKit/WKContextMenuItem.h>
+#include <WebKit/WKContextMenuItemTypes.h>
+#include <WebKit/WKHitTestResultRef.h>
+#include <WebKit/WKArray.h>
 #include <WebKit/WKPageFullScreenClient.h>
 #include <WebKit/WKHTTPCookieStoreRef.h>
 #include <WebKit/WKData.h>
@@ -98,6 +104,7 @@ constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
+constexpr WKContextMenuItemTag kAuroraOpenLinkInNewTabTag = kWKContextMenuItemBaseApplicationTag + 1;
 
 constexpr UINT kMenuNewTab = 2001;
 constexpr UINT kMenuNewWindow = 2002;
@@ -195,6 +202,9 @@ void browserBeganEnterFullScreen(WKPageRef, WKRect, WKRect, const void*);
 void browserExitFullScreen(WKPageRef, const void*);
 void browserBeganExitFullScreen(WKPageRef, WKRect, WKRect, WKCompletionListenerRef, const void*);
 void websiteDataFetchCacheCleared(void*);
+WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationActionRef, WKWindowFeaturesRef, const void*);
+void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef, WKArrayRef*, WKHitTestResultRef, WKTypeRef, const void*);
+void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef, const void*);
 
 struct FaviconResult {
     std::wstring url;
@@ -2745,7 +2755,7 @@ search.addEventListener('keydown',e=>{
         SetFocus(WKViewGetWindow(tab->view.get()));
     }
 
-    bool addTab(bool select)
+    bool addTab(bool select, bool loadInitialStartPage = true)
     {
         auto tab = std::make_unique<TabState>();
         tab->browser = this;
@@ -2755,11 +2765,14 @@ search.addEventListener('keydown',e=>{
         if (!tab->view)
             return false;
 
-        // WKViewCreate uses WS_VISIBLE. Hide immediately so a not-yet-selected tab
-        // cannot flash over the current page while its clients and initial content load.
+        // WKViewCreate starts with a zero-sized child HWND. Keep inactive views
+        // visible but at the bottom of the sibling z-order instead of hiding them:
+        // Windows sends WM_SHOWWINDOW to WebKit, which marks the page non-visible and
+        // can release a video renderer that is not correctly restored on tab return.
         HWND newViewWindow = WKViewGetWindow(tab->view.get());
         if (newViewWindow)
-            ShowWindow(newViewWindow, SW_HIDE);
+            SetWindowPos(newViewWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
 
         WKViewSetIsInWindow(tab->view.get(), true);
 
@@ -2798,6 +2811,19 @@ search.addEventListener('keydown',e=>{
         stateClient.didChangeCanGoForward = didChangeCanGoForward;
         WKPageSetPageStateClient(page, &stateClient.base);
 
+        WKPageUIClientV13 uiClient { };
+        uiClient.base.version = 13;
+        uiClient.base.clientInfo = this;
+        uiClient.createNewPage = createNewTabForWebKit;
+        WKPageSetPageUIClient(page, &uiClient.base);
+
+        WKPageContextMenuClientV2 contextMenuClient { };
+        contextMenuClient.base.version = 2;
+        contextMenuClient.base.clientInfo = this;
+        contextMenuClient.getContextMenuFromProposedMenu = getContextMenuFromProposedMenu;
+        contextMenuClient.customContextMenuItemSelected = customContextMenuItemSelected;
+        WKPageSetPageContextMenuClient(page, &contextMenuClient.base);
+
         WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
 
         // The live WebKit surface is not captured during ordinary tab switches.
@@ -2805,7 +2831,15 @@ search.addEventListener('keydown',e=>{
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
 
-        loadStartPage(*tabs[index]);
+        if (loadInitialStartPage)
+            loadStartPage(*tabs[index]);
+        else {
+            tabs[index]->title = L"New Tab";
+            tabs[index]->activeUrl.clear();
+            tabs[index]->lastRecordedUrl.clear();
+            tabs[index]->internalPage.clear();
+            tabs[index]->hasInternalThemeSnapshot = false;
+        }
         if (select)
             activateTab(index);
         else
@@ -2844,14 +2878,19 @@ search.addEventListener('keydown',e=>{
         activeTab = index;
         tabSwitchAnimating = false;
 
-        // Hide non-selected WebKit HWNDs first, then show the selected view.
-        // Avoid briefly exposing two composited surfaces during rapid tab switches.
+        // Keep background WKViews visible at the bottom of the child-window z-order.
+        // This prevents WebKit's WM_SHOWWINDOW -> ActivityState::IsVisible transition
+        // from tearing down an inline video's renderer every time the user changes tabs.
         for (size_t i = 0; i < tabs.size(); ++i) {
             if (i == activeTab)
                 continue;
             HWND viewWindow = WKViewGetWindow(tabs[i]->view.get());
-            if (viewWindow)
-                ShowWindow(viewWindow, SW_HIDE);
+            if (!viewWindow)
+                continue;
+            SetWindowPos(viewWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+            if (!IsWindowVisible(viewWindow))
+                ShowWindow(viewWindow, SW_SHOWNA);
         }
 
         auto* tab = active();
@@ -6349,6 +6388,90 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
     default:
         return DefWindowProcW(window, message, wParam, lParam);
     }
+}
+
+
+WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationActionRef, WKWindowFeaturesRef, const void* clientInfo)
+{
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser || !browser->addTab(true, false))
+        return nullptr;
+
+    auto* newTab = browser->active();
+    if (!newTab)
+        return nullptr;
+
+    // WebKit expects the returned WKPageRef to carry a retained reference.
+    WKRetainPtr<WKPageRef> newPage = WKViewGetPage(newTab->view.get());
+    return newPage.leakRef();
+}
+
+void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef proposedMenu, WKArrayRef* newMenu,
+    WKHitTestResultRef hitTestResult, WKTypeRef, const void*)
+{
+    if (!newMenu)
+        return;
+
+    WKRetainPtr<WKURLRef> linkURL = adoptWK(
+        hitTestResult ? WKHitTestResultCopyAbsoluteLinkURL(hitTestResult) : nullptr);
+    WKRetainPtr<WKStringRef> linkString;
+    WKRetainPtr<WKContextMenuItemRef> newTabItem;
+
+    if (linkURL) {
+        linkString = adoptWK(WKURLCopyString(linkURL.get()));
+        if (linkString) {
+            WKRetainPtr<WKStringRef> title = createWKString(L"Open Link in New Tab");
+            newTabItem = adoptWK(WKContextMenuItemCreateAsAction(
+                kAuroraOpenLinkInNewTabTag, title.get(), true));
+            if (newTabItem)
+                WKContextMenuItemSetUserData(newTabItem.get(), reinterpret_cast<WKTypeRef>(linkString.get()));
+        }
+    }
+
+    const size_t count = proposedMenu ? WKArrayGetSize(proposedMenu) : 0;
+    std::vector<WKTypeRef> items;
+    items.reserve(count + (newTabItem ? 1 : 0));
+    bool insertedNewTab = false;
+
+    for (size_t i = 0; i < count; ++i) {
+        WKTypeRef value = WKArrayGetItemAtIndex(proposedMenu, i);
+        if (newTabItem && !insertedNewTab && value
+            && WKGetTypeID(value) == WKContextMenuItemGetTypeID()) {
+            auto item = reinterpret_cast<WKContextMenuItemRef>(value);
+            const auto tag = WKContextMenuItemGetTag(item);
+            if (tag == kWKContextMenuItemTagOpenLinkInNewWindow || tag == kWKContextMenuItemTagOpenLink) {
+                items.push_back(reinterpret_cast<WKTypeRef>(newTabItem.get()));
+                insertedNewTab = true;
+            }
+        }
+        items.push_back(value);
+    }
+
+    if (newTabItem && !insertedNewTab)
+        items.insert(items.begin(), reinterpret_cast<WKTypeRef>(newTabItem.get()));
+
+    *newMenu = WKArrayCreate(items.data(), items.size());
+}
+
+void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef item, const void* clientInfo)
+{
+    if (!item || WKContextMenuItemGetTag(item) != kAuroraOpenLinkInNewTabTag)
+        return;
+
+    WKTypeRef userData = WKContextMenuItemGetUserData(item);
+    if (!userData || WKGetTypeID(userData) != WKStringGetTypeID())
+        return;
+
+    const std::wstring targetURL = createString(reinterpret_cast<WKStringRef>(userData));
+    if (targetURL.empty())
+        return;
+
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser || !browser->addTab(true, false))
+        return;
+
+    if (auto* tab = browser->active())
+        browser->loadURL(*tab, targetURL);
 }
 
 void didChangeIsLoading(const void* clientInfo)
