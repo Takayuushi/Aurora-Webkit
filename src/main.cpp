@@ -5937,6 +5937,7 @@ struct SharePopoverWindowState {
     RECT targetRect { };
     ULONGLONG openedAt { 0 };
     int hoveredRow { -1 };
+    float rowHoverOpacity[3] { 0.0f, 0.0f, 0.0f };
     bool trackingMouse { false };
     bool animating { true };
 };
@@ -6050,21 +6051,37 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
                     return 0;
                 }
             }
-            const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
-            const float t = std::clamp(static_cast<float>(elapsed) / 145.0f, 0.0f, 1.0f);
-            const float eased = t * t * (3.0f - 2.0f * t);
-            const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
-            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
-            const int lift = static_cast<int>(MulDiv(5, dpi, 96) * (1.0f - eased) + 0.5f);
-            SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
-            SetWindowPos(window, HWND_TOPMOST,
-                state->targetRect.left, state->targetRect.top - lift,
-                state->targetRect.right - state->targetRect.left,
-                state->targetRect.bottom - state->targetRect.top,
-                SWP_NOACTIVATE | SWP_NOZORDER);
-            if (t >= 1.0f) {
-                state->animating = false;
-                KillTimer(window, kSharePopoverTimerId);
+            if (state->animating) {
+                const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
+                const float t = std::clamp(static_cast<float>(elapsed) / 145.0f, 0.0f, 1.0f);
+                const float eased = t * t * (3.0f - 2.0f * t);
+                const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
+                const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+                const int lift = static_cast<int>(MulDiv(5, dpi, 96) * (1.0f - eased) + 0.5f);
+                SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
+                SetWindowPos(window, HWND_TOPMOST,
+                    state->targetRect.left, state->targetRect.top - lift,
+                    state->targetRect.right - state->targetRect.left,
+                    state->targetRect.bottom - state->targetRect.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER);
+                if (t >= 1.0f)
+                    state->animating = false;
+            }
+
+            // Ease each row's hover surface over a few frames; keep this timer only
+            // while the popover is alive so outside-click dismissal still works.
+            for (int i = 0; i < 3; ++i) {
+                const float target = state->hoveredRow == i ? 1.0f : 0.0f;
+                const float before = state->rowHoverOpacity[i];
+                const float delta = target - before;
+                if (delta > -0.015f && delta < 0.015f)
+                    state->rowHoverOpacity[i] = target;
+                else
+                    state->rowHoverOpacity[i] += delta * 0.32f;
+                if (std::abs(state->rowHoverOpacity[i] - before) > 0.001f) {
+                    const RECT rowRect = sharePopoverRowRect(state, i);
+                    InvalidateRect(window, &rowRect, FALSE);
+                }
             }
             return 0;
         }
@@ -6159,10 +6176,11 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
             const wchar_t* labels[] = { L"Copy Link", L"Email Link", L"Add Bookmark" };
             for (int i = 0; i < 3; ++i) {
                 const RECT row = sharePopoverRowRect(state, i);
-                if (i == state->hoveredRow) {
+                if (state->rowHoverOpacity[i] > 0.02f) {
                     RECT hover = row;
                     InflateRect(&hover, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
-                    drawRoundedControl(dc, hover, hoverFill, hoverFill, static_cast<float>(MulDiv(6, dpi, 96)));
+                    const COLORREF rowFill = blendColor(fill, hoverFill, state->rowHoverOpacity[i]);
+                    drawRoundedControl(dc, hover, rowFill, rowFill, static_cast<float>(MulDiv(6, dpi, 96)));
                 }
                 RECT label { row.left + MulDiv(12, dpi, 96), row.top, row.right - MulDiv(8, dpi, 96), row.bottom };
                 SetTextColor(dc, textColor);
