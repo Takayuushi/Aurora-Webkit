@@ -5940,6 +5940,7 @@ struct SharePopoverWindowState {
     float rowHoverOpacity[3] { 0.0f, 0.0f, 0.0f };
     bool trackingMouse { false };
     bool animating { true };
+    bool waitingForInitialButtonRelease { false };
 };
 
 RECT sharePopoverRowRect(const SharePopoverWindowState* state, int index)
@@ -6004,6 +6005,7 @@ void showSharePopover(BrowserState* browser)
     popupState->browser = browser;
     popupState->targetRect = { left, top, left + width, top + height };
     popupState->openedAt = GetTickCount64();
+    popupState->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
     HWND popup = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
@@ -6042,7 +6044,13 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
         return 1;
     case WM_TIMER:
         if (state && wParam == kSharePopoverTimerId) {
-            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+            const bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            if (state->waitingForInitialButtonRelease) {
+                // The Share popover opens on the initiating button-down. Do not
+                // mistake that same click for an outside click before it is released.
+                if (!leftButtonDown)
+                    state->waitingForInitialButtonRelease = false;
+            } else if (leftButtonDown) {
                 POINT cursor { };
                 RECT popupRect { };
                 if (GetCursorPos(&cursor) && GetWindowRect(window, &popupRect)
