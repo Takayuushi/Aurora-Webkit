@@ -3146,7 +3146,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
         for (size_t i = first; i < downloads.size(); ++i) {
             RECT itemScreenRect { };
-            if (!GetMenuItemRect(window, downloadsPopupMenu, 6000 + static_cast<UINT>(i), &itemScreenRect))
+            if (!GetMenuItemRect(window, downloadsPopupMenu, static_cast<UINT>(downloads.size() - 1 - i), &itemScreenRect))
                 continue;
             OffsetRect(&itemScreenRect, -popupBounds.left, -popupBounds.top);
             InvalidateRect(popupWindow, &itemScreenRect, FALSE);
