@@ -4294,8 +4294,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 titleText.right -= MulDiv(31, dpi, 96);
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
+                // Use Aurora's explicit 12px UI font for tab labels. Without selecting
+                // a font here, the paint DC falls back to a larger system default font.
+                HGDIOBJ oldTabFont = SelectObject(dc, uiFont);
                 DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                if (oldTabFont)
+                    SelectObject(dc, oldTabFont);
                 RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top, tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
                 drawClose(dc, closeRect, dark);
             }
