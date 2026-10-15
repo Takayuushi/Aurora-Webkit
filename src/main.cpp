@@ -1166,7 +1166,7 @@ struct BrowserState {
             SetWindowTextW(window, titleText.c_str());
         }
         resize();
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
@@ -1213,7 +1213,7 @@ struct BrowserState {
         }
         resize();
         SetForegroundWindow(window);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void exitWebFullscreen()
@@ -1232,7 +1232,7 @@ struct BrowserState {
         }
         customMaximized = fullscreenRestoreWasMaximized;
         resize();
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     RECT trafficLightHitRect(int index) const
@@ -2718,14 +2718,31 @@ search.addEventListener('keydown',e=>{
         return true;
     }
 
+    void invalidateTabChrome(TabState* tab)
+    {
+        if (!window || !tab)
+            return;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            if (tabs[i].get() != tab)
+                continue;
+            if (tabsBarHeight() > 0) {
+                const RECT tabRect = tabBarItemRect(i);
+                InvalidateRect(window, &tabRect, FALSE);
+            }
+            break;
+        }
+        if (active() == tab) {
+            const RECT address = addressPillRect();
+            InvalidateRect(window, &address, FALSE);
+        }
+    }
+
     void activateTab(size_t index)
     {
         if (index >= tabs.size())
             return;
 
         const size_t previouslyActive = activeTab;
-        if (!tabOverviewVisible && activeTab < tabs.size() && index != activeTab)
-            captureTabThumbnail(*tabs[activeTab]);
         if (addressEditing)
             endAddressEditing();
         tabOverviewVisible = false;
@@ -2737,10 +2754,14 @@ search.addEventListener('keydown',e=>{
             startChromeAnimationTimer();
         }
 
+        // Hide non-selected WebKit HWNDs first, then show the selected view.
+        // Avoid briefly exposing two composited surfaces during rapid tab switches.
         for (size_t i = 0; i < tabs.size(); ++i) {
+            if (i == activeTab)
+                continue;
             HWND viewWindow = WKViewGetWindow(tabs[i]->view.get());
             if (viewWindow)
-                ShowWindow(viewWindow, i == activeTab ? SW_SHOW : SW_HIDE);
+                ShowWindow(viewWindow, SW_HIDE);
         }
 
         auto* tab = active();
@@ -2752,12 +2773,15 @@ search.addEventListener('keydown',e=>{
         else
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
-        SetFocus(WKViewGetWindow(tab->view.get()));
+        HWND selectedView = WKViewGetWindow(tab->view.get());
+        if (selectedView)
+            ShowWindow(selectedView, SW_SHOW);
         resize();
-        RECT client { };
-        GetClientRect(window, &client);
-        RECT chromeRect { 0, 0, client.right, titleBarHeight() + toolbarHeight() + tabsBarHeight() };
-        InvalidateRect(window, &chromeRect, FALSE);
+        if (selectedView)
+            SetFocus(selectedView);
+        invalidateTabChrome(tab);
+        if (previouslyActive < tabs.size() && previouslyActive != index)
+            invalidateTabChrome(tabs[previouslyActive].get());
     }
 
     void closeTab(size_t index)
@@ -2766,11 +2790,14 @@ search.addEventListener('keydown',e=>{
             return;
 
         const bool keepOverviewOpen = tabOverviewVisible;
-        if (!keepOverviewOpen && index == activeTab)
-            captureTabThumbnail(*tabs[index]);
 
         if (tabs.size() == 1) {
-            PostMessageW(window, WM_CLOSE, 0, 0);
+            // Closing the final tab should leave Aurora alive on a fresh start page.
+            tabOverviewVisible = false;
+            if (addressEditing)
+                endAddressEditing();
+            loadStartPage(*tabs.front());
+            activateTab(0);
             return;
         }
 
@@ -2791,6 +2818,7 @@ search.addEventListener('keydown',e=>{
             --activeTab;
 
         if (keepOverviewOpen) {
+            tabSwitchAnimating = false;
             for (const auto& tab : tabs) {
                 if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
                     ShowWindow(viewWindow, SW_HIDE);
@@ -2800,7 +2828,7 @@ search.addEventListener('keydown',e=>{
                 SetWindowTextW(addressBar, text.c_str());
             }
             resize();
-            InvalidateRect(window, nullptr, TRUE);
+            InvalidateRect(window, nullptr, FALSE);
         } else {
             activateTab(activeTab);
         }
@@ -3358,7 +3386,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             bookmarks.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
 
         saveSavedPages(bookmarksPath(), bookmarks);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
         MessageBoxW(window, removed ? L"Removed from Favorites." : L"Added to Favorites.", L"Bookmarks", MB_OK | MB_ICONINFORMATION);
     }
 
@@ -3381,7 +3409,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         readingList.push_back({ tab->activeUrl, tab->title.empty() ? tab->activeUrl : tab->title, currentUnixTime() });
         saveSavedPages(readingListPath(), readingList);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
         MessageBoxW(window, L"Added to Reading List.", L"Reading List", MB_OK | MB_ICONINFORMATION);
     }
 
@@ -3545,7 +3573,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 ShowWindow(viewWindow, SW_HIDE);
         }
         SetFocus(window);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void showSidebarSelectionMenu()
@@ -3571,7 +3599,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         else if (command == kSidebarHistory) sidebarSection = 2;
         sidebarOpen = true;
         resize();
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void executeWebEditCommand(const char* command)
@@ -3677,8 +3705,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 contentTop,
                 std::max<int>(0, static_cast<int>(client.right - contentLeft)),
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
-                TRUE
+                FALSE
             );
+            if (tab.get() == active() && IsWindowVisible(viewWindow))
+                InvalidateRect(viewWindow, nullptr, FALSE);
         }
 
         if (findBarVisible)
@@ -3758,7 +3788,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kCommandSidebar:
             sidebarOpen = !sidebarOpen;
             resize();
-            InvalidateRect(window, nullptr, TRUE);
+            InvalidateRect(window, nullptr, FALSE);
             break;
         case kCommandPrivacy:
             showWebsiteSettingsMenu();
@@ -3945,7 +3975,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             break;
         }
 
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void positionFindBar()
@@ -4007,7 +4037,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
         SetFocus(findEdit);
         SendMessageW(findEdit, EM_SETSEL, 0, -1);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void hideFindBar()
@@ -4021,7 +4051,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (HWND control : { findEdit, findPreviousButton, findNextButton, findCloseButton })
             if (control)
                 ShowWindow(control, SW_HIDE);
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void searchInPage(bool backwards)
@@ -4344,7 +4374,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&closeRect, point)) {
             sidebarOpen = false;
             resize();
-            InvalidateRect(window, nullptr, TRUE);
+            InvalidateRect(window, nullptr, FALSE);
             return true;
         }
 
@@ -4361,7 +4391,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (PtInRect(&r, point)) {
                 sidebarSection = i;
-                InvalidateRect(window, nullptr, TRUE);
+                InvalidateRect(window, nullptr, FALSE);
                 return true;
             }
         }
@@ -4708,7 +4738,7 @@ void selectSettingsPage(HWND window, SettingsDialogState* dialog, int page)
         if (dialog->navigationButtons[i])
             InvalidateRect(dialog->navigationButtons[i], nullptr, TRUE);
     }
-    InvalidateRect(window, nullptr, TRUE);
+    InvalidateRect(window, nullptr, FALSE);
 }
 
 LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -6241,7 +6271,7 @@ void didChangeIsLoading(const void* clientInfo)
         }
     }
 
-    InvalidateRect(tab->browser->window, nullptr, TRUE);
+    tab->browser->invalidateTabChrome(tab);
 }
 
 void didChangeTitle(const void* clientInfo)
@@ -6261,7 +6291,7 @@ void didChangeTitle(const void* clientInfo)
         && (tab->activeUrl.rfind(L"http://", 0) == 0 || tab->activeUrl.rfind(L"https://", 0) == 0))
         tab->browser->updateVisitTitle(tab->activeUrl, tab->title);
 
-    InvalidateRect(tab->browser->window, nullptr, TRUE);
+    tab->browser->invalidateTabChrome(tab);
     if (tab == tab->browser->active()) {
         std::wstring titleText = tab->title + L" — Aurora";
         SetWindowTextW(tab->browser->window, titleText.c_str());
@@ -6297,6 +6327,8 @@ void didChangeActiveURL(const void* clientInfo)
             SetWindowTextW(tab->browser->addressBar, url.c_str());
     }
 
+    tab->browser->invalidateTabChrome(tab);
+
     if (url.empty() || url == L"about:blank")
         return;
 
@@ -6310,7 +6342,7 @@ void didChangeActiveURL(const void* clientInfo)
         tab->lastRecordedUrl = url;
     }
 
-    InvalidateRect(tab->browser->window, nullptr, FALSE);
+    tab->browser->invalidateTabChrome(tab);
 }
 
 void didChangeEstimatedProgress(const void* clientInfo)
@@ -6360,6 +6392,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     auto* state = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
     switch (message) {
+    case WM_ERASEBKGND:
+        // WM_PAINT draws the complete invalid region; skip the system brush erase.
+        return 1;
+
     case WM_NCCALCSIZE:
         if (wParam)
             return 0;
@@ -6520,6 +6556,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_AURORA_FAVICON_READY:
         if (state && lParam) {
             auto* result = reinterpret_cast<FaviconResult*>(lParam);
+            TabState* updatedTab = nullptr;
             for (auto& tab : state->tabs) {
                 if (tab->activeUrl != result->url || tab->faviconRequestURL != result->url)
                     continue;
@@ -6527,12 +6564,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DestroyIcon(tab->favicon);
                 tab->favicon = result->icon;
                 result->icon = nullptr;
+                updatedTab = tab.get();
                 break;
             }
             if (result->icon)
                 DestroyIcon(result->icon);
             delete result;
-            InvalidateRect(window, nullptr, TRUE);
+            if (updatedTab)
+                state->invalidateTabChrome(updatedTab);
         }
         return 0;
 
