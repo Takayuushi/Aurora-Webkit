@@ -1363,8 +1363,22 @@ struct BrowserState {
         }
         if (nextHovered == hoveredToolbarButton)
             return;
+
+        const int previousHovered = hoveredToolbarButton;
         hoveredToolbarButton = nextHovered;
-        startChromeAnimationTimer();
+        for (int i = 0; i < 4; ++i)
+            toolbarHoverOpacity[i] = i == nextHovered ? 1.0f : 0.0f;
+
+        if (previousHovered >= 0) {
+            const RECT previousRect = rightToolbarButtonRect(previousHovered);
+            if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
+                InvalidateRect(window, &previousRect, FALSE);
+        }
+        if (nextHovered >= 0) {
+            const RECT nextRect = rightToolbarButtonRect(nextHovered);
+            if (nextRect.right > nextRect.left && nextRect.bottom > nextRect.top)
+                InvalidateRect(window, &nextRect, FALSE);
+        }
     }
 
     float tabSwitchEase() const
@@ -2666,7 +2680,14 @@ search.addEventListener('keydown',e=>{
         if (!tab->view)
             return false;
 
+        // WKViewCreate uses WS_VISIBLE. Hide immediately so a not-yet-selected tab
+        // cannot flash over the current page while its clients and initial content load.
+        HWND newViewWindow = WKViewGetWindow(tab->view.get());
+        if (newViewWindow)
+            ShowWindow(newViewWindow, SW_HIDE);
+
         WKViewSetIsInWindow(tab->view.get(), true);
+        WKViewSetUsesOffscreenRendering(tab->view.get(), true);
 
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
@@ -2747,12 +2768,7 @@ search.addEventListener('keydown',e=>{
             endAddressEditing();
         tabOverviewVisible = false;
         activeTab = index;
-        if (previouslyActive != index && previouslyActive < tabs.size()) {
-            previousActiveTab = previouslyActive;
-            tabSwitchAnimationStart = GetTickCount64();
-            tabSwitchAnimating = true;
-            startChromeAnimationTimer();
-        }
+        tabSwitchAnimating = false;
 
         // Hide non-selected WebKit HWNDs first, then show the selected view.
         // Avoid briefly exposing two composited surfaces during rapid tab switches.
@@ -2774,11 +2790,19 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        if (selectedView)
-            ShowWindow(selectedView, SW_SHOW);
+        if (selectedView) {
+            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
         resize();
-        if (selectedView)
+        if (selectedView) {
+            // The WC compositor may not schedule a fresh child frame just because a
+            // hidden tab HWND became visible. Force its invalid region through WebKit's
+            // normal WM_PAINT path after the resize has settled.
+            RedrawWindow(selectedView, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
+        }
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -4523,16 +4547,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
-                float activeWeight = i == activeTab ? 1.0f : 0.0f;
-                if (tabSwitchAnimating) {
-                    const float progress = tabSwitchEase();
-                    if (i == activeTab)
-                        activeWeight = progress;
-                    else if (i == previousActiveTab)
-                        activeWeight = 1.0f - progress;
-                    else
-                        activeWeight = 0.0f;
-                }
+                const float activeWeight = i == activeTab ? 1.0f : 0.0f;
                 const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
                 const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
                 const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
@@ -4610,13 +4625,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
         for (int i = 0; i < 4; ++i) {
             const RECT button = rightToolbarButtonRect(i);
-            if (button.right <= button.left || toolbarHoverOpacity[i] < 0.025f)
+            if (button.right <= button.left || button.bottom <= button.top || hoveredToolbarButton != i)
                 continue;
             RECT hoverRect { button.left + MulDiv(2, dpi, 96), button.top + MulDiv(2, dpi, 96),
                 button.right - MulDiv(2, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
-            drawRoundedControl(dc, hoverRect,
-                blendColor(groupFill, hoverFill, toolbarHoverOpacity[i]),
-                blendColor(groupBorder, hoverBorder, toolbarHoverOpacity[i]),
+            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
                 static_cast<float>(MulDiv(7, dpi, 96)));
         }
         drawShare(dc, shareRect, dark);
@@ -6451,8 +6464,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_MOUSELEAVE:
         if (state) {
             state->mouseTrackingForChrome = false;
+            const int previousHovered = state->hoveredToolbarButton;
             state->hoveredToolbarButton = -1;
-            state->startChromeAnimationTimer();
+            for (float& opacity : state->toolbarHoverOpacity)
+                opacity = 0.0f;
+            if (previousHovered >= 0) {
+                const RECT previousRect = state->rightToolbarButtonRect(previousHovered);
+                if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
+                    InvalidateRect(window, &previousRect, FALSE);
+            }
         }
         return 0;
 
