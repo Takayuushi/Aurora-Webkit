@@ -252,6 +252,18 @@ struct DownloadEntry {
     bool cancelled { false };
 };
 
+std::string formatDownloadBytes(long long bytes)
+{
+    const unsigned long long value = bytes > 0 ? static_cast<unsigned long long>(bytes) : 0ULL;
+    if (value < 1024ULL)
+        return std::to_string(value) + " B";
+    if (value < 1024ULL * 1024ULL)
+        return std::to_string(value / 1024ULL) + " KB";
+    if (value < 1024ULL * 1024ULL * 1024ULL)
+        return std::to_string(value / (1024ULL * 1024ULL)) + " MB";
+    return std::to_string(value / (1024ULL * 1024ULL * 1024ULL)) + " GB";
+}
+
 std::wstring createString(WKStringRef string)
 {
     if (!string)
@@ -262,9 +274,13 @@ std::wstring createString(WKStringRef string)
         return { };
 
     std::string utf8(maximumSize, '\0');
-    WKStringGetUTF8CString(string, utf8.data(), maximumSize);
-    if (!utf8.empty() && utf8.back() == '\0')
-        utf8.pop_back();
+    const size_t copiedSize = WKStringGetUTF8CString(string, utf8.data(), maximumSize);
+    if (copiedSize == 0 || copiedSize > maximumSize)
+        return { };
+    // WKStringGetUTF8CString returns the byte count including its final NUL.
+    // Trim to that count before converting; otherwise the zero-filled buffer tail
+    // is mistaken for filename characters and sanitized into trailing underscores.
+    utf8.resize(copiedSize - 1);
 
     if (utf8.empty())
         return { };
@@ -608,42 +624,38 @@ void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark
 void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
 {
     const COLORREF color = dark ? RGB(224, 224, 228) : RGB(69, 73, 77);
-    const float scale = std::max(0.7f, static_cast<float>(rect.bottom - rect.top) / 28.0f);
+    const float scale = std::max(0.7f,
+        static_cast<float>(std::min(rect.right - rect.left, rect.bottom - rect.top)) / 28.0f);
     const float cx = (rect.left + rect.right) / 2.0f;
     const float cy = (rect.top + rect.bottom) / 2.0f;
-    const float radius = 7.0f * scale;
 
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-    Gdiplus::Pen pen(iconGdiColor(color), 1.2f * scale);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.3f * scale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     pen.SetLineJoin(Gdiplus::LineJoinRound);
 
     if (loading) {
-        Gdiplus::PointF a[] = {
-            { cx - 4.2f * scale, cy - 4.2f * scale },
-            { cx + 4.2f * scale, cy + 4.2f * scale }
-        };
-        Gdiplus::PointF b[] = {
-            { cx + 4.2f * scale, cy - 4.2f * scale },
-            { cx - 4.2f * scale, cy + 4.2f * scale }
-        };
-        graphics.DrawLines(&pen, a, 2);
-        graphics.DrawLines(&pen, b, 2);
+        // Safari's reload control becomes a stop glyph while navigation is active.
+        const float half = 3.4f * scale;
+        Gdiplus::GraphicsPath stop;
+        addRoundedIconRectangle(stop, cx - half, cy - half, half * 2.0f, half * 2.0f, 0.8f * scale);
+        graphics.DrawPath(&pen, &stop);
         return;
     }
 
-    graphics.DrawArc(&pen, Gdiplus::RectF(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f),
-        45.0f, 282.0f);
-    const Gdiplus::PointF tip(cx + 6.06f * scale, cy - 4.01f * scale);
-    Gdiplus::PointF arrowHead[] = {
-        { tip.X - 4.3f * scale, tip.Y - 0.6f * scale },
-        tip,
-        { tip.X - 0.7f * scale, tip.Y + 4.0f * scale }
-    };
-    graphics.DrawLines(&pen, arrowHead, 3);
+    const float radius = 7.0f * scale;
+    graphics.DrawArc(&pen,
+        Gdiplus::RectF(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f),
+        45.0f, 270.0f);
+
+    const float tipX = cx + radius * 0.70710678f;
+    const float tipY = cy - radius * 0.70710678f;
+    // Two short, clean strokes meet at the arc's endpoint to form the arrowhead.
+    graphics.DrawLine(&pen, tipX - 3.5f * scale, tipY - 0.25f * scale, tipX, tipY);
+    graphics.DrawLine(&pen, tipX, tipY, tipX - 0.25f * scale, tipY + 3.5f * scale);
 }
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
@@ -765,32 +777,46 @@ void drawTabOverview(HDC dc, const RECT& rect, bool dark)
 void drawDownload(HDC dc, const RECT& rect, bool dark = false)
 {
     const COLORREF color = dark ? RGB(225, 225, 229) : RGB(67, 71, 75);
-    const float scale = std::max(0.75f,
-        static_cast<float>(rect.bottom - rect.top) / 30.0f);
+    const float scale = std::max(0.7f,
+        static_cast<float>(std::min(rect.right - rect.left, rect.bottom - rect.top)) / 30.0f);
     const float cx = (rect.left + rect.right) / 2.0f;
     const float cy = (rect.top + rect.bottom) / 2.0f;
 
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-    Gdiplus::Pen pen(iconGdiColor(color), 1.5f * scale);
+    Gdiplus::Pen pen(iconGdiColor(color), 1.35f * scale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     pen.SetLineJoin(Gdiplus::LineJoinRound);
 
-    graphics.DrawLine(&pen, cx, cy - 8.0f * scale, cx, cy + 2.5f * scale);
-    graphics.DrawLine(&pen, cx - 4.5f * scale, cy - 1.0f * scale,
-        cx, cy + 3.5f * scale);
-    graphics.DrawLine(&pen, cx, cy + 3.5f * scale,
-        cx + 4.5f * scale, cy - 1.0f * scale);
+    graphics.DrawLine(&pen, cx, cy - 7.2f * scale, cx, cy + 1.5f * scale);
+    graphics.DrawLine(&pen, cx - 3.8f * scale, cy - 1.8f * scale,
+        cx, cy + 2.0f * scale);
+    graphics.DrawLine(&pen, cx, cy + 2.0f * scale,
+        cx + 3.8f * scale, cy - 1.8f * scale);
 
-    const Gdiplus::PointF tray[] = {
-        { cx - 7.0f * scale, cy + 1.0f * scale },
-        { cx - 7.0f * scale, cy + 6.5f * scale },
-        { cx + 7.0f * scale, cy + 6.5f * scale },
-        { cx + 7.0f * scale, cy + 1.0f * scale }
-    };
-    graphics.DrawLines(&pen, tray, static_cast<INT>(std::size(tray)));
+    const float trayLeft = cx - 6.5f * scale;
+    const float trayRight = cx + 6.5f * scale;
+    const float trayTop = cy + 0.6f * scale;
+    const float trayBottom = cy + 6.2f * scale;
+    const float corner = 1.7f * scale;
+    Gdiplus::GraphicsPath tray;
+    tray.StartFigure();
+    tray.AddLine(trayLeft, trayTop, trayLeft, trayBottom - corner);
+    tray.AddBezier(
+        Gdiplus::PointF(trayLeft, trayBottom - corner),
+        Gdiplus::PointF(trayLeft, trayBottom - corner * 0.25f),
+        Gdiplus::PointF(trayLeft + corner * 0.25f, trayBottom),
+        Gdiplus::PointF(trayLeft + corner, trayBottom));
+    tray.AddLine(trayLeft + corner, trayBottom, trayRight - corner, trayBottom);
+    tray.AddBezier(
+        Gdiplus::PointF(trayRight - corner, trayBottom),
+        Gdiplus::PointF(trayRight - corner * 0.25f, trayBottom),
+        Gdiplus::PointF(trayRight, trayBottom - corner * 0.25f),
+        Gdiplus::PointF(trayRight, trayBottom - corner));
+    tray.AddLine(trayRight, trayBottom - corner, trayRight, trayTop);
+    graphics.DrawPath(&pen, &tray);
 }
 
 void drawMenu(HDC dc, const RECT& rect, bool dark = false)
@@ -2779,6 +2805,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             ".meta{font-size:12px;color:" + std::string(dark ? "#b8b8bd" : "#666b72") + ";margin-top:11px}"
             ".bar{height:4px;background:" + std::string(dark ? "#48484a" : "#e4e7eb") + ";border-radius:4px;overflow:hidden;margin-top:8px}"
             ".fill{height:100%;background:#3478d4;border-radius:4px;transition:width .15s linear}"
+            ".bar.indeterminate .fill{width:28%!important;animation:download-sweep 1.15s ease-in-out infinite alternate}"
+            "@keyframes download-sweep{from{transform:translateX(0)}to{transform:translateX(255%)}}"
             ".actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}"
             ".button{display:inline-flex;align-items:center;justify-content:center;min-height:29px;border:1px solid " + std::string(dark ? "#55555a" : "#d7dbe0")
             + ";border-radius:8px;padding:5px 11px;background:" + (dark ? "#37373a" : "#fafbfc") + ";color:inherit;text-decoration:none;font-size:12px;font-family:inherit;cursor:pointer}"
@@ -2801,7 +2829,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
                     : item.finished ? "Downloaded"
-                    : (item.totalBytes > 0 ? "Downloading - " + std::to_string(percent) + "%" : "Downloading");
+                    : (item.totalBytes > 0
+                        ? "Downloading - " + std::to_string(percent) + "% (" + formatDownloadBytes(item.bytesWritten) + ")"
+                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
+                            : "Starting download"));
                 html += "<section class='item'><div class='name' title='";
                 html += toUTF8(htmlEscape(item.filename));
                 html += "'>";
@@ -2811,7 +2842,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 html += "'>";
                 html += toUTF8(htmlEscape(item.path));
                 html += "</div><div class='meta' id='download-meta-" + id + "'>" + status + "</div>";
-                html += "<div class='bar' id='download-bar-" + id + "' style='display:";
+                html += "<div class='bar";
+                if (inProgress && item.totalBytes <= 0)
+                    html += " indeterminate";
+                html += "' id='download-bar-" + id + "' style='display:";
                 html += inProgress ? "block" : "none";
                 html += "'><div class='fill' id='download-fill-" + id + "' style='width:";
                 html += std::to_string(percent);
@@ -2889,10 +2923,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             item.rcItem.right - rightPad, item.rcItem.top + scaleForDpi(window, 47) };
         SelectObject(item.hDC, statusFont);
         SetTextColor(item.hDC, secondary);
-        std::wstring status = download.cancelled ? L"Cancelled"
-            : download.failed ? L"Download failed"
-            : download.finished ? L"Downloaded"
-            : (download.totalBytes > 0 ? L"Downloading - " + std::to_wstring(percent) + L"%" : L"Downloading");
+        std::wstring status;
+        if (download.cancelled)
+            status = L"Cancelled";
+        else if (download.failed)
+            status = L"Download failed";
+        else if (download.finished)
+            status = L"Downloaded";
+        else if (download.totalBytes > 0)
+            status = L"Downloading - " + std::to_wstring(percent) + L"% ("
+                + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L")";
+        else if (download.bytesWritten > 0)
+            status = L"Downloading - " + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
+        else
+            status = L"Starting download";
         DrawTextW(item.hDC, status.c_str(), -1, &statusRect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         SelectObject(item.hDC, oldFont);
@@ -2911,14 +2955,28 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 static_cast<float>(barHeight) / 2.0f);
             Gdiplus::SolidBrush trackBrush(iconGdiColor(dark ? RGB(78, 78, 82) : RGB(230, 233, 237)));
             graphics.FillPath(&trackBrush, &track);
-            const float fillWidth = static_cast<float>(std::max<long long>(0,
-                (static_cast<long long>(barRight - barLeft) * percent) / 100));
-            if (fillWidth > 0.5f) {
-                Gdiplus::GraphicsPath fill;
-                addRoundedIconRectangle(fill, static_cast<float>(barLeft), static_cast<float>(barTop),
-                    fillWidth, static_cast<float>(barHeight), static_cast<float>(barHeight) / 2.0f);
+            const int trackWidth = std::max(1, barRight - barLeft);
+            if (download.totalBytes > 0) {
+                const float fillWidth = static_cast<float>(std::max<long long>(0,
+                    (static_cast<long long>(trackWidth) * percent) / 100));
+                if (fillWidth > 0.5f) {
+                    Gdiplus::GraphicsPath fill;
+                    addRoundedIconRectangle(fill, static_cast<float>(barLeft), static_cast<float>(barTop),
+                        fillWidth, static_cast<float>(barHeight), static_cast<float>(barHeight) / 2.0f);
+                    Gdiplus::SolidBrush fillBrush(iconGdiColor(RGB(75, 139, 230)));
+                    graphics.FillPath(&fillBrush, &fill);
+                }
+            } else if (download.bytesWritten > 0) {
+                const int segmentWidth = std::max(scaleForDpi(window, 64), trackWidth / 4);
+                const int travel = std::max(1, trackWidth - segmentWidth);
+                const auto steps = static_cast<unsigned long long>(download.bytesWritten / (32 * 1024));
+                const int segmentLeft = barLeft + static_cast<int>(steps % static_cast<unsigned long long>(travel + 1));
+                Gdiplus::GraphicsPath segment;
+                addRoundedIconRectangle(segment, static_cast<float>(segmentLeft), static_cast<float>(barTop),
+                    static_cast<float>(std::min(segmentWidth, barRight - segmentLeft)),
+                    static_cast<float>(barHeight), static_cast<float>(barHeight) / 2.0f);
                 Gdiplus::SolidBrush fillBrush(iconGdiColor(RGB(75, 139, 230)));
-                graphics.FillPath(&fillBrush, &fill);
+                graphics.FillPath(&fillBrush, &segment);
             }
         }
         HPEN dividerPen = CreatePen(PS_SOLID, 1, dark ? RGB(54, 54, 57) : RGB(241, 242, 244));
@@ -2934,8 +2992,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (!window)
             return;
-        const RECT downloadButton = rightToolbarButtonRect(1);
-        InvalidateRect(window, &downloadButton, FALSE);
         for (const auto& tab : tabs) {
             if (tab->internalPage != L"downloads")
                 continue;
@@ -2950,10 +3006,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
                     : item.finished ? "Downloaded"
-                    : (item.totalBytes > 0 ? "Downloading - " + std::to_string(percent) + "%" : "Downloading");
+                    : (item.totalBytes > 0
+                        ? "Downloading - " + std::to_string(percent) + "% (" + formatDownloadBytes(item.bytesWritten) + ")"
+                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
+                            : "Starting download"));
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
                 script += "var f=document.getElementById('download-fill-" + id + "');if(f)f.style.width='" + std::to_string(percent) + "%';";
-                script += "var b=document.getElementById('download-bar-" + id + "');if(b)b.style.display='" + std::string(inProgress ? "block" : "none") + "';";
+                script += "var b=document.getElementById('download-bar-" + id + "');if(b){b.style.display='" + std::string(inProgress ? "block" : "none") + "';b.classList.toggle('indeterminate'," + std::string(inProgress && item.totalBytes <= 0 ? "true" : "false") + ");}";
                 script += "var c=document.getElementById('download-cancel-" + id + "');if(c)c.style.display='" + std::string(inProgress ? "inline-flex" : "none") + "';";
             }
             script += "})();";
@@ -2962,12 +3021,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), javascript.get(), nullptr, nullptr);
         }
         if (downloadsPopupMenu) {
-            for (size_t i = 0; i < downloads.size() && i < 64; ++i) {
-                MENUITEMINFOW itemInfo { };
-                itemInfo.cbSize = sizeof(itemInfo);
-                itemInfo.fMask = MIIM_DATA;
-                itemInfo.dwItemData = static_cast<ULONG_PTR>(downloads[i].bytesWritten);
-                SetMenuItemInfoW(downloadsPopupMenu, 6000 + static_cast<UINT>(i), FALSE, &itemInfo);
+            // Redraw the native popup itself. Invalidating the toolbar icon on every
+            // chunk made the icon flicker and did not refresh the owner-drawn menu rows.
+            HWND popupWindow = FindWindowW(L"#32768", nullptr);
+            if (popupWindow && IsWindowVisible(popupWindow)) {
+                InvalidateRect(popupWindow, nullptr, FALSE);
+                UpdateWindow(popupWindow);
             }
         }
     }
