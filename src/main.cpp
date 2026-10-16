@@ -3345,9 +3345,9 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
 
-    RECT titleRect { MulDiv(18, dpi, 96), MulDiv(7, dpi, 96), width - MulDiv(72, dpi, 96), MulDiv(45, dpi, 96) };
+    RECT titleRect { MulDiv(8, dpi, 96), MulDiv(7, dpi, 96), width - MulDiv(8, dpi, 96), MulDiv(45, dpi, 96) };
     SetTextColor(dc, primary);
-    DrawTextW(dc, L"Downloads", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(dc, L"Downloads", -1, &titleRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT clearRect { width - MulDiv(62, dpi, 96), MulDiv(9, dpi, 96), width - MulDiv(14, dpi, 96), MulDiv(41, dpi, 96) };
     SetTextColor(dc, browser->downloads.empty() ? secondary : accent);
@@ -3425,7 +3425,7 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
             }
 
             RECT statusRect { MulDiv(54, dpi, 96), top + MulDiv(29, dpi, 96),
-                width - MulDiv(18, dpi, 96), top + MulDiv(48, dpi, 96) };
+                width - MulDiv(50, dpi, 96), top + MulDiv(48, dpi, 96) };
             SelectObject(dc, detailFont);
             SetTextColor(dc, item.failed ? RGB(220, 84, 78) : secondary);
             DrawTextW(dc, status.c_str(), -1, &statusRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
