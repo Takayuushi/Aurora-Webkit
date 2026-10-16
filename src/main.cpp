@@ -3110,7 +3110,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             ":root{color-scheme:" + std::string(dark ? "dark" : "light") + ";--bg:" + bg
             + ";--panel:" + panel + ";--line:" + line + ";--text:" + text + ";--muted:" + muted
             + ";--hover:" + hover + ";--blue:" + blue + ";--danger:" + danger + "}"
-            "*{box-sizing:border-box}"
+            + "*{box-sizing:border-box}"
             "html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);"
             "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
             "-webkit-font-smoothing:antialiased}"
@@ -3126,14 +3126,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             ".file-icon svg{width:31px;height:39px;display:block;overflow:visible}"
             ".file-icon .sheet{fill:" + std::string(dark ? "#353538" : "#f1f2f5")
             + ";stroke:" + std::string(dark ? "#77777e" : "#c8cbd1") + ";stroke-width:1.1}"
-            ".file-icon .fold{fill:none;stroke:" + std::string(dark ? "#77777e" : "#c8cbd1") + ";stroke-width:1.1;stroke-linejoin:round}"
-            ".file-icon .mark{stroke:var(--blue);stroke-width:1.5;stroke-linecap:round;fill:none}"
+            + ".file-icon .fold{fill:none;stroke:" + std::string(dark ? "#77777e" : "#c8cbd1") + ";stroke-width:1.1;stroke-linejoin:round}"
+            + ".file-icon .mark{stroke:var(--blue);stroke-width:1.5;stroke-linecap:round;fill:none}"
             ".detail{min-width:0}.name{font-size:14px;font-weight:500;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".location{font-size:12px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".meta{font-size:12px;color:var(--muted);margin-top:7px;line-height:1.25}"
             ".bar{height:4px;width:100%;min-width:80px;background:" + std::string(dark ? "#4a4a4e" : "#e3e5e9")
             + ";border-radius:99px;overflow:hidden;margin-top:8px}"
-            ".bar[hidden]{display:none}.fill{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .16s linear}"
+            + ".bar[hidden]{display:none}.fill{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .16s linear}"
             ".bar.indeterminate .fill{width:28%!important;animation:download-sweep 1.15s ease-in-out infinite alternate}"
             "@keyframes download-sweep{from{transform:translateX(0)}to{transform:translateX(255%)}}"
             ".actions{display:flex;align-items:center;justify-content:flex-end;gap:3px;padding-left:8px}"
