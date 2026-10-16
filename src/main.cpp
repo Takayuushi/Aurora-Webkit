@@ -3350,7 +3350,9 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
     DrawTextW(dc, L"Downloads", -1, &titleRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT clearRect { width - MulDiv(62, dpi, 96), MulDiv(9, dpi, 96), width - MulDiv(14, dpi, 96), MulDiv(41, dpi, 96) };
-    SetTextColor(dc, browser->downloads.empty() ? secondary : accent);
+    const bool hasClearableDownloads = std::any_of(browser->downloads.begin(), browser->downloads.end(),
+        [](const DownloadEntry& item) { return item.finished || item.failed || item.cancelled; });
+    SetTextColor(dc, hasClearableDownloads ? accent : secondary);
     SelectObject(dc, detailFont);
     DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -3601,8 +3603,11 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
             RECT clearRect { client.right - MulDiv(68, dpi, 96), 0,
                 client.right, headerHeight };
             if (PtInRect(&clearRect, point)) {
-                browser->downloads.clear();
+                browser->downloads.erase(std::remove_if(browser->downloads.begin(), browser->downloads.end(),
+                    [](const DownloadEntry& item) { return item.finished || item.failed || item.cancelled; }),
+                    browser->downloads.end());
                 InvalidateRect(window, nullptr, FALSE);
+                InvalidateRect(browser->window, nullptr, TRUE);
                 return 0;
             }
 
@@ -3625,7 +3630,9 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
                 if (trailingAction) {
                     auto& selected = browser->downloads[index];
                     if (selected.finished && !selected.failed && !selected.cancelled && !selected.path.empty()) {
-                        browser->showFileInFolder(selected.path);
+                        const std::wstring path = selected.path;
+                        DestroyWindow(window);
+                        browser->showFileInFolder(path);
                     } else if (!selected.finished && !selected.failed && !selected.cancelled && selected.download) {
                         // The Windows C API supports cancellation, but not pause/resume.
                         selected.cancelled = true;
