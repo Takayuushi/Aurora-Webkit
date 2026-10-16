@@ -815,6 +815,7 @@ void showWebContextMenu(WKPageRef, WKPoint, WKArrayRef, const void*);
 void hideWebContextMenu(WKPageRef, const void*);
 LRESULT CALLBACK webContextMenuPopoverProcedure(HWND, UINT, WPARAM, LPARAM);
 void dismissWebContextMenu(HWND, bool notifyWebKit);
+void showAuroraMenuFromHMENU(BrowserState*, HMENU, POINT, bool alignRight);
 
 struct FaviconResult {
     std::wstring url;
