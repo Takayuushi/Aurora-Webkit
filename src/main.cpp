@@ -6116,9 +6116,9 @@ int downloadsPopoverVisibleCount(const BrowserState* browser)
 int downloadsPopoverHeight(const BrowserState* browser)
 {
     const int dpi = browser ? windowDpi(browser->window) : 96;
-    const int outer = MulDiv(9, dpi, 96);
-    const int headerHeight = MulDiv(36, dpi, 96);
-    const int rowHeight = MulDiv(70, dpi, 96);
+    const int outer = MulDiv(8, dpi, 96);
+    const int headerHeight = MulDiv(32, dpi, 96);
+    const int rowHeight = MulDiv(54, dpi, 96);
     return outer * 2 + headerHeight + downloadsPopoverVisibleCount(browser) * rowHeight;
 }
 
@@ -6127,9 +6127,9 @@ RECT downloadsPopoverRowRect(HWND popup, int displayRow, int dpi)
     RECT client { };
     if (popup)
         GetClientRect(popup, &client);
-    const int outer = MulDiv(9, dpi, 96);
-    const int headerHeight = MulDiv(36, dpi, 96);
-    const int rowHeight = MulDiv(70, dpi, 96);
+    const int outer = MulDiv(8, dpi, 96);
+    const int headerHeight = MulDiv(32, dpi, 96);
+    const int rowHeight = MulDiv(54, dpi, 96);
     const int top = outer + headerHeight + std::max(0, displayRow) * rowHeight;
     return { outer, top, client.right - outer, top + rowHeight };
 }
@@ -6148,8 +6148,8 @@ RECT downloadsPopoverClearRect(HWND popup, int dpi)
     RECT client { };
     if (popup)
         GetClientRect(popup, &client);
-    const int outer = MulDiv(9, dpi, 96);
-    const int headerHeight = MulDiv(36, dpi, 96);
+    const int outer = MulDiv(8, dpi, 96);
+    const int headerHeight = MulDiv(32, dpi, 96);
     const int width = MulDiv(46, dpi, 96);
     return { client.right - outer - width, outer, client.right - outer, outer + headerHeight };
 }
@@ -6185,7 +6185,7 @@ void updateDownloadsPopoverLayout(BrowserState* browser)
     state->visibleCount = newCount;
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(360, dpi, 96);
+    const int width = MulDiv(400, dpi, 96);
     const int height = downloadsPopoverHeight(browser);
     state->targetRect.right = state->targetRect.left + width;
     state->targetRect.bottom = state->targetRect.top + height;
@@ -6326,7 +6326,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(360, dpi, 96);
+    const int width = MulDiv(400, dpi, 96);
     const int height = downloadsPopoverHeight(browser);
     const RECT anchor = browser->rightToolbarButtonRect(1);
     POINT screen { anchor.right, anchor.bottom + MulDiv(5, dpi, 96) };
@@ -6606,8 +6606,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         HGDIOBJ oldFont = SelectObject(dc, titleFont);
         SetBkMode(dc, TRANSPARENT);
         const int count = state && state->browser ? downloadsPopoverVisibleCount(state->browser) : 0;
-        RECT headerRect { MulDiv(9, dpi, 96), MulDiv(8, dpi, 96),
-            client.right - MulDiv(9, dpi, 96), MulDiv(42, dpi, 96) };
+        RECT headerRect { MulDiv(8, dpi, 96), MulDiv(6, dpi, 96),
+            client.right - MulDiv(8, dpi, 96), MulDiv(38, dpi, 96) };
         SetTextColor(dc, primary);
         RECT headerTitle { headerRect.left + MulDiv(7, dpi, 96), headerRect.top,
             headerRect.right - MulDiv(58, dpi, 96), headerRect.bottom };
@@ -6645,13 +6645,15 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 drawRoundedControl(dc, hover, fill, fill, static_cast<float>(MulDiv(9, dpi, 96)));
             }
 
-            RECT iconRect { itemRect.left + MulDiv(8, dpi, 96), itemRect.top + MulDiv(18, dpi, 96),
-                itemRect.left + MulDiv(42, dpi, 96), itemRect.top + MulDiv(52, dpi, 96) };
+            const int fileIconSize = MulDiv(31, dpi, 96);
+            const int fileIconTop = itemRect.top + (itemRect.bottom - itemRect.top - fileIconSize) / 2;
+            RECT iconRect { itemRect.left + MulDiv(8, dpi, 96), fileIconTop,
+                itemRect.left + MulDiv(8, dpi, 96) + fileIconSize, fileIconTop + fileIconSize };
             const bool active = !download.finished && !download.failed && !download.cancelled;
             drawDownloadFileGlyph(dc, iconRect, dark, active);
 
-            RECT titleRect { itemRect.left + MulDiv(48, dpi, 96), itemRect.top + MulDiv(8, dpi, 96),
-                itemRect.right - MulDiv(44, dpi, 96), itemRect.top + MulDiv(29, dpi, 96) };
+            RECT titleRect { itemRect.left + MulDiv(48, dpi, 96), itemRect.top + MulDiv(5, dpi, 96),
+                itemRect.right - MulDiv(44, dpi, 96), itemRect.top + MulDiv(23, dpi, 96) };
             SetTextColor(dc, primary);
             SelectObject(dc, titleFont);
             DrawTextW(dc, download.filename.c_str(), -1, &titleRect,
@@ -6676,8 +6678,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
 
             SelectObject(dc, statusFont);
             SetTextColor(dc, secondary);
-            RECT statusRect { titleRect.left, itemRect.top + MulDiv(29, dpi, 96),
-                titleRect.right, itemRect.top + MulDiv(47, dpi, 96) };
+            RECT statusRect { titleRect.left, itemRect.top + MulDiv(23, dpi, 96),
+                titleRect.right, itemRect.top + MulDiv(40, dpi, 96) };
             DrawTextW(dc, status.c_str(), -1, &statusRect,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -6685,7 +6687,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 const int trackHeight = std::max(3, MulDiv(3, dpi, 96));
                 const int trackLeft = titleRect.left;
                 const int trackRight = titleRect.right;
-                const int trackTop = itemRect.bottom - MulDiv(14, dpi, 96);
+                const int trackTop = itemRect.bottom - MulDiv(8, dpi, 96);
                 Gdiplus::Graphics graphics(dc);
                 graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 Gdiplus::GraphicsPath track;
