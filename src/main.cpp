@@ -234,6 +234,7 @@ struct DownloadEntry {
     bool finished { false };
     bool failed { false };
     WKDownloadRef download { nullptr };
+    bool cancelled { false };
 };
 
 std::wstring createString(WKStringRef string)
@@ -1829,6 +1830,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
                 if (item.failed)
                     html += "<div class='meta'>Download failed.</div>";
+                else if (item.cancelled)
+                    html += "<div class='meta'>Download canceled.</div>";
                 else if (item.finished)
                     html += "<div class='meta'>Downloaded.</div>";
                 else {
@@ -3407,7 +3410,9 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
             DrawTextW(dc, item.filename.c_str(), -1, &nameRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
             std::wstring status;
-            if (item.failed) {
+            if (item.cancelled) {
+                status = L"Canceled";
+            } else if (item.failed) {
                 status = L"Download failed";
             } else if (item.finished) {
                 status = L"Downloaded · " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
@@ -3425,7 +3430,7 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
             SetTextColor(dc, item.failed ? RGB(220, 84, 78) : secondary);
             DrawTextW(dc, status.c_str(), -1, &statusRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-            if (!item.finished && !item.failed) {
+            if (!item.finished && !item.failed && !item.cancelled) {
                 const int barLeft = MulDiv(54, dpi, 96);
                 const int barRight = width - MulDiv(18, dpi, 96);
                 const int barY = top + MulDiv(54, dpi, 96);
@@ -3441,7 +3446,7 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
                     FillRect(dc, &fillRect, fillBrush);
                     DeleteObject(fillBrush);
                 }
-            } else if (item.finished) {
+            } else if (item.finished && !item.cancelled && !item.failed) {
                 RECT revealCircle { width - MulDiv(33, dpi, 96), top + MulDiv(23, dpi, 96),
                     width - MulDiv(19, dpi, 96), top + MulDiv(37, dpi, 96) };
                 HPEN revealPen = CreatePen(PS_SOLID, 1, secondary);
@@ -3456,6 +3461,23 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
                 SelectObject(dc, savedBrush);
                 SelectObject(dc, savedPen);
                 DeleteObject(revealPen);
+            } else if (!item.finished && !item.failed && !item.cancelled) {
+                RECT cancelCircle { width - MulDiv(35, dpi, 96), top + MulDiv(22, dpi, 96),
+                    width - MulDiv(19, dpi, 96), top + MulDiv(38, dpi, 96) };
+                HPEN cancelPen = CreatePen(PS_SOLID, 1, secondary);
+                HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
+                HPEN savedPen = static_cast<HPEN>(SelectObject(dc, cancelPen));
+                HBRUSH savedBrush = static_cast<HBRUSH>(SelectObject(dc, hollow));
+                Ellipse(dc, cancelCircle.left, cancelCircle.top, cancelCircle.right, cancelCircle.bottom);
+                const int cx = (cancelCircle.left + cancelCircle.right) / 2;
+                const int cy = (cancelCircle.top + cancelCircle.bottom) / 2;
+                MoveToEx(dc, cx - MulDiv(3, dpi, 96), cy - MulDiv(3, dpi, 96), nullptr);
+                LineTo(dc, cx + MulDiv(3, dpi, 96), cy + MulDiv(3, dpi, 96));
+                MoveToEx(dc, cx + MulDiv(3, dpi, 96), cy - MulDiv(3, dpi, 96), nullptr);
+                LineTo(dc, cx - MulDiv(3, dpi, 96), cy + MulDiv(3, dpi, 96));
+                SelectObject(dc, savedBrush);
+                SelectObject(dc, savedPen);
+                DeleteObject(cancelPen);
             }
         }
     }
@@ -3599,13 +3621,23 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
                 if (index >= browser->downloads.size())
                     return 0;
                 const auto item = browser->downloads[index];
-                const bool revealAction = point.x >= client.right - MulDiv(46, dpi, 96);
-                if (revealAction) {
-                    if (!item.path.empty())
-                        browser->showFileInFolder(item.path);
+                const bool trailingAction = point.x >= client.right - MulDiv(46, dpi, 96);
+                if (trailingAction) {
+                    auto& selected = browser->downloads[index];
+                    if (selected.finished && !selected.failed && !selected.cancelled && !selected.path.empty()) {
+                        browser->showFileInFolder(selected.path);
+                    } else if (!selected.finished && !selected.failed && !selected.cancelled && selected.download) {
+                        // The Windows C API supports cancellation, but not pause/resume.
+                        selected.cancelled = true;
+                        WKDownloadCancel(selected.download, nullptr, nullptr);
+                        InvalidateRect(window, nullptr, FALSE);
+                        InvalidateRect(browser->window, nullptr, TRUE);
+                        if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
+                            InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
+                    }
                     return 0;
                 }
-                if (item.finished && !item.failed && !item.path.empty()) {
+                if (item.finished && !item.failed && !item.cancelled && !item.path.empty()) {
                     DestroyWindow(window);
                     ShellExecuteW(browser->window, L"open", item.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
@@ -4199,9 +4231,12 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     if (!browser)
         return;
 
+    bool wasCancelled = false;
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
-            it->failed = true;
+            wasCancelled = it->cancelled;
+            if (!wasCancelled)
+                it->failed = true;
             break;
         }
     }
@@ -4210,8 +4245,10 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
         InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
 
-    std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
-    MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+    if (!wasCancelled) {
+        std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
+        MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
+    }
 }
 
 void installDownloadClient(WKDownloadRef download, BrowserState* browser)
