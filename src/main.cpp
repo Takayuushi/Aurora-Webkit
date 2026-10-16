@@ -6589,13 +6589,37 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         GetClientRect(window, &client);
         const bool dark = state && state->browser && state->browser->chromeDarkTheme();
         const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
-        const COLORREF panel = dark ? RGB(42, 42, 45) : RGB(250, 250, 252);
-        const COLORREF border = dark ? RGB(70, 70, 74) : RGB(225, 227, 231);
+        const COLORREF panel = dark ? RGB(40, 40, 43) : RGB(249, 250, 252);
+        const COLORREF border = dark ? RGB(72, 72, 77) : RGB(218, 222, 228);
         const COLORREF primary = dark ? RGB(245, 245, 248) : RGB(30, 33, 38);
         const COLORREF secondary = dark ? RGB(166, 167, 174) : RGB(105, 111, 118);
         const COLORREF separator = dark ? RGB(61, 61, 65) : RGB(226, 229, 233);
         const COLORREF hoverFill = dark ? RGB(58, 58, 62) : RGB(240, 242, 245);
-        drawRoundedControl(dc, client, panel, border, static_cast<float>(MulDiv(15, dpi, 96)));
+        // A restrained glass-like surface: soft vertical tonal shift, crisp rim,
+        // and a thin upper highlight. It stays locally painted and doesn't depend
+        // on the host OS's native menu renderer.
+        Gdiplus::Graphics panelGraphics(dc);
+        panelGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        panelGraphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        Gdiplus::GraphicsPath panelPath;
+        addRoundedIconRectangle(panelPath, static_cast<float>(client.left), static_cast<float>(client.top),
+            static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top),
+            static_cast<float>(MulDiv(15, dpi, 96)));
+        Gdiplus::LinearGradientBrush panelBrush(
+            Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
+            Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
+            Gdiplus::Color(255, dark ? 49 : 255, dark ? 49 : 255, dark ? 53 : 255),
+            Gdiplus::Color(255, dark ? 37 : 245, dark ? 37 : 247, dark ? 40 : 250));
+        panelGraphics.FillPath(&panelBrush, &panelPath);
+        Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
+        panelGraphics.DrawPath(&panelPen, &panelPath);
+        Gdiplus::Pen topHighlight(Gdiplus::Color(static_cast<BYTE>(dark ? 55 : 150), 255, 255, 255),
+            std::max(0.7f, dpi / 140.0f));
+        panelGraphics.DrawLine(&topHighlight,
+            static_cast<float>(client.left + MulDiv(16, dpi, 96)),
+            static_cast<float>(client.top + MulDiv(1, dpi, 96)),
+            static_cast<float>(client.right - MulDiv(16, dpi, 96)),
+            static_cast<float>(client.top + MulDiv(1, dpi, 96)));
 
         HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0,
             FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
