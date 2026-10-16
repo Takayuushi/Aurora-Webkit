@@ -6017,17 +6017,17 @@ int downloadsPopoverVisibleRows(const DownloadsPopoverWindowState* state)
 
 int downloadsPopoverRowHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 76);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 68);
 }
 
 int downloadsPopoverFooterHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 38);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 26);
 }
 
 int downloadsPopoverTopPadding(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 6);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 5);
 }
 
 RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index)
@@ -6038,7 +6038,7 @@ RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index
     const int width = state->targetRect.right - state->targetRect.left;
     const int rowHeight = downloadsPopoverRowHeight(state);
     const int top = downloadsPopoverTopPadding(state) + index * rowHeight;
-    const int horizontalPad = MulDiv(8, dpi, 96);
+    const int horizontalPad = MulDiv(10, dpi, 96);
     return { horizontalPad, top, width - horizontalPad, top + rowHeight };
 }
 
@@ -6064,10 +6064,10 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     const int width = client.right;
     const bool dark = browser->chromeDarkTheme();
 
-    const COLORREF surface = dark ? RGB(38, 38, 41) : RGB(252, 252, 254);
-    const COLORREF border = dark ? RGB(76, 76, 81) : RGB(218, 220, 224);
+    const COLORREF surface = dark ? RGB(24, 24, 26) : RGB(250, 250, 252);
+    const COLORREF border = dark ? RGB(62, 62, 66) : RGB(214, 216, 220);
     const COLORREF primary = dark ? RGB(246, 246, 248) : RGB(32, 35, 39);
-    const COLORREF secondary = dark ? RGB(169, 170, 177) : RGB(107, 112, 119);
+    const COLORREF secondary = dark ? RGB(161, 161, 166) : RGB(105, 109, 116);
     const COLORREF separator = dark ? RGB(62, 62, 66) : RGB(231, 233, 237);
     const COLORREF hover = dark ? RGB(52, 52, 56) : RGB(242, 244, 247);
     const COLORREF accent = dark ? RGB(88, 151, 255) : RGB(10, 132, 255);
@@ -6090,7 +6090,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     const int visible = downloadsPopoverVisibleRows(state);
     const int topPadding = downloadsPopoverTopPadding(state);
     const int footerTop = client.bottom - downloadsPopoverFooterHeight(state);
-    const int horizontalPad = MulDiv(14, dpi, 96);
+    const int horizontalPad = MulDiv(10, dpi, 96);
 
     if (visible == 0) {
         const int emptyCenterY = (topPadding + footerTop) / 2;
@@ -6121,10 +6121,10 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
                 drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
             }
 
-            const int left = rowRect.left + MulDiv(8, dpi, 96);
-            const int right = rowRect.right - MulDiv(8, dpi, 96);
-            RECT nameRect { left, rowRect.top + MulDiv(8, dpi, 96),
-                right, rowRect.top + MulDiv(29, dpi, 96) };
+            const int left = rowRect.left + MulDiv(10, dpi, 96);
+            const int right = rowRect.right - MulDiv(10, dpi, 96);
+            RECT nameRect { left, rowRect.top + MulDiv(4, dpi, 96),
+                right, rowRect.top + MulDiv(24, dpi, 96) };
             SelectObject(dc, nameFont);
             SetTextColor(dc, primary);
             DrawTextW(dc, download.filename.c_str(), -1, &nameRect,
@@ -6137,15 +6137,15 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
             else if (download.failed)
                 status = L"Download Failed";
             else if (download.finished)
-                status = L"Downloaded — " + fromUTF8(formatDownloadBytes(
+                status = L"Downloaded - " + fromUTF8(formatDownloadBytes(
                     download.totalBytes > 0 ? download.totalBytes : download.bytesWritten));
             else if (download.bytesWritten > 0)
-                status = L"Downloading — " + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
+                status = L"Downloading - " + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
             else
                 status = L"Starting download";
 
-            RECT statusRect { left, rowRect.top + MulDiv(29, dpi, 96),
-                right, rowRect.top + MulDiv(48, dpi, 96) };
+            RECT statusRect { left, rowRect.top + MulDiv(23, dpi, 96),
+                right, rowRect.top + MulDiv(42, dpi, 96) };
             SelectObject(dc, statusFont);
             SetTextColor(dc, download.failed ? (dark ? RGB(255, 130, 125) : RGB(190, 45, 39)) : secondary);
             DrawTextW(dc, status.c_str(), -1, &statusRect,
@@ -6154,7 +6154,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
             if (inProgress) {
                 const int barLeft = left;
                 const int barRight = right;
-                const int barTop = rowRect.top + MulDiv(57, dpi, 96);
+                const int barTop = rowRect.top + MulDiv(54, dpi, 96);
                 const int barHeight = std::max(3, MulDiv(4, dpi, 96));
                 const int trackWidth = std::max(1, barRight - barLeft);
                 Gdiplus::Graphics graphics(dc);
@@ -6197,8 +6197,9 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
 
     HPEN footerPen = CreatePen(PS_SOLID, 1, separator);
     HGDIOBJ oldFooterPen = SelectObject(dc, footerPen);
-    MoveToEx(dc, horizontalPad, footerTop, nullptr);
-    LineTo(dc, width - horizontalPad, footerTop);
+    const int footerDividerInset = MulDiv(4, dpi, 96);
+    MoveToEx(dc, footerDividerInset, footerTop, nullptr);
+    LineTo(dc, width - footerDividerInset, footerTop);
     SelectObject(dc, oldFooterPen);
     DeleteObject(footerPen);
 
@@ -6211,14 +6212,10 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
         drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
     }
     SelectObject(dc, footerFont);
-    SetTextColor(dc, accent);
-    RECT footerLabel { horizontalPad + MulDiv(2, dpi, 96), footerTop,
-        width - horizontalPad - MulDiv(18, dpi, 96), client.bottom };
+    SetTextColor(dc, primary);
+    RECT footerLabel { MulDiv(20, dpi, 96), footerTop,
+        width - MulDiv(8, dpi, 96), client.bottom };
     DrawTextW(dc, L"Show All Downloads", -1, &footerLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    RECT chevronRect { width - horizontalPad - MulDiv(18, dpi, 96), footerTop,
-        width - horizontalPad, client.bottom };
-    SetTextColor(dc, secondary);
-    DrawTextW(dc, L"›", -1, &chevronRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     SelectObject(dc, originalFont);
     DeleteObject(nameFont);
@@ -6251,10 +6248,10 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = scaleForDpi(browser->window, 470);
+    const int width = scaleForDpi(browser->window, 480);
     const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
     const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 76 : rows * 76);
-    const int height = contentHeight + scaleForDpi(browser->window, 6 + 38 + 5);
+    const int height = contentHeight + scaleForDpi(browser->window, 5 + 26 + 3);
 
     RECT anchorRect = browser->rightToolbarButtonRect(1);
     POINT anchor { anchorRect.right, anchorRect.bottom + MulDiv(4, dpi, 96) };
