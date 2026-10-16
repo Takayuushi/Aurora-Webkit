@@ -4222,7 +4222,8 @@ void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
 
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
-            it->finished = true;
+            if (!it->cancelled)
+                it->finished = true;
             break;
         }
     }
