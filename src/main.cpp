@@ -217,6 +217,7 @@ void websiteDataFetchCacheCleared(void*);
 struct AuroraContextMenuEntry {
     WKRetainPtr<WKContextMenuItemRef> item;
     std::wstring title;
+    UINT appCommand { 0 };
     WKContextMenuItemTag tag { kWKContextMenuItemTagNoAction };
     WKContextMenuItemType type { kWKContextMenuItemTypeAction };
     bool enabled { true };
