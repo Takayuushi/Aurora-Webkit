@@ -276,6 +276,80 @@ void appendAuroraContextMenuEntries(WKArrayRef items, std::vector<AuroraContextM
     }
 }
 
+std::wstring stripNativeMenuMnemonics(const std::wstring& source)
+{
+    std::wstring result;
+    result.reserve(source.size());
+    for (size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == L'&') {
+            if (i + 1 < source.size() && source[i + 1] == L'&') {
+                result.push_back(L'&');
+                ++i;
+            }
+            continue;
+        }
+        result.push_back(source[i]);
+    }
+    return result;
+}
+
+void appendAuroraNativeMenuEntries(HMENU menu, std::vector<AuroraContextMenuEntry>& output)
+{
+    if (!menu)
+        return;
+    const int count = GetMenuItemCount(menu);
+    if (count <= 0)
+        return;
+    output.reserve(output.size() + static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        wchar_t buffer[1024] { };
+        MENUITEMINFOW info { };
+        info.cbSize = sizeof(info);
+        info.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU | MIIM_STRING;
+        info.dwTypeData = buffer;
+        info.cch = static_cast<UINT>(std::size(buffer) - 1);
+        if (!GetMenuItemInfoW(menu, static_cast<UINT>(index), TRUE, &info))
+            continue;
+
+        AuroraContextMenuEntry entry;
+        if (info.fType & MFT_SEPARATOR) {
+            entry.type = kWKContextMenuItemTypeSeparator;
+            entry.enabled = false;
+        } else {
+            entry.appCommand = info.wID;
+            entry.enabled = !(info.fState & (MFS_DISABLED | MFS_GRAYED));
+            entry.checked = (info.fState & MFS_CHECKED) != 0;
+            entry.title = stripNativeMenuMnemonics(std::wstring(buffer, info.cch));
+            if (info.hSubMenu) {
+                entry.type = kWKContextMenuItemTypeSubmenu;
+                appendAuroraNativeMenuEntries(info.hSubMenu, entry.children);
+            } else
+                entry.type = kWKContextMenuItemTypeAction;
+        }
+        output.push_back(std::move(entry));
+    }
+}
+
+void showAuroraMenuFromHMENU(BrowserState* browser, HMENU menu, POINT screenPoint, bool alignRight)
+{
+    if (!browser || !menu)
+        return;
+    if (browser->webContextMenuWindow && IsWindow(browser->webContextMenuWindow))
+        dismissWebContextMenu(browser->webContextMenuWindow, false);
+
+    std::vector<AuroraContextMenuEntry> entries;
+    appendAuroraNativeMenuEntries(menu, entries);
+    if (entries.empty())
+        return;
+
+    const int dpi = windowDpi(browser->window);
+    if (alignRight)
+        screenPoint.x -= auroraContextMenuWidth(entries, dpi);
+    HWND popup = createAuroraContextMenuWindow(browser, nullptr, nullptr,
+        std::move(entries), screenPoint, nullptr, nullptr, -1);
+    browser->webContextMenuWindow = popup;
+}
+
 int auroraContextMenuEntryHeight(const AuroraContextMenuEntry& entry, int dpi)
 {
     return MulDiv(entry.type == kWKContextMenuItemTypeSeparator
@@ -677,11 +751,22 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
                     return 0;
                 }
 
+                const HWND root = state->rootWindow ? state->rootWindow : window;
+                BrowserState* browser = state->browser;
+                if (!entry.item && entry.appCommand) {
+                    const UINT command = entry.appCommand;
+                    if (browser && browser->webContextMenuWindow == root)
+                        browser->webContextMenuWindow = nullptr;
+                    closeAuroraContextMenuTree(root);
+                    if (browser)
+                        browser->handleCommand(command);
+                    return 0;
+                }
+                if (!entry.item)
+                    return 0;
                 WKRetainPtr<WKPageRef> selectedPage = state->page;
                 WKRetainPtr<WKFrameInfoRef> selectedFrameInfo = state->frameInfo;
                 WKRetainPtr<WKContextMenuItemRef> selectedItem = entry.item;
-                const HWND root = state->rootWindow ? state->rootWindow : window;
-                BrowserState* browser = state->browser;
                 if (browser && browser->webContextMenuWindow == root)
                     browser->webContextMenuWindow = nullptr;
                 closeAuroraContextMenuTree(root);
