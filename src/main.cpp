@@ -6032,33 +6032,43 @@ struct DownloadsPopoverWindowState {
     BrowserState* browser { nullptr };
     RECT targetRect { };
     ULONGLONG openedAt { 0 };
-    int hoveredRow { -1 }; // 0..4 are downloads; 5 is "Show All Downloads".
+    int hoveredRow { -1 };
     float rowHoverOpacity[6] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool trackingMouse { false };
     bool animating { true };
     bool waitingForInitialButtonRelease { false };
+    bool acrylicBackdrop { false };
 };
 
 int downloadsPopoverVisibleRows(const DownloadsPopoverWindowState* state)
 {
-    if (!state || !state->browser)
-        return 0;
-    return static_cast<int>(std::min<size_t>(5, state->browser->downloads.size()));
+    return state && state->browser
+        ? static_cast<int>(std::min<size_t>(5, state->browser->downloads.size())) : 0;
+}
+
+int downloadsPopoverArrowHeight(const DownloadsPopoverWindowState* state)
+{
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 10);
+}
+
+int downloadsPopoverHeaderHeight(const DownloadsPopoverWindowState* state)
+{
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 39);
 }
 
 int downloadsPopoverRowHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 64);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 66);
 }
 
-int downloadsPopoverFooterHeight(const DownloadsPopoverWindowState* state)
+int downloadsPopoverHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 30);
-}
-
-int downloadsPopoverTopPadding(const DownloadsPopoverWindowState* state)
-{
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 5);
+    const int rows = downloadsPopoverVisibleRows(state);
+    const int bodyHeight = rows > 0
+        ? rows * downloadsPopoverRowHeight(state)
+        : scaleForDpi(state && state->browser ? state->browser->window : nullptr, 74);
+    return downloadsPopoverArrowHeight(state) + downloadsPopoverHeaderHeight(state)
+        + bodyHeight + scaleForDpi(state && state->browser ? state->browser->window : nullptr, 4);
 }
 
 RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index)
@@ -6067,20 +6077,213 @@ RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index
         return { 0, 0, 0, 0 };
     const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
     const int width = state->targetRect.right - state->targetRect.left;
-    const int rowHeight = downloadsPopoverRowHeight(state);
-    const int top = downloadsPopoverTopPadding(state) + index * rowHeight;
+    const int top = downloadsPopoverArrowHeight(state) + downloadsPopoverHeaderHeight(state)
+        + index * downloadsPopoverRowHeight(state);
     const int horizontalPad = MulDiv(8, dpi, 96);
-    return { horizontalPad, top, width - horizontalPad, top + rowHeight };
+    return { horizontalPad, top, width - horizontalPad, top + downloadsPopoverRowHeight(state) };
 }
 
-RECT downloadsPopoverFooterRect(const DownloadsPopoverWindowState* state)
+RECT downloadsPopoverClearRect(const DownloadsPopoverWindowState* state)
 {
     if (!state)
         return { 0, 0, 0, 0 };
+    const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+    const int width = state->targetRect.right - state->targetRect.left;
+    const int top = downloadsPopoverArrowHeight(state);
+    return { width - MulDiv(61, dpi, 96), top + MulDiv(5, dpi, 96),
+        width - MulDiv(10, dpi, 96), top + downloadsPopoverHeaderHeight(state) - MulDiv(5, dpi, 96) };
+}
+
+RECT downloadsPopoverActionRect(const DownloadsPopoverWindowState* state, int index)
+{
+    const RECT row = downloadsPopoverRowRect(state, index);
+    if (row.right <= row.left)
+        return { 0, 0, 0, 0 };
+    const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+    const int size = MulDiv(25, dpi, 96);
+    const int right = row.right - MulDiv(9, dpi, 96);
+    const int centerY = (row.top + row.bottom) / 2;
+    return { right - size, centerY - size / 2, right, centerY + size / 2 };
+}
+
+bool downloadsPopoverHasClearableItems(const DownloadsPopoverWindowState* state)
+{
+    if (!state || !state->browser)
+        return false;
+    return std::any_of(state->browser->downloads.begin(), state->browser->downloads.end(),
+        [](const DownloadEntry& item) { return item.finished || item.failed || item.cancelled; });
+}
+
+void drawDownloadsPopoverSurface(HDC dc, const RECT& rect, COLORREF fillColor,
+    COLORREF borderColor, float radius, BYTE fillAlpha)
+{
+    const float width = static_cast<float>(rect.right - rect.left);
+    const float height = static_cast<float>(rect.bottom - rect.top);
+    if (width <= 0.0f || height <= 0.0f)
+        return;
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    addRoundedIconRectangle(path, static_cast<float>(rect.left) + 0.5f,
+        static_cast<float>(rect.top) + 0.5f, width - 1.0f, height - 1.0f, radius);
+    Gdiplus::SolidBrush fill(Gdiplus::Color(fillAlpha,
+        GetRValue(fillColor), GetGValue(fillColor), GetBValue(fillColor)));
+    Gdiplus::Pen border(iconGdiColor(borderColor), 1.0f);
+    graphics.FillPath(&fill, &path);
+    graphics.DrawPath(&border, &path);
+}
+
+bool enableDownloadsAcrylicBackdrop(HWND window, bool dark)
+{
+    struct AccentPolicy { int state; int flags; DWORD gradientColor; int animationId; };
+    struct WindowCompositionAttributeData { int attribute; void* data; SIZE_T size; };
+    using SetWindowCompositionAttributeProc = BOOL (WINAPI*)(HWND, WindowCompositionAttributeData*);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    auto setComposition = user32
+        ? reinterpret_cast<SetWindowCompositionAttributeProc>(
+            GetProcAddress(user32, "SetWindowCompositionAttribute"))
+        : nullptr;
+    if (!setComposition)
+        return false;
+
+    const BYTE alpha = 0xD8;
+    const BYTE red = dark ? 38 : 247;
+    const BYTE green = dark ? 38 : 247;
+    const BYTE blue = dark ? 42 : 250;
+    AccentPolicy policy {
+        4, 2,
+        (static_cast<DWORD>(alpha) << 24)
+            | (static_cast<DWORD>(red) << 16)
+            | (static_cast<DWORD>(green) << 8)
+            | static_cast<DWORD>(blue),
+        0
+    };
+    WindowCompositionAttributeData data { 19, &policy, sizeof(policy) };
+    return setComposition(window, &data) != FALSE;
+}
+
+void applyDownloadsPopoverWindowRegion(HWND window, const DownloadsPopoverWindowState* state)
+{
+    if (!window || !state)
+        return;
+    const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
     const int width = state->targetRect.right - state->targetRect.left;
     const int height = state->targetRect.bottom - state->targetRect.top;
-    const int footerHeight = downloadsPopoverFooterHeight(state);
-    return { 0, height - footerHeight, width, height };
+    const int arrowHeight = downloadsPopoverArrowHeight(state);
+    const int corner = MulDiv(16, dpi, 96);
+    const int arrowCenter = width - MulDiv(30, dpi, 96);
+    const int arrowHalfWidth = MulDiv(10, dpi, 96);
+
+    HRGN region = CreateRoundRectRgn(0, arrowHeight, width + 1, height + 1, corner, corner);
+    POINT arrowPoints[3] {
+        { arrowCenter, 0 },
+        { arrowCenter - arrowHalfWidth, arrowHeight + 1 },
+        { arrowCenter + arrowHalfWidth, arrowHeight + 1 }
+    };
+    HRGN arrowRegion = CreatePolygonRgn(arrowPoints, 3, WINDING);
+    if (region && arrowRegion)
+        CombineRgn(region, region, arrowRegion, RGN_OR);
+    if (arrowRegion)
+        DeleteObject(arrowRegion);
+    if (region)
+        SetWindowRgn(window, region, TRUE);
+}
+
+std::wstring downloadsPopoverStatus(const DownloadEntry& download)
+{
+    if (download.cancelled)
+        return L"Stopped";
+    if (download.failed)
+        return L"Download Failed";
+    if (download.finished)
+        return fromUTF8(formatDownloadBytes(
+            download.totalBytes > 0 ? download.totalBytes : download.bytesWritten));
+    if (download.totalBytes > 0)
+        return fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" of "
+            + fromUTF8(formatDownloadBytes(download.totalBytes));
+    if (download.bytesWritten > 0)
+        return fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" downloaded";
+    return L"Starting…";
+}
+
+void drawDownloadsFileIcon(HDC dc, const RECT& rect, const std::wstring& filename, bool dark, int dpi)
+{
+    const int left = rect.left, top = rect.top;
+    const int width = rect.right - rect.left, height = rect.bottom - rect.top;
+    {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::GraphicsPath sheet;
+        addRoundedIconRectangle(sheet, static_cast<float>(left) + 0.5f,
+            static_cast<float>(top) + 0.5f, static_cast<float>(width) - 1.0f,
+            static_cast<float>(height) - 1.0f, static_cast<float>(MulDiv(2, dpi, 96)));
+        Gdiplus::SolidBrush paper(iconGdiColor(dark ? RGB(232, 232, 236) : RGB(255, 255, 255)));
+        Gdiplus::Pen edge(iconGdiColor(dark ? RGB(160, 160, 166) : RGB(198, 201, 207)), 1.0f);
+        graphics.FillPath(&paper, &sheet);
+        graphics.DrawPath(&edge, &sheet);
+        Gdiplus::GraphicsPath fold;
+        fold.AddLine(static_cast<float>(left + width - MulDiv(8, dpi, 96)),
+            static_cast<float>(top + 1),
+            static_cast<float>(left + width - MulDiv(8, dpi, 96)),
+            static_cast<float>(top + MulDiv(8, dpi, 96)));
+        fold.AddLine(static_cast<float>(left + width - MulDiv(8, dpi, 96)),
+            static_cast<float>(top + MulDiv(8, dpi, 96)),
+            static_cast<float>(left + width - 1),
+            static_cast<float>(top + MulDiv(8, dpi, 96)));
+        Gdiplus::Pen foldPen(iconGdiColor(dark ? RGB(178, 178, 184) : RGB(205, 208, 214)), 1.0f);
+        graphics.DrawPath(&foldPen, &fold);
+    }
+
+    std::wstring extension;
+    const size_t dot = filename.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot + 1 < filename.size())
+        extension = filename.substr(dot + 1);
+    if (extension.size() > 4)
+        extension.resize(4);
+    if (!extension.empty())
+        CharUpperBuffW(extension.data(), static_cast<DWORD>(extension.size()));
+    else
+        extension = L"FILE";
+
+    HFONT extensionFont = CreateFontW(-std::max(7, MulDiv(7, dpi, 96)), 0, 0, 0, FW_SEMIBOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(dc, extensionFont);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, dark ? RGB(79, 95, 120) : RGB(86, 103, 127));
+    RECT extRect { left - MulDiv(1, dpi, 96), top + MulDiv(19, dpi, 96),
+        left + width + MulDiv(1, dpi, 96), top + height - MulDiv(3, dpi, 96) };
+    DrawTextW(dc, extension.c_str(), -1, &extRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    DeleteObject(extensionFont);
+}
+
+void drawDownloadsActionIcon(HDC dc, const RECT& rect, bool dark, bool reveal, bool hovered, int dpi)
+{
+    if (hovered) {
+        const COLORREF hoverFill = dark ? RGB(75, 75, 81) : RGB(229, 232, 237);
+        drawRoundedControl(dc, rect, hoverFill, hoverFill,
+            static_cast<float>((rect.bottom - rect.top) / 2), 0.5f);
+    }
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    const COLORREF iconColor = dark ? RGB(198, 198, 204) : RGB(103, 108, 116);
+    Gdiplus::Pen pen(iconGdiColor(iconColor), std::max(1.2f, static_cast<float>(dpi) / 96.0f * 1.35f));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    const float cx = (rect.left + rect.right) / 2.0f;
+    const float cy = (rect.top + rect.bottom) / 2.0f;
+    if (reveal) {
+        const float radius = static_cast<float>(rect.right - rect.left) * 0.20f;
+        graphics.DrawEllipse(&pen, cx - radius - 1.0f, cy - radius - 1.5f, radius * 2.0f, radius * 2.0f);
+        graphics.DrawLine(&pen, cx + radius * 0.55f, cy + radius * 0.55f,
+            cx + radius * 1.55f, cy + radius * 1.55f);
+    } else {
+        const float arm = static_cast<float>(rect.right - rect.left) * 0.16f;
+        graphics.DrawLine(&pen, cx - arm, cy - arm, cx + arm, cy + arm);
+        graphics.DrawLine(&pen, cx + arm, cy - arm, cx - arm, cy + arm);
+    }
 }
 
 void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* state)
@@ -6093,100 +6296,146 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     GetClientRect(window, &client);
     const int dpi = windowDpi(browser->window);
     const int width = client.right;
+    const int arrowHeight = downloadsPopoverArrowHeight(state);
+    const int headerHeight = downloadsPopoverHeaderHeight(state);
+    const int headerTop = arrowHeight;
+    const int headerBottom = headerTop + headerHeight;
     const bool dark = browser->chromeDarkTheme();
 
-    const COLORREF surface = dark ? RGB(38, 38, 41) : RGB(250, 250, 252);
-    const COLORREF border = dark ? RGB(62, 62, 66) : RGB(214, 216, 220);
-    const COLORREF primary = dark ? RGB(246, 246, 248) : RGB(32, 35, 39);
-    const COLORREF secondary = dark ? RGB(161, 161, 166) : RGB(105, 109, 116);
-    const COLORREF separator = dark ? RGB(62, 62, 66) : RGB(231, 233, 237);
-    const COLORREF hover = dark ? RGB(52, 52, 56) : RGB(242, 244, 247);
-    const COLORREF accent = dark ? RGB(88, 151, 255) : RGB(10, 132, 255);
-    const int corner = MulDiv(11, dpi, 96);
+    const COLORREF surface = dark ? RGB(40, 40, 44) : RGB(247, 247, 250);
+    const COLORREF border = dark ? RGB(76, 76, 82) : RGB(205, 207, 213);
+    const COLORREF primary = dark ? RGB(248, 248, 250) : RGB(28, 28, 30);
+    const COLORREF secondary = dark ? RGB(164, 164, 170) : RGB(109, 113, 120);
+    const COLORREF separator = dark ? RGB(74, 74, 80) : RGB(224, 226, 231);
+    const COLORREF hover = dark ? RGB(57, 57, 62) : RGB(234, 236, 241);
+    const COLORREF accent = dark ? RGB(10, 132, 255) : RGB(0, 122, 255);
+    const int corner = MulDiv(16, dpi, 96);
+    const BYTE surfaceAlpha = state->acrylicBackdrop ? 218 : 255;
 
-    drawRoundedControl(dc, client, surface, border, static_cast<float>(corner), 1.0f);
+    RECT panelRect { 0, arrowHeight, width, client.bottom };
+    drawDownloadsPopoverSurface(dc, panelRect, surface, border, static_cast<float>(corner), surfaceAlpha);
+
+    const int arrowCenter = width - MulDiv(30, dpi, 96);
+    const int arrowHalfWidth = MulDiv(10, dpi, 96);
+    {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::GraphicsPath arrow;
+        arrow.AddLine(static_cast<float>(arrowCenter), 0.5f,
+            static_cast<float>(arrowCenter - arrowHalfWidth), static_cast<float>(arrowHeight) + 0.5f);
+        arrow.AddLine(static_cast<float>(arrowCenter - arrowHalfWidth), static_cast<float>(arrowHeight) + 0.5f,
+            static_cast<float>(arrowCenter + arrowHalfWidth), static_cast<float>(arrowHeight) + 0.5f);
+        arrow.AddLine(static_cast<float>(arrowCenter + arrowHalfWidth), static_cast<float>(arrowHeight) + 0.5f,
+            static_cast<float>(arrowCenter), 0.5f);
+        Gdiplus::SolidBrush arrowFill(Gdiplus::Color(surfaceAlpha,
+            GetRValue(surface), GetGValue(surface), GetBValue(surface)));
+        Gdiplus::Pen arrowBorder(iconGdiColor(border), 1.0f);
+        graphics.FillPath(&arrowFill, &arrow);
+        graphics.DrawPath(&arrowBorder, &arrow);
+    }
+
     SetBkMode(dc, TRANSPARENT);
     HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
-
-    HFONT nameFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_MEDIUM,
+    HFONT titleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable");
-    HFONT statusFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
+    HFONT nameFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable");
+    HFONT statusFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT footerFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
+    HFONT clearFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    RECT headerRect { 0, headerTop, width, headerBottom };
+    SelectObject(dc, titleFont);
+    SetTextColor(dc, primary);
+    DrawTextW(dc, L"Downloads", -1, &headerRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT clearRect = downloadsPopoverClearRect(state);
+    const bool hasClearableItems = downloadsPopoverHasClearableItems(state);
+    if (state->rowHoverOpacity[5] > 0.01f) {
+        RECT hoverRect = clearRect;
+        InflateRect(&hoverRect, MulDiv(3, dpi, 96), MulDiv(1, dpi, 96));
+        const COLORREF mixed = blendColor(surface, hover, state->rowHoverOpacity[5]);
+        drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
+    }
+    SelectObject(dc, clearFont);
+    SetTextColor(dc, hasClearableItems ? accent : secondary);
+    DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    HPEN headerPen = CreatePen(PS_SOLID, 1, separator);
+    HGDIOBJ oldHeaderPen = SelectObject(dc, headerPen);
+    MoveToEx(dc, MulDiv(12, dpi, 96), headerBottom, nullptr);
+    LineTo(dc, width - MulDiv(12, dpi, 96), headerBottom);
+    SelectObject(dc, oldHeaderPen);
+    DeleteObject(headerPen);
 
     const int visible = downloadsPopoverVisibleRows(state);
-    const int topPadding = downloadsPopoverTopPadding(state);
-    const int footerTop = client.bottom - downloadsPopoverFooterHeight(state);
-    const int horizontalPad = MulDiv(10, dpi, 96);
-
     if (visible == 0) {
-        const int emptyCenterY = (topPadding + footerTop) / 2;
+        const int emptyCenterY = (headerBottom + client.bottom) / 2;
         SelectObject(dc, statusFont);
         SetTextColor(dc, secondary);
-        RECT emptyRect { horizontalPad, emptyCenterY - MulDiv(11, dpi, 96),
-            width - horizontalPad, emptyCenterY + MulDiv(11, dpi, 96) };
+        RECT emptyRect { MulDiv(16, dpi, 96), emptyCenterY - MulDiv(12, dpi, 96),
+            width - MulDiv(16, dpi, 96), emptyCenterY + MulDiv(12, dpi, 96) };
         DrawTextW(dc, L"No Downloads Yet", -1, &emptyRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
+        POINT cursor { -1, -1 };
+        GetCursorPos(&cursor);
+        ScreenToClient(window, &cursor);
         for (int row = 0; row < visible; ++row) {
             const size_t index = browser->downloads.size() - 1 - static_cast<size_t>(row);
             const auto& download = browser->downloads[index];
             const RECT rowRect = downloadsPopoverRowRect(state, row);
+            const RECT actionRect = downloadsPopoverActionRect(state, row);
+            const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+            const bool finished = download.finished && !download.failed && !download.cancelled;
 
             if (row > 0) {
                 HPEN dividerPen = CreatePen(PS_SOLID, 1, separator);
                 HGDIOBJ oldPen = SelectObject(dc, dividerPen);
-                MoveToEx(dc, horizontalPad, rowRect.top, nullptr);
-                LineTo(dc, width - horizontalPad, rowRect.top);
+                MoveToEx(dc, MulDiv(12, dpi, 96), rowRect.top, nullptr);
+                LineTo(dc, width - MulDiv(12, dpi, 96), rowRect.top);
                 SelectObject(dc, oldPen);
                 DeleteObject(dividerPen);
             }
 
             if (state->rowHoverOpacity[row] > 0.01f) {
                 RECT hoverRect = rowRect;
-                InflateRect(&hoverRect, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
+                InflateRect(&hoverRect, -MulDiv(2, dpi, 96), -MulDiv(2, dpi, 96));
                 const COLORREF mixed = blendColor(surface, hover, state->rowHoverOpacity[row]);
-                drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
+                drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(9, dpi, 96)), 0.5f);
             }
 
-            const int left = rowRect.left + MulDiv(9, dpi, 96);
-            const int right = rowRect.right - MulDiv(9, dpi, 96);
-            RECT nameRect { left, rowRect.top + MulDiv(4, dpi, 96),
-                right, rowRect.top + MulDiv(24, dpi, 96) };
+            const int iconLeft = MulDiv(18, dpi, 96);
+            const int iconTop = rowRect.top + (downloadsPopoverRowHeight(state) - MulDiv(34, dpi, 96)) / 2;
+            RECT fileIconRect { iconLeft, iconTop, iconLeft + MulDiv(26, dpi, 96), iconTop + MulDiv(34, dpi, 96) };
+            drawDownloadsFileIcon(dc, fileIconRect, download.filename, dark, dpi);
+
+            const int textLeft = iconLeft + MulDiv(35, dpi, 96);
+            const int textRight = actionRect.left - MulDiv(8, dpi, 96);
+            RECT nameRect { textLeft, rowRect.top + MulDiv(7, dpi, 96),
+                textRight, rowRect.top + MulDiv(28, dpi, 96) };
             SelectObject(dc, nameFont);
             SetTextColor(dc, primary);
             DrawTextW(dc, download.filename.c_str(), -1, &nameRect,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-            const bool inProgress = !download.finished && !download.failed && !download.cancelled;
-            std::wstring status;
-            if (download.cancelled)
-                status = L"Cancelled";
-            else if (download.failed)
-                status = L"Download Failed";
-            else if (download.finished)
-                status = L"Downloaded - " + fromUTF8(formatDownloadBytes(
-                    download.totalBytes > 0 ? download.totalBytes : download.bytesWritten));
-            else if (download.bytesWritten > 0)
-                status = L"Downloading - " + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
-            else
-                status = L"Starting download";
-
-            RECT statusRect { left, rowRect.top + MulDiv(23, dpi, 96),
-                right, rowRect.top + MulDiv(42, dpi, 96) };
+            RECT statusRect { textLeft, rowRect.top + MulDiv(28, dpi, 96),
+                textRight, rowRect.top + MulDiv(45, dpi, 96) };
             SelectObject(dc, statusFont);
             SetTextColor(dc, download.failed ? (dark ? RGB(255, 130, 125) : RGB(190, 45, 39)) : secondary);
+            const std::wstring status = downloadsPopoverStatus(download);
             DrawTextW(dc, status.c_str(), -1, &statusRect,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
             if (inProgress) {
-                const int barLeft = left;
-                const int barRight = right;
-                const int barTop = rowRect.top + MulDiv(52, dpi, 96);
-                const int barHeight = std::max(3, MulDiv(4, dpi, 96));
+                const int barLeft = textLeft;
+                const int barRight = textRight;
+                const int barTop = rowRect.top + MulDiv(51, dpi, 96);
+                const int barHeight = std::max(3, MulDiv(3, dpi, 96));
                 const int trackWidth = std::max(1, barRight - barLeft);
                 Gdiplus::Graphics graphics(dc);
                 graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -6194,7 +6443,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
                 addRoundedIconRectangle(track, static_cast<float>(barLeft), static_cast<float>(barTop),
                     static_cast<float>(trackWidth), static_cast<float>(barHeight),
                     static_cast<float>(barHeight) / 2.0f);
-                Gdiplus::SolidBrush trackBrush(iconGdiColor(dark ? RGB(76, 76, 81) : RGB(224, 227, 232)));
+                Gdiplus::SolidBrush trackBrush(iconGdiColor(dark ? RGB(83, 83, 89) : RGB(224, 226, 231)));
                 graphics.FillPath(&trackBrush, &track);
 
                 if (download.totalBytes > 0) {
@@ -6208,7 +6457,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
                         graphics.FillPath(&fillBrush, &fill);
                     }
                 } else {
-                    const int segmentWidth = std::min(trackWidth, std::max(MulDiv(64, dpi, 96), trackWidth / 4));
+                    const int segmentWidth = std::min(trackWidth, std::max(MulDiv(58, dpi, 96), trackWidth / 4));
                     const int travel = std::max(1, trackWidth - segmentWidth);
                     const ULONGLONG phase = GetTickCount64() % 1400ULL;
                     const double phaseProgress = phase < 700ULL
@@ -6223,35 +6472,18 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
                     graphics.FillPath(&fillBrush, &segment);
                 }
             }
+
+            if (inProgress || finished)
+                drawDownloadsActionIcon(dc, actionRect, dark, finished,
+                    state->hoveredRow == row && PtInRect(&actionRect, cursor), dpi);
         }
     }
 
-    HPEN footerPen = CreatePen(PS_SOLID, 1, separator);
-    HGDIOBJ oldFooterPen = SelectObject(dc, footerPen);
-    const int footerDividerInset = MulDiv(2, dpi, 96);
-    MoveToEx(dc, footerDividerInset, footerTop, nullptr);
-    LineTo(dc, width - footerDividerInset, footerTop);
-    SelectObject(dc, oldFooterPen);
-    DeleteObject(footerPen);
-
-    RECT footerRect { horizontalPad, footerTop + MulDiv(1, dpi, 96),
-        width - horizontalPad, client.bottom - MulDiv(1, dpi, 96) };
-    if (state->rowHoverOpacity[5] > 0.01f) {
-        RECT hoverRect = footerRect;
-        InflateRect(&hoverRect, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
-        const COLORREF mixed = blendColor(surface, hover, state->rowHoverOpacity[5]);
-        drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
-    }
-    SelectObject(dc, footerFont);
-    SetTextColor(dc, primary);
-    RECT footerLabel { MulDiv(17, dpi, 96), footerTop,
-        width - MulDiv(8, dpi, 96), client.bottom };
-    DrawTextW(dc, L"Show All Downloads", -1, &footerLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
     SelectObject(dc, originalFont);
+    DeleteObject(titleFont);
     DeleteObject(nameFont);
     DeleteObject(statusFont);
-    DeleteObject(footerFont);
+    DeleteObject(clearFont);
 }
 
 void showDownloadsPopover(BrowserState* browser)
@@ -6279,14 +6511,16 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = scaleForDpi(browser->window, 478);
-    const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
-    const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 64);
-    const int height = contentHeight + scaleForDpi(browser->window, 5 + 30 + 3);
-
+    const int width = scaleForDpi(browser->window, 390);
     RECT anchorRect = browser->rightToolbarButtonRect(1);
-    POINT anchor { anchorRect.right + MulDiv(4, dpi, 96), anchorRect.bottom + MulDiv(1, dpi, 96) };
+    POINT anchor { anchorRect.right + MulDiv(14, dpi, 96), anchorRect.bottom };
     ClientToScreen(browser->window, &anchor);
+
+    auto* popupState = new DownloadsPopoverWindowState;
+    popupState->browser = browser;
+    popupState->openedAt = GetTickCount64();
+    popupState->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const int height = downloadsPopoverHeight(popupState);
 
     HMONITOR monitor = MonitorFromWindow(browser->window, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo { };
@@ -6296,34 +6530,27 @@ void showDownloadsPopover(BrowserState* browser)
         work = monitorInfo.rcWork;
 
     int left = anchor.x - width;
-    int top = anchor.y;
+    int top = anchor.y - downloadsPopoverArrowHeight(popupState);
     if (left < work.left) left = work.left;
     if (left + width > work.right) left = std::max(work.left, work.right - width);
-    if (top + height > work.bottom) top = anchor.y - height - MulDiv(6, dpi, 96);
+    if (top + height > work.bottom) top = anchor.y - height;
     top = std::clamp(top, static_cast<int>(work.top),
         std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height));
-
-    auto* popupState = new DownloadsPopoverWindowState;
-    popupState->browser = browser;
     popupState->targetRect = { left, top, left + width, top + height };
-    popupState->openedAt = GetTickCount64();
-    popupState->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
     HWND popup = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
-        L"AuroraDownloadsPopover", L"",
-        WS_POPUP,
-        left, top - MulDiv(5, dpi, 96), width, height,
+        L"AuroraDownloadsPopover", L"", WS_POPUP,
+        left, top - MulDiv(4, dpi, 96), width, height,
         browser->window, nullptr, GetModuleHandleW(nullptr), popupState);
     if (!popup) {
         delete popupState;
         return;
     }
 
-    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, MulDiv(13, dpi, 96), MulDiv(13, dpi, 96));
-    if (region)
-        SetWindowRgn(popup, region, TRUE);
+    applyDownloadsPopoverWindowRegion(popup, popupState);
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
+    popupState->acrylicBackdrop = enableDownloadsAcrylicBackdrop(popup, browser->chromeDarkTheme());
     browser->downloadsPopoverWindow = popup;
     ShowWindow(popup, SW_SHOWNOACTIVATE);
     SetTimer(popup, kDownloadsPopoverTimerId, 15, nullptr);
@@ -6373,13 +6600,11 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 const float eased = t * t * (3.0f - 2.0f * t);
                 const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
                 const int dpi = windowDpi(browser->window);
-                const int lift = static_cast<int>(MulDiv(5, dpi, 96) * (1.0f - eased) + 0.5f);
+                const int lift = static_cast<int>(MulDiv(4, dpi, 96) * (1.0f - eased) + 0.5f);
                 SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
-                SetWindowPos(window, HWND_TOPMOST,
-                    state->targetRect.left, state->targetRect.top - lift,
+                SetWindowPos(window, HWND_TOPMOST, state->targetRect.left, state->targetRect.top - lift,
                     state->targetRect.right - state->targetRect.left,
-                    state->targetRect.bottom - state->targetRect.top,
-                    SWP_NOACTIVATE | SWP_NOZORDER);
+                    state->targetRect.bottom - state->targetRect.top, SWP_NOACTIVATE | SWP_NOZORDER);
                 if (t >= 1.0f)
                     state->animating = false;
             }
@@ -6394,8 +6619,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     state->rowHoverOpacity[i] += delta * 0.32f;
                 if (std::abs(state->rowHoverOpacity[i] - before) > 0.001f) {
                     RECT hoverRect = i < downloadsPopoverVisibleRows(state)
-                        ? downloadsPopoverRowRect(state, i)
-                        : downloadsPopoverFooterRect(state);
+                        ? downloadsPopoverRowRect(state, i) : downloadsPopoverClearRect(state);
                     InvalidateRect(window, &hoverRect, FALSE);
                 }
             }
@@ -6413,33 +6637,28 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 state->trackingMouse = TrackMouseEvent(&tracking) != FALSE;
             }
             POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            const int footerTop = downloadsPopoverFooterRect(state).top;
-            const int rows = downloadsPopoverVisibleRows(state);
-            int row = -1;
-            if (point.y >= footerTop)
-                row = 5;
-            else {
-                for (int i = 0; i < rows; ++i) {
-                    const RECT rect = downloadsPopoverRowRect(state, i);
-                    if (PtInRect(&rect, point)) {
-                        row = i;
-                        break;
-                    }
+            int hovered = -1;
+            for (int i = 0; i < downloadsPopoverVisibleRows(state); ++i) {
+                const RECT rect = downloadsPopoverRowRect(state, i);
+                if (PtInRect(&rect, point)) {
+                    hovered = i;
+                    break;
                 }
             }
-            if (row != state->hoveredRow) {
-                const int previousRow = state->hoveredRow;
-                if (previousRow >= 0) {
-                    const RECT previousRect = previousRow < rows
-                        ? downloadsPopoverRowRect(state, previousRow)
-                        : downloadsPopoverFooterRect(state);
+            const RECT clearRect = downloadsPopoverClearRect(state);
+            if (PtInRect(&clearRect, point))
+                hovered = 5;
+            if (hovered != state->hoveredRow) {
+                const int previous = state->hoveredRow;
+                if (previous >= 0) {
+                    const RECT previousRect = previous < downloadsPopoverVisibleRows(state)
+                        ? downloadsPopoverRowRect(state, previous) : downloadsPopoverClearRect(state);
                     InvalidateRect(window, &previousRect, FALSE);
                 }
-                state->hoveredRow = row;
-                if (row >= 0) {
-                    const RECT currentRect = row < rows
-                        ? downloadsPopoverRowRect(state, row)
-                        : downloadsPopoverFooterRect(state);
+                state->hoveredRow = hovered;
+                if (hovered >= 0) {
+                    const RECT currentRect = hovered < downloadsPopoverVisibleRows(state)
+                        ? downloadsPopoverRowRect(state, hovered) : downloadsPopoverClearRect(state);
                     InvalidateRect(window, &currentRect, FALSE);
                 }
             }
@@ -6447,16 +6666,13 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         return 0;
 
     case WM_MOUSELEAVE:
-        if (state) {
+        if (state && state->hoveredRow >= 0) {
+            const int previous = state->hoveredRow;
+            const RECT previousRect = previous < downloadsPopoverVisibleRows(state)
+                ? downloadsPopoverRowRect(state, previous) : downloadsPopoverClearRect(state);
+            state->hoveredRow = -1;
             state->trackingMouse = false;
-            if (state->hoveredRow >= 0) {
-                const int previousRow = state->hoveredRow;
-                const RECT previousRect = previousRow < downloadsPopoverVisibleRows(state)
-                    ? downloadsPopoverRowRect(state, previousRow)
-                    : downloadsPopoverFooterRect(state);
-                state->hoveredRow = -1;
-                InvalidateRect(window, &previousRect, FALSE);
-            }
+            InvalidateRect(window, &previousRect, FALSE);
         }
         return 0;
 
@@ -6464,26 +6680,56 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         if (state && state->browser) {
             BrowserState* browser = state->browser;
             POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            const int footerTop = downloadsPopoverFooterRect(state).top;
-            if (point.y >= footerTop) {
-                DestroyWindow(window);
-                if (browser->addTab(true))
-                    browser->loadDownloadsPage();
+            const RECT clearRect = downloadsPopoverClearRect(state);
+            if (PtInRect(&clearRect, point) && downloadsPopoverHasClearableItems(state)) {
+                auto& entries = browser->downloads;
+                entries.erase(std::remove_if(entries.begin(), entries.end(),
+                    [](const DownloadEntry& item) { return item.finished || item.failed || item.cancelled; }),
+                    entries.end());
+                browser->refreshDownloadsPresentation();
+                if (entries.empty()) {
+                    DestroyWindow(window);
+                    return 0;
+                }
+
+                const int newHeight = downloadsPopoverHeight(state);
+                state->targetRect.bottom = state->targetRect.top + newHeight;
+                SetWindowPos(window, nullptr, state->targetRect.left, state->targetRect.top,
+                    state->targetRect.right - state->targetRect.left, newHeight,
+                    SWP_NOACTIVATE | SWP_NOZORDER);
+                applyDownloadsPopoverWindowRegion(window, state);
+                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             }
 
             const int rows = downloadsPopoverVisibleRows(state);
             for (int row = 0; row < rows; ++row) {
-                const RECT rect = downloadsPopoverRowRect(state, row);
-                if (!PtInRect(&rect, point))
+                const RECT rowRect = downloadsPopoverRowRect(state, row);
+                if (!PtInRect(&rowRect, point))
                     continue;
                 const size_t index = browser->downloads.size() - 1 - static_cast<size_t>(row);
-                if (index < browser->downloads.size()) {
-                    const auto download = browser->downloads[index];
-                    if (download.finished && !download.failed && !download.cancelled && !download.path.empty()) {
-                        DestroyWindow(window);
-                        ShellExecuteW(browser->window, L"open", download.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (index >= browser->downloads.size())
+                    return 0;
+
+                auto& download = browser->downloads[index];
+                const RECT actionRect = downloadsPopoverActionRect(state, row);
+                const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+                const bool finished = download.finished && !download.failed && !download.cancelled;
+                if (PtInRect(&actionRect, point)) {
+                    if (inProgress && download.download) {
+                        download.cancelled = true;
+                        WKDownloadCancel(download.download, nullptr, discardDownloadResumeData);
+                        browser->refreshDownloadsPresentation();
+                        InvalidateRect(window, &rowRect, FALSE);
+                    } else if (finished && !download.path.empty()) {
+                        browser->showFileInFolder(download.path);
                     }
+                    return 0;
+                }
+
+                if (finished && !download.path.empty()) {
+                    DestroyWindow(window);
+                    ShellExecuteW(browser->window, L"open", download.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
                 return 0;
             }
@@ -6522,7 +6768,6 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         return DefWindowProcW(window, message, wParam, lParam);
     }
 }
-
 
 struct SharePopoverWindowState {
     BrowserState* browser { nullptr };
