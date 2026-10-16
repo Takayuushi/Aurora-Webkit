@@ -198,7 +198,7 @@ int downloadsPopoverVisibleCount(const BrowserState*);
 int downloadsPopoverHeight(const BrowserState*);
 RECT downloadsPopoverRowRect(HWND, int, int);
 RECT downloadsPopoverActionRect(HWND, int, int);
-RECT downloadsPopoverFooterRect(HWND, int, int);
+RECT downloadsPopoverClearRect(HWND, int);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void websiteDataCleared(void*);
 void websiteDataStorageCleared(void*);
@@ -1346,9 +1346,9 @@ struct BrowserState {
 
     bool downloadsButtonVisible() const
     {
-        return std::any_of(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
-            return !item.finished && !item.failed && !item.cancelled;
-        });
+        // Safari keeps Downloads available while recent items remain; Clear removes
+        // completed entries, and the toolbar control disappears when the list is empty.
+        return !downloads.empty();
     }
 
     RECT rightToolbarButtonRect(int index) const
@@ -3182,6 +3182,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         std::wstring arguments = L"/select,\"" + path + L"\"";
         ShellExecuteW(window, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+
+    void clearCompletedDownloads()
+    {
+        downloads.erase(std::remove_if(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
+            return item.finished || item.failed || item.cancelled;
+        }), downloads.end());
+        refreshDownloadsPresentation();
     }
 
 
@@ -6091,10 +6099,10 @@ int downloadsPopoverVisibleCount(const BrowserState* browser)
 int downloadsPopoverHeight(const BrowserState* browser)
 {
     const int dpi = browser ? windowDpi(browser->window) : 96;
-    const int outer = MulDiv(8, dpi, 96);
-    const int rowHeight = MulDiv(72, dpi, 96);
-    const int footerHeight = MulDiv(42, dpi, 96);
-    return outer * 2 + downloadsPopoverVisibleCount(browser) * rowHeight + footerHeight;
+    const int outer = MulDiv(9, dpi, 96);
+    const int headerHeight = MulDiv(36, dpi, 96);
+    const int rowHeight = MulDiv(70, dpi, 96);
+    return outer * 2 + headerHeight + downloadsPopoverVisibleCount(browser) * rowHeight;
 }
 
 RECT downloadsPopoverRowRect(HWND popup, int displayRow, int dpi)
@@ -6102,9 +6110,10 @@ RECT downloadsPopoverRowRect(HWND popup, int displayRow, int dpi)
     RECT client { };
     if (popup)
         GetClientRect(popup, &client);
-    const int outer = MulDiv(8, dpi, 96);
-    const int rowHeight = MulDiv(72, dpi, 96);
-    const int top = outer + std::max(0, displayRow) * rowHeight;
+    const int outer = MulDiv(9, dpi, 96);
+    const int headerHeight = MulDiv(36, dpi, 96);
+    const int rowHeight = MulDiv(70, dpi, 96);
+    const int top = outer + headerHeight + std::max(0, displayRow) * rowHeight;
     return { outer, top, client.right - outer, top + rowHeight };
 }
 
@@ -6117,15 +6126,15 @@ RECT downloadsPopoverActionRect(HWND popup, int displayRow, int dpi)
     return { row.right - rightPad - size, top, row.right - rightPad, top + size };
 }
 
-RECT downloadsPopoverFooterRect(HWND popup, int visibleCount, int dpi)
+RECT downloadsPopoverClearRect(HWND popup, int dpi)
 {
     RECT client { };
     if (popup)
         GetClientRect(popup, &client);
-    const int outer = MulDiv(8, dpi, 96);
-    const int rowHeight = MulDiv(72, dpi, 96);
-    const int top = outer + std::max(0, visibleCount) * rowHeight;
-    return { outer, top, client.right - outer, client.bottom - outer };
+    const int outer = MulDiv(9, dpi, 96);
+    const int headerHeight = MulDiv(36, dpi, 96);
+    const int width = MulDiv(46, dpi, 96);
+    return { client.right - outer - width, outer, client.right - outer, outer + headerHeight };
 }
 
 struct DownloadsPopoverWindowState {
@@ -6134,12 +6143,12 @@ struct DownloadsPopoverWindowState {
     ULONGLONG openedAt { 0 };
     int hoveredRow { -1 };
     int hoveredActionRow { -1 };
-    bool hoveredFooter { false };
+    bool hoveredClear { false };
     bool trackingMouse { false };
     bool animating { true };
     bool waitingForInitialButtonRelease { false };
     float rowHoverOpacity[5] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    float footerHoverOpacity { 0.0f };
+    float clearHoverOpacity { 0.0f };
 };
 
 void drawDownloadFileGlyph(HDC dc, const RECT& rect, bool dark, bool active)
@@ -6378,14 +6387,14 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     InvalidateRect(window, &rowRect, FALSE);
                 }
             }
-            const float footerTarget = state->hoveredFooter ? 1.0f : 0.0f;
-            const float footerDelta = footerTarget - state->footerHoverOpacity;
-            if (footerDelta > -0.015f && footerDelta < 0.015f)
-                state->footerHoverOpacity = footerTarget;
+            const float clearTarget = state->hoveredClear ? 1.0f : 0.0f;
+            const float clearDelta = clearTarget - state->clearHoverOpacity;
+            if (clearDelta > -0.015f && clearDelta < 0.015f)
+                state->clearHoverOpacity = clearTarget;
             else {
-                state->footerHoverOpacity += footerDelta * 0.32f;
-                const RECT footer = downloadsPopoverFooterRect(window, count, state->browser ? windowDpi(state->browser->window) : 96);
-                InvalidateRect(window, &footer, FALSE);
+                state->clearHoverOpacity += clearDelta * 0.32f;
+                const RECT clear = downloadsPopoverClearRect(window, state->browser ? windowDpi(state->browser->window) : 96);
+                InvalidateRect(window, &clear, FALSE);
             }
             return 0;
         }
@@ -6414,8 +6423,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     break;
                 }
             }
-            const RECT footer = downloadsPopoverFooterRect(window, count, dpi);
-            const bool footerHovered = PtInRect(&footer, point) != FALSE;
+            const RECT clearRect = downloadsPopoverClearRect(window, dpi);
+            const bool clearHovered = PtInRect(&clearRect, point) != FALSE;
             if (row != state->hoveredRow) {
                 const int previous = state->hoveredRow;
                 state->hoveredRow = row;
@@ -6440,10 +6449,9 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     InvalidateRect(window, &newRect, FALSE);
                 }
             }
-            if (footerHovered != state->hoveredFooter) {
-                state->hoveredFooter = footerHovered;
-                const RECT footerRect = downloadsPopoverFooterRect(window, count, dpi);
-                InvalidateRect(window, &footerRect, FALSE);
+            if (clearHovered != state->hoveredClear) {
+                state->hoveredClear = clearHovered;
+                InvalidateRect(window, &clearRect, FALSE);
             }
         }
         return 0;
@@ -6453,10 +6461,10 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
             const int previous = state->hoveredRow;
             const int previousAction = state->hoveredActionRow;
-            const bool previousFooter = state->hoveredFooter;
+            const bool previousClear = state->hoveredClear;
             state->hoveredRow = -1;
             state->hoveredActionRow = -1;
-            state->hoveredFooter = false;
+            state->hoveredClear = false;
             if (previous >= 0) {
                 const RECT rowRect = downloadsPopoverRowRect(window, previous, dpi);
                 InvalidateRect(window, &rowRect, FALSE);
@@ -6465,9 +6473,9 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 const RECT actionRect = downloadsPopoverActionRect(window, previousAction, dpi);
                 InvalidateRect(window, &actionRect, FALSE);
             }
-            if (previousFooter) {
-                const RECT footer = downloadsPopoverFooterRect(window, state->browser ? downloadsPopoverVisibleCount(state->browser) : 0, dpi);
-                InvalidateRect(window, &footer, FALSE);
+            if (previousClear) {
+                const RECT clearRect = downloadsPopoverClearRect(window, dpi);
+                InvalidateRect(window, &clearRect, FALSE);
             }
         }
         return 0;
@@ -6477,10 +6485,13 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             const POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             const int dpi = windowDpi(browser->window);
             const int count = downloadsPopoverVisibleCount(browser);
-            const RECT footer = downloadsPopoverFooterRect(window, count, dpi);
-            if (PtInRect(&footer, point)) {
-                browser->handleCommand(kMenuDownloads);
-                DestroyWindow(window);
+            const RECT clearRect = downloadsPopoverClearRect(window, dpi);
+            if (PtInRect(&clearRect, point)) {
+                browser->clearCompletedDownloads();
+                if (browser->downloads.empty())
+                    DestroyWindow(window);
+                else
+                    InvalidateRect(window, nullptr, FALSE);
                 return 0;
             }
 
@@ -6527,12 +6538,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         const COLORREF border = dark ? RGB(70, 70, 74) : RGB(225, 227, 231);
         const COLORREF primary = dark ? RGB(245, 245, 248) : RGB(30, 33, 38);
         const COLORREF secondary = dark ? RGB(166, 167, 174) : RGB(105, 111, 118);
-        const COLORREF separator = dark ? RGB(61, 61, 65) : RGB(233, 235, 238);
+        const COLORREF separator = dark ? RGB(61, 61, 65) : RGB(226, 229, 233);
         const COLORREF hoverFill = dark ? RGB(58, 58, 62) : RGB(240, 242, 245);
-        drawRoundedControl(dc, client, panel, border, static_cast<float>(MulDiv(14, dpi, 96)));
+        drawRoundedControl(dc, client, panel, border, static_cast<float>(MulDiv(15, dpi, 96)));
 
         HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0,
-            FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT statusFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0,
             FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -6540,6 +6551,34 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         HGDIOBJ oldFont = SelectObject(dc, titleFont);
         SetBkMode(dc, TRANSPARENT);
         const int count = state && state->browser ? downloadsPopoverVisibleCount(state->browser) : 0;
+        RECT headerRect { MulDiv(9, dpi, 96), MulDiv(8, dpi, 96),
+            client.right - MulDiv(9, dpi, 96), MulDiv(42, dpi, 96) };
+        SetTextColor(dc, primary);
+        RECT headerTitle { headerRect.left + MulDiv(7, dpi, 96), headerRect.top,
+            headerRect.right - MulDiv(58, dpi, 96), headerRect.bottom };
+        DrawTextW(dc, L"Downloads", -1, &headerTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        const RECT clearRect = downloadsPopoverClearRect(window, dpi);
+        if (state && state->clearHoverOpacity > 0.015f) {
+            RECT hover = clearRect;
+            InflateRect(&hover, -MulDiv(1, dpi, 96), -MulDiv(2, dpi, 96));
+            const COLORREF clearFill = blendColor(panel, hoverFill, state->clearHoverOpacity);
+            drawRoundedControl(dc, hover, clearFill, clearFill, static_cast<float>(MulDiv(7, dpi, 96)));
+        }
+        HFONT clearFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0,
+            FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ previousFont = SelectObject(dc, clearFont);
+        SetTextColor(dc, state && state->browser && state->browser->downloads.empty()
+            ? secondary : (dark ? RGB(160, 193, 255) : RGB(32, 104, 224)));
+        DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, previousFont);
+        DeleteObject(clearFont);
+        HPEN headerDivider = CreatePen(PS_SOLID, 1, separator);
+        HGDIOBJ oldHeaderPen = SelectObject(dc, headerDivider);
+        MoveToEx(dc, headerRect.left + MulDiv(2, dpi, 96), headerRect.bottom, nullptr);
+        LineTo(dc, headerRect.right - MulDiv(2, dpi, 96), headerRect.bottom);
+        SelectObject(dc, oldHeaderPen);
+        DeleteObject(headerDivider);
         for (int row = 0; row < count; ++row) {
             const RECT itemRect = downloadsPopoverRowRect(window, row, dpi);
             const size_t index = state->browser->downloads.size() - 1 - static_cast<size_t>(row);
@@ -6639,26 +6678,6 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 DeleteObject(dividerPen);
             }
         }
-
-        SelectObject(dc, titleFont);
-        const RECT footer = downloadsPopoverFooterRect(window, count, dpi);
-        if (state && state->footerHoverOpacity > 0.015f) {
-            const COLORREF footerFill = blendColor(panel, hoverFill, state->footerHoverOpacity);
-            drawRoundedControl(dc, footer, footerFill, footerFill, static_cast<float>(MulDiv(8, dpi, 96)));
-        }
-        HPEN separatorPen = CreatePen(PS_SOLID, 1, separator);
-        HGDIOBJ oldPen = SelectObject(dc, separatorPen);
-        MoveToEx(dc, client.left + MulDiv(12, dpi, 96), footer.top, nullptr);
-        LineTo(dc, client.right - MulDiv(12, dpi, 96), footer.top);
-        SelectObject(dc, oldPen);
-        DeleteObject(separatorPen);
-
-        const wchar_t* footerLabel = L"Show All Downloads";
-        RECT footerText = footer;
-        footerText.top += MulDiv(1, dpi, 96);
-        SetTextColor(dc, dark ? RGB(222, 222, 228) : RGB(35, 39, 44));
-        SelectObject(dc, titleFont);
-        DrawTextW(dc, footerLabel, -1, &footerText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(dc, oldFont);
         DeleteObject(titleFont);
