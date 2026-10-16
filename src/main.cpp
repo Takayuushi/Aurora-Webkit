@@ -3086,81 +3086,126 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         auto* tab = active();
         if (!tab)
             return;
+
         tab->internalPage = L"downloads";
         const bool dark = darkTheme();
         tab->hasInternalThemeSnapshot = true;
         tab->internalDarkTheme = dark;
-        std::string html = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Downloads</title>"
-            "<style>:root{color-scheme:" + std::string(dark ? "dark" : "light") + "}*{box-sizing:border-box}body{margin:0;background:"
-            + (dark ? "#1c1c1e" : "#f5f6f7") + ";color:" + (dark ? "#f5f5f7" : "#202428")
-            + ";font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif}"
-            ".wrap{max-width:1040px;margin:auto;padding:48px 32px 64px;animation:downloads-enter 190ms cubic-bezier(.2,.75,.25,1) both}"
-            "h1{font-size:30px;font-weight:600;letter-spacing:-.4px;margin:0 0 8px}"
-            ".intro{font-size:13px;color:" + std::string(dark ? "#a1a1a6" : "#6e737a") + ";line-height:1.5;margin:0 0 26px}"
-            ".item{background:" + std::string(dark ? "#29292c" : "#fff") + ";border:1px solid " + (dark ? "#414145" : "#e0e3e7")
-            + ";border-radius:14px;padding:17px 18px;margin:11px 0;box-shadow:0 1px 2px rgba(0,0,0,.025);animation:download-card-enter 220ms cubic-bezier(.2,.75,.25,1) both}"
-            ".item:nth-of-type(2){animation-delay:18ms}.item:nth-of-type(3){animation-delay:36ms}.item:nth-of-type(4){animation-delay:54ms}"
-            "@keyframes downloads-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}"
-            "@keyframes download-card-enter{from{opacity:0;transform:translateY(7px) scale(.995)}to{opacity:1;transform:translateY(0) scale(1)}}"
-            ".name{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-            ".path{font-size:12px;color:" + std::string(dark ? "#a1a1a6" : "#73777d") + ";margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-            ".meta{font-size:12px;color:" + std::string(dark ? "#b8b8bd" : "#666b72") + ";margin-top:11px}"
-            ".bar{height:4px;background:" + std::string(dark ? "#48484a" : "#e4e7eb") + ";border-radius:4px;overflow:hidden;margin-top:8px}"
-            ".fill{height:100%;background:#3478d4;border-radius:4px;transition:width .15s linear}"
+
+        const std::string bg = dark ? "#1c1c1e" : "#f5f5f7";
+        const std::string panel = dark ? "#242426" : "#ffffff";
+        const std::string line = dark ? "#414145" : "#dedee2";
+        const std::string text = dark ? "#f5f5f7" : "#1d1d1f";
+        const std::string muted = dark ? "#a1a1a6" : "#6e6e73";
+        const std::string hover = dark ? "#2e2e31" : "#f7f7f9";
+        const std::string blue = dark ? "#0a84ff" : "#0879f9";
+        const std::string danger = dark ? "#ff6961" : "#c9342d";
+
+        std::string html = "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Downloads</title><style>"
+            ":root{color-scheme:" + std::string(dark ? "dark" : "light") + ";--bg:" + bg
+            + ";--panel:" + panel + ";--line:" + line + ";--text:" + text + ";--muted:" + muted
+            + ";--hover:" + hover + ";--blue:" + blue + ";--danger:" + danger + "}"
+            "*{box-sizing:border-box}"
+            "html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "-webkit-font-smoothing:antialiased}"
+            ".wrap{width:min(960px,calc(100% - 48px));margin:0 auto;padding:56px 0 72px}"
+            ".page-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 24px}"
+            "h1{margin:0;font-size:30px;line-height:1.2;font-weight:600;letter-spacing:-.45px}"
+            ".count{font-size:12px;color:var(--muted);white-space:nowrap}"
+            ".list{overflow:hidden;border:1px solid var(--line);border-radius:16px;background:var(--panel)}"
+            ".item{position:relative;display:grid;grid-template-columns:42px minmax(0,1fr) auto;"
+            "align-items:center;gap:15px;min-height:91px;padding:14px 18px;background:var(--panel);transition:background .12s ease}"
+            ".item+.item{border-top:1px solid var(--line)}.item:hover{background:var(--hover)}"
+            ".file-icon{width:36px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--muted)}"
+            ".file-icon svg{width:31px;height:39px;display:block;overflow:visible}"
+            ".file-icon .sheet{fill:" + std::string(dark ? "#353538" : "#f1f2f5")
+            + ";stroke:" + std::string(dark ? "#77777e" : "#c8cbd1") + ";stroke-width:1.1}"
+            ".file-icon .fold{fill:none;stroke:" + std::string(dark ? "#77777e" : "#c8cbd1") + ";stroke-width:1.1;stroke-linejoin:round}"
+            ".file-icon .mark{stroke:var(--blue);stroke-width:1.5;stroke-linecap:round;fill:none}"
+            ".detail{min-width:0}.name{font-size:14px;font-weight:500;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".location{font-size:12px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".meta{font-size:12px;color:var(--muted);margin-top:7px;line-height:1.25}"
+            ".bar{height:4px;width:100%;min-width:80px;background:" + std::string(dark ? "#4a4a4e" : "#e3e5e9")
+            + ";border-radius:99px;overflow:hidden;margin-top:8px}"
+            ".bar[hidden]{display:none}.fill{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .16s linear}"
             ".bar.indeterminate .fill{width:28%!important;animation:download-sweep 1.15s ease-in-out infinite alternate}"
             "@keyframes download-sweep{from{transform:translateX(0)}to{transform:translateX(255%)}}"
-            ".actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}"
-            ".button{display:inline-flex;align-items:center;justify-content:center;min-height:29px;border:1px solid " + std::string(dark ? "#55555a" : "#d7dbe0")
-            + ";border-radius:8px;padding:5px 11px;background:" + (dark ? "#37373a" : "#fafbfc") + ";color:inherit;text-decoration:none;font-size:12px;font-family:inherit;cursor:pointer}"
-            ".button:hover{background:" + std::string(dark ? "#454549" : "#f0f2f5") + "}"
-            ".button.cancel{color:" + std::string(dark ? "#ffaaa7" : "#b42318") + ";border-color:" + (dark ? "#744340" : "#f0c8c5") + "}"
-            ".button:disabled{opacity:.42;cursor:not-allowed}"
-            ".empty{color:" + std::string(dark ? "#a1a1a6" : "#777") + ";padding:22px 0}"
-            "</style></head><body><main class='wrap'><h1>Downloads</h1>"
-            "<p class='intro'>Manage recent downloads. Pause and resume are not provided by this Windows WebKit build.</p>";
+            ".actions{display:flex;align-items:center;justify-content:flex-end;gap:3px;padding-left:8px}"
+            ".action{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:5px 8px;"
+            "border:0;border-radius:7px;background:transparent;color:var(--blue);font:inherit;font-size:12px;"
+            "text-decoration:none;white-space:nowrap;cursor:pointer}"
+            ".action:hover{background:var(--hover)}.action.cancel{color:var(--danger)}"
+            ".action:focus-visible{outline:2px solid var(--blue);outline-offset:1px}"
+            ".empty{min-height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;"
+            "text-align:center;padding:30px;color:var(--muted)}"
+            ".empty svg{width:32px;height:34px;margin-bottom:13px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}"
+            ".empty strong{font-size:14px;font-weight:500;color:var(--text)}"
+            ".empty span{font-size:12px;margin-top:5px}"
+            "@media(max-width:640px){.wrap{width:calc(100% - 24px);padding-top:32px}.page-head{margin-bottom:18px}"
+            ".item{grid-template-columns:32px minmax(0,1fr);gap:12px;padding:13px 12px}"
+            ".file-icon{width:30px}.actions{grid-column:2;padding:0;justify-content:flex-start;margin-top:2px}"
+            ".name{white-space:normal;overflow-wrap:anywhere}}"
+            "</style></head><body><main class='wrap'><header class='page-head'><h1>Downloads</h1>"
+            "<span class='count'>" + std::to_string(downloads.size()) + (downloads.size() == 1 ? " item" : " items")
+            + "</span></header><div class='list'>";
+
         if (downloads.empty()) {
-            html += "<div class='empty'>No downloads yet.</div>";
+            html += "<div class='empty'><svg viewBox='0 0 32 36' aria-hidden='true'><path d='M6 2.5h13l7 7V33H6z'/>"
+                "<path d='M19 2.5v7h7M16 13v11m-5-5 5 5 5-5M10 29h12'/></svg>"
+                "<strong>No Downloads Yet</strong><span>Files you download will appear here.</span></div>";
         } else {
             for (size_t i = 0; i < downloads.size(); ++i) {
                 const auto& item = downloads[i];
                 const std::string id = std::to_string(i);
-                long long percent = 0;
-                if (item.totalBytes > 0)
-                    percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled;
-                const std::string status = item.cancelled ? "Cancelled"
-                    : item.failed ? "Download failed"
-                    : item.finished ? "Downloaded"
-                    : (item.totalBytes > 0
-                        ? "Downloading - " + std::to_string(percent) + "% (" + formatDownloadBytes(item.bytesWritten) + ")"
-                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
-                            : "Starting download"));
-                html += "<section class='item'><div class='name' title='";
-                html += toUTF8(htmlEscape(item.filename));
-                html += "'>";
-                html += toUTF8(htmlEscape(item.filename));
-                html += "</div><div class='path' title='";
-                html += toUTF8(htmlEscape(item.path));
-                html += "'>";
-                html += toUTF8(htmlEscape(item.path));
-                html += "</div><div class='meta' id='download-meta-" + id + "'>" + status + "</div>";
-                html += "<div class='bar";
+                const bool finished = item.finished && !item.failed && !item.cancelled;
+                const long long percent = item.totalBytes > 0
+                    ? std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100) : 0;
+
+                std::string status;
+                if (item.cancelled) status = "Cancelled";
+                else if (item.failed) status = "Download Failed";
+                else if (finished) status = "Downloaded — " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
+                else if (item.bytesWritten > 0) status = "Downloading — " + formatDownloadBytes(item.bytesWritten) + " received";
+                else status = "Starting download";
+
+                std::wstring containingFolder = item.path;
+                const size_t finalSeparator = containingFolder.find_last_of(L"\\/");
+                if (finalSeparator != std::wstring::npos)
+                    containingFolder.resize(finalSeparator);
+                const size_t folderSeparator = containingFolder.find_last_of(L"\\/");
+                if (folderSeparator != std::wstring::npos)
+                    containingFolder = containingFolder.substr(folderSeparator + 1);
+                if (containingFolder.empty())
+                    containingFolder = L"Downloads";
+
+                html += "<section class='item'><div class='file-icon' aria-hidden='true'><svg viewBox='0 0 32 40'>"
+                    "<path class='sheet' d='M5.5 1.5h13l8 8V37.5H5.5z'/>"
+                    "<path class='fold' d='M18.5 1.5v8h8'/>"
+                    "<path class='mark' d='M10 20h12M10 25h12M10 30h8'/></svg></div>"
+                    "<div class='detail'><div class='name' title='" + toUTF8(htmlEscape(item.filename)) + "'>"
+                    + toUTF8(htmlEscape(item.filename)) + "</div><div class='location'>In "
+                    + toUTF8(htmlEscape(containingFolder)) + "</div>"
+                    "<div class='meta' id='download-meta-" + id + "'>" + status + "</div>"
+                    "<div class='bar";
                 if (inProgress && item.totalBytes <= 0)
                     html += " indeterminate";
                 html += "' id='download-bar-" + id + "' style='display:";
                 html += inProgress ? "block" : "none";
-                html += "'><div class='fill' id='download-fill-" + id + "' style='width:";
-                html += std::to_string(percent);
-                html += "%'></div></div>";
-                html += "<div class='actions'><a class='button' href='aurora-download://folder?id=" + id + "'>Show in Folder</a>";
-                html += "<button class='button' id='download-pause-" + id
-                    + "' type='button' disabled title='Pause/resume is not exposed by this WebKit Windows build'>Pause</button>";
-                html += "<a class='button cancel' id='download-cancel-" + id + "' href='aurora-download://cancel?id=" + id + "' style='display:";
-                html += inProgress ? "inline-flex" : "none";
-                html += "'>Cancel</a></div></section>";
+                html += "'><div class='fill' id='download-fill-" + id + "' style='width:"
+                    + std::to_string(percent) + "%'></div></div></div><div class='actions'>"
+                    "<a class='action' id='download-folder-" + id + "' href='aurora-download://folder?id=" + id
+                    + "' style='display:" + std::string(finished ? "inline-flex" : "none") + "'>Show in Folder</a>"
+                    "<a class='action cancel' id='download-cancel-" + id + "' href='aurora-download://cancel?id=" + id
+                    + "' style='display:" + std::string(inProgress ? "inline-flex" : "none") + "'>Cancel</a>"
+                    "</div></section>";
             }
         }
-        html += "</main></body></html>";
+
+        html += "</div></main></body></html>";
         loadLocalHTML(*tab, html);
         tab->activeUrl = L"about:downloads";
         tab->title = L"Downloads";
