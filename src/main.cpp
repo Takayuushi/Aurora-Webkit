@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cwchar>
 #include <cwctype>
 #include <cstddef>
@@ -359,6 +360,8 @@ void dismissWebContextMenu(HWND window, bool notifyWebKit)
 
     // Selecting a no-action item tells WebKit the custom menu has been dismissed
     // without invoking a page command or mutating the selected content.
+    if (browser)
+        browser->pendingContextMenuLinkURL.clear();
     auto title = adoptWK(WKStringCreateWithUTF8CString(""));
     auto noAction = adoptWK(WKContextMenuItemCreateAsAction(kWKContextMenuItemTagNoAction, title.get(), true));
     if (noAction)
@@ -430,7 +433,7 @@ HWND createAuroraContextMenuWindow(BrowserState* browser, WKPageRef page, WKFram
     state->hoverOpacity.assign(state->entries.size(), 0.0f);
 
     HWND popup = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
         L"AuroraWebContextMenu", L"", WS_POPUP,
         left, top - MulDiv(3, dpi, 96), width, height,
         browser ? browser->window : nullptr, nullptr, GetModuleHandleW(nullptr), state);
@@ -445,7 +448,7 @@ HWND createAuroraContextMenuWindow(BrowserState* browser, WKPageRef page, WKFram
     if (region && !SetWindowRgn(popup, region, TRUE))
         DeleteObject(region);
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
-    ShowWindow(popup, SW_SHOWNOACTIVATE);
+    ShowWindow(popup, SW_SHOWNORMAL);
     SetTimer(popup, kWebContextMenuTimerId, 16, nullptr);
     InvalidateRect(popup, nullptr, FALSE);
     return popup;
@@ -474,8 +477,9 @@ void openAuroraContextMenuSubmenu(HWND parentWindow, int rowIndex)
     const RECT rowRect = auroraContextMenuRowRect(parentWindow, parent, rowIndex, dpi);
     POINT screen { rowRect.left, rowRect.top };
     ClientToScreen(parentWindow, &screen);
+    std::vector<AuroraContextMenuEntry> submenuEntries = entry.children;
     HWND child = createAuroraContextMenuWindow(parent->browser, parent->page.get(), parent->frameInfo.get(),
-        entry.children, screen, parentWindow, parent->rootWindow, rowIndex);
+        std::move(submenuEntries), screen, parentWindow, parent->rootWindow, rowIndex);
     parent = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(parentWindow, GWLP_USERDATA));
     if (parent)
         parent->childWindow = child;
@@ -542,7 +546,7 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
 
     switch (message) {
     case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
+        return MA_ACTIVATE;
     case WM_ERASEBKGND:
         return 1;
     case WM_TIMER:
