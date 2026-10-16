@@ -6053,7 +6053,7 @@ int downloadsPopoverRowHeight(const DownloadsPopoverWindowState* state)
 
 int downloadsPopoverFooterHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 27);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 30);
 }
 
 int downloadsPopoverTopPadding(const DownloadsPopoverWindowState* state)
@@ -6282,10 +6282,10 @@ void showDownloadsPopover(BrowserState* browser)
     const int width = scaleForDpi(browser->window, 478);
     const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
     const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 64);
-    const int height = contentHeight + scaleForDpi(browser->window, 5 + 26 + 3);
+    const int height = contentHeight + scaleForDpi(browser->window, 5 + 30 + 3);
 
     RECT anchorRect = browser->rightToolbarButtonRect(1);
-    POINT anchor { anchorRect.right + MulDiv(14, dpi, 96), anchorRect.bottom + MulDiv(1, dpi, 96) };
+    POINT anchor { anchorRect.right + MulDiv(4, dpi, 96), anchorRect.bottom + MulDiv(1, dpi, 96) };
     ClientToScreen(browser->window, &anchor);
 
     HMONITOR monitor = MonitorFromWindow(browser->window, MONITOR_DEFAULTTONEAREST);
