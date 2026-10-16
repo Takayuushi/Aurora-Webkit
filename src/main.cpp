@@ -15,6 +15,7 @@
 #include <WebKit/WKNavigationActionRef.h>
 #include <WebKit/WKFramePolicyListener.h>
 #include <WebKit/WKFrameInfoRef.h>
+#include <WebKit/WKFrame.h>
 #include <WebKit/WKURLRequest.h>
 #include <WebKit/WKNavigationResponseRef.h>
 #include <WebKit/WKPageNavigationClient.h>
@@ -211,9 +212,605 @@ void browserBeganEnterFullScreen(WKPageRef, WKRect, WKRect, const void*);
 void browserExitFullScreen(WKPageRef, const void*);
 void browserBeganExitFullScreen(WKPageRef, WKRect, WKRect, WKCompletionListenerRef, const void*);
 void websiteDataFetchCacheCleared(void*);
+
+struct AuroraContextMenuEntry {
+    WKRetainPtr<WKContextMenuItemRef> item;
+    std::wstring title;
+    WKContextMenuItemTag tag { kWKContextMenuItemTagNoAction };
+    WKContextMenuItemType type { kWKContextMenuItemTypeAction };
+    bool enabled { true };
+    bool checked { false };
+    std::vector<AuroraContextMenuEntry> children;
+};
+
+struct AuroraContextMenuWindowState {
+    BrowserState* browser { nullptr };
+    WKRetainPtr<WKPageRef> page;
+    WKRetainPtr<WKFrameInfoRef> frameInfo;
+    std::vector<AuroraContextMenuEntry> entries;
+    HWND rootWindow { nullptr };
+    HWND parentWindow { nullptr };
+    HWND childWindow { nullptr };
+    int parentRow { -1 };
+    RECT targetRect { };
+    ULONGLONG openedAt { 0 };
+    int hoveredIndex { -1 };
+    bool trackingMouse { false };
+    bool animating { true };
+    bool waitingForInitialButtonRelease { false };
+    std::vector<float> hoverOpacity;
+};
+
+constexpr UINT_PTR kWebContextMenuTimerId = 0xA116;
+constexpr int kWebContextMenuRowHeightDip = 28;
+constexpr int kWebContextMenuSeparatorHeightDip = 9;
+constexpr int kWebContextMenuWidthDip = 278;
+constexpr int kWebContextMenuPaddingDip = 5;
+
+void appendAuroraContextMenuEntries(WKArrayRef items, std::vector<AuroraContextMenuEntry>& output)
+{
+    if (!items)
+        return;
+    const size_t count = WKArrayGetSize(items);
+    output.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        WKTypeRef value = WKArrayGetItemAtIndex(items, i);
+        if (!value || WKGetTypeID(value) != WKContextMenuItemGetTypeID())
+            continue;
+        auto item = reinterpret_cast<WKContextMenuItemRef>(value);
+        AuroraContextMenuEntry entry;
+        entry.item = WKRetainPtr<WKContextMenuItemRef>(item);
+        entry.tag = WKContextMenuItemGetTag(item);
+        entry.type = WKContextMenuItemGetType(item);
+        entry.enabled = WKContextMenuItemGetEnabled(item);
+        entry.checked = WKContextMenuItemGetChecked(item);
+        auto title = adoptWK(WKContextMenuItemCopyTitle(item));
+        entry.title = createString(title.get());
+        if (entry.type == kWKContextMenuItemTypeSubmenu) {
+            auto subItems = adoptWK(WKContextMenuCopySubmenuItems(item));
+            appendAuroraContextMenuEntries(subItems.get(), entry.children);
+        }
+        output.push_back(std::move(entry));
+    }
+}
+
+int auroraContextMenuEntryHeight(const AuroraContextMenuEntry& entry, int dpi)
+{
+    return MulDiv(entry.type == kWKContextMenuItemTypeSeparator
+        ? kWebContextMenuSeparatorHeightDip : kWebContextMenuRowHeightDip, dpi, 96);
+}
+
+int auroraContextMenuWidth(const std::vector<AuroraContextMenuEntry>& entries, int dpi)
+{
+    int width = MulDiv(kWebContextMenuWidthDip, dpi, 96);
+    for (const auto& entry : entries) {
+        if (entry.type == kWKContextMenuItemTypeSeparator)
+            continue;
+        const size_t tab = entry.title.find(L'\\t');
+        const std::wstring label = entry.title.substr(0, tab);
+        const int estimated = MulDiv(static_cast<int>(label.size()) * 7 + 68, dpi, 96);
+        width = std::max(width, std::min(MulDiv(360, dpi, 96), estimated));
+    }
+    return width;
+}
+
+int auroraContextMenuHeight(const std::vector<AuroraContextMenuEntry>& entries, int dpi)
+{
+    int height = MulDiv(kWebContextMenuPaddingDip * 2, dpi, 96);
+    for (const auto& entry : entries)
+        height += auroraContextMenuEntryHeight(entry, dpi);
+    return std::max(height, MulDiv(24, dpi, 96));
+}
+
+RECT auroraContextMenuRowRect(HWND window, const AuroraContextMenuWindowState* state, int index, int dpi)
+{
+    RECT client { };
+    if (window)
+        GetClientRect(window, &client);
+    if (!state || index < 0 || index >= static_cast<int>(state->entries.size()))
+        return { 0, 0, 0, 0 };
+    int top = MulDiv(kWebContextMenuPaddingDip, dpi, 96);
+    for (int i = 0; i < index; ++i)
+        top += auroraContextMenuEntryHeight(state->entries[static_cast<size_t>(i)], dpi);
+    const int height = auroraContextMenuEntryHeight(state->entries[static_cast<size_t>(index)], dpi);
+    return { MulDiv(4, dpi, 96), top, client.right - MulDiv(4, dpi, 96), top + height };
+}
+
+bool auroraContextMenuTreeContainsPoint(HWND root, POINT point)
+{
+    if (!root || !IsWindow(root))
+        return false;
+    RECT bounds { };
+    if (GetWindowRect(root, &bounds) && PtInRect(&bounds, point))
+        return true;
+    auto* state = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(root, GWLP_USERDATA));
+    return state && state->childWindow && auroraContextMenuTreeContainsPoint(state->childWindow, point);
+}
+
+void closeAuroraContextMenuTree(HWND window)
+{
+    if (!window || !IsWindow(window))
+        return;
+    auto* state = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (state && state->childWindow && IsWindow(state->childWindow)) {
+        HWND child = state->childWindow;
+        state->childWindow = nullptr;
+        closeAuroraContextMenuTree(child);
+    }
+    DestroyWindow(window);
+}
+
+void dismissWebContextMenu(HWND window, bool notifyWebKit)
+{
+    if (!window || !IsWindow(window))
+        return;
+    auto* state = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (!state)
+        return;
+    const HWND root = state->rootWindow ? state->rootWindow : window;
+    WKRetainPtr<WKPageRef> page = state->page;
+    WKRetainPtr<WKFrameInfoRef> frameInfo = state->frameInfo;
+    BrowserState* browser = state->browser;
+    if (browser && browser->webContextMenuWindow == root)
+        browser->webContextMenuWindow = nullptr;
+    closeAuroraContextMenuTree(root);
+    if (!notifyWebKit || !page || !frameInfo)
+        return;
+
+    // Selecting a no-action item tells WebKit the custom menu has been dismissed
+    // without invoking a page command or mutating the selected content.
+    auto title = adoptWK(WKStringCreateWithUTF8CString(""));
+    auto noAction = adoptWK(WKContextMenuItemCreateAsAction(kWKContextMenuItemTagNoAction, title.get(), true));
+    if (noAction)
+        WKPageSelectContextMenuItem(page.get(), noAction.get(), frameInfo.get());
+}
+
+HWND createAuroraContextMenuWindow(BrowserState* browser, WKPageRef page, WKFrameInfoRef frameInfo,
+    std::vector<AuroraContextMenuEntry>&& entries, POINT screenPoint, HWND parentWindow, HWND rootWindow, int parentRow)
+{
+    if (entries.empty())
+        return nullptr;
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSEXW cls { };
+        cls.cbSize = sizeof(cls);
+        cls.style = CS_DROPSHADOW;
+        cls.lpfnWndProc = webContextMenuPopoverProcedure;
+        cls.hInstance = GetModuleHandleW(nullptr);
+        cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        cls.lpszClassName = L"AuroraWebContextMenu";
+        if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return nullptr;
+        classRegistered = true;
+    }
+
+    const int dpi = browser ? windowDpi(browser->window) : 96;
+    const int width = auroraContextMenuWidth(entries, dpi);
+    const int height = auroraContextMenuHeight(entries, dpi);
+    HMONITOR monitor = MonitorFromWindow(browser ? browser->window : nullptr, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo { };
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    RECT work { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (monitor && GetMonitorInfoW(monitor, &monitorInfo))
+        work = monitorInfo.rcWork;
+
+    int left = screenPoint.x;
+    int top = screenPoint.y;
+    if (parentWindow && IsWindow(parentWindow)) {
+        RECT parentBounds { };
+        if (GetWindowRect(parentWindow, &parentBounds)) {
+            left = parentBounds.right - MulDiv(3, dpi, 96);
+            if (left + width > work.right)
+                left = parentBounds.left - width + MulDiv(3, dpi, 96);
+            top = screenPoint.y;
+        }
+    }
+    if (left + width > work.right)
+        left = std::max(static_cast<int>(work.left), static_cast<int>(work.right) - width);
+    if (left < work.left)
+        left = work.left;
+    if (top + height > work.bottom)
+        top = std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height);
+    if (top < work.top)
+        top = work.top;
+
+    auto* state = new AuroraContextMenuWindowState;
+    state->browser = browser;
+    state->page = WKRetainPtr<WKPageRef>(page);
+    state->frameInfo = WKRetainPtr<WKFrameInfoRef>(frameInfo);
+    state->entries = std::move(entries);
+    state->parentWindow = parentWindow;
+    state->rootWindow = rootWindow;
+    state->parentRow = parentRow;
+    state->targetRect = { left, top, left + width, top + height };
+    state->openedAt = GetTickCount64();
+    state->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        || (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+    state->hoverOpacity.assign(state->entries.size(), 0.0f);
+
+    HWND popup = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        L"AuroraWebContextMenu", L"", WS_POPUP,
+        left, top - MulDiv(3, dpi, 96), width, height,
+        browser ? browser->window : nullptr, nullptr, GetModuleHandleW(nullptr), state);
+    if (!popup) {
+        delete state;
+        return nullptr;
+    }
+
+    if (!state->rootWindow)
+        state->rootWindow = popup;
+    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, MulDiv(10, dpi, 96), MulDiv(10, dpi, 96));
+    if (region && !SetWindowRgn(popup, region, TRUE))
+        DeleteObject(region);
+    SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
+    ShowWindow(popup, SW_SHOWNOACTIVATE);
+    SetTimer(popup, kWebContextMenuTimerId, 16, nullptr);
+    InvalidateRect(popup, nullptr, FALSE);
+    return popup;
+}
+
+void openAuroraContextMenuSubmenu(HWND parentWindow, int rowIndex)
+{
+    auto* parent = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(parentWindow, GWLP_USERDATA));
+    if (!parent)
+        return;
+    if (parent->childWindow && IsWindow(parent->childWindow)) {
+        auto* child = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(parent->childWindow, GWLP_USERDATA));
+        if (parent->hoveredIndex == rowIndex && child && child->parentRow == rowIndex)
+            return;
+        HWND oldChild = parent->childWindow;
+        parent->childWindow = nullptr;
+        closeAuroraContextMenuTree(oldChild);
+    }
+    if (rowIndex < 0 || rowIndex >= static_cast<int>(parent->entries.size()))
+        return;
+    const auto& entry = parent->entries[static_cast<size_t>(rowIndex)];
+    if (!entry.enabled || entry.type != kWKContextMenuItemTypeSubmenu || entry.children.empty())
+        return;
+
+    const int dpi = parent->browser ? windowDpi(parent->browser->window) : 96;
+    const RECT rowRect = auroraContextMenuRowRect(parentWindow, parent, rowIndex, dpi);
+    POINT screen { rowRect.left, rowRect.top };
+    ClientToScreen(parentWindow, &screen);
+    HWND child = createAuroraContextMenuWindow(parent->browser, parent->page.get(), parent->frameInfo.get(),
+        entry.children, screen, parentWindow, parent->rootWindow, rowIndex);
+    parent = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(parentWindow, GWLP_USERDATA));
+    if (parent)
+        parent->childWindow = child;
+}
+
+void showWebContextMenu(WKPageRef page, WKPoint menuLocation, WKArrayRef menuItems, const void* clientInfo)
+{
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (!browser || !page || !menuItems)
+        return;
+    if (browser->webContextMenuWindow && IsWindow(browser->webContextMenuWindow))
+        dismissWebContextMenu(browser->webContextMenuWindow, false);
+
+    std::vector<AuroraContextMenuEntry> entries;
+    appendAuroraContextMenuEntries(menuItems, entries);
+    if (entries.empty())
+        return;
+
+    WKFrameRef frame = WKPageGetFocusedFrame(page);
+    if (!frame)
+        frame = WKPageGetMainFrame(page);
+    if (!frame)
+        return;
+    auto frameInfo = adoptWK(WKFrameCreateFrameInfo(frame));
+    if (!frameInfo)
+        return;
+
+    HWND viewWindow = nullptr;
+    for (const auto& tab : browser->tabs) {
+        if (WKViewGetPage(tab->view.get()) == page) {
+            viewWindow = WKViewGetWindow(tab->view.get());
+            break;
+        }
+    }
+    if (!viewWindow)
+        viewWindow = browser->window;
+
+    const double scale = windowScaleFactor(browser->window);
+    POINT screenPoint {
+        static_cast<LONG>(std::lround(menuLocation.x * scale)),
+        static_cast<LONG>(std::lround(menuLocation.y * scale))
+    };
+    ClientToScreen(viewWindow, &screenPoint);
+    HWND popup = createAuroraContextMenuWindow(browser, page, frameInfo.get(),
+        std::move(entries), screenPoint, nullptr, nullptr, -1);
+    browser->webContextMenuWindow = popup;
+}
+
+void hideWebContextMenu(WKPageRef, const void* clientInfo)
+{
+    auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
+    if (browser && browser->webContextMenuWindow && IsWindow(browser->webContextMenuWindow))
+        dismissWebContextMenu(browser->webContextMenuWindow, false);
+}
+
+LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* state = reinterpret_cast<AuroraContextMenuWindowState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* createInfo = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        state = static_cast<AuroraContextMenuWindowState*>(createInfo->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_TIMER:
+        if (!state || wParam != kWebContextMenuTimerId)
+            break;
+        if (state->rootWindow == window) {
+            const bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            const bool rightDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+            if (state->waitingForInitialButtonRelease) {
+                if (!leftDown && !rightDown)
+                    state->waitingForInitialButtonRelease = false;
+            } else if (leftDown || rightDown) {
+                POINT cursor { };
+                if (GetCursorPos(&cursor) && !auroraContextMenuTreeContainsPoint(window, cursor)) {
+                    dismissWebContextMenu(window, true);
+                    return 0;
+                }
+            }
+        }
+        if (state->animating) {
+            const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
+            const float t = std::clamp(static_cast<float>(elapsed) / 115.0f, 0.0f, 1.0f);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const int lift = static_cast<int>(MulDiv(3, dpi, 96) * (1.0f - eased) + 0.5f);
+            SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
+            SetWindowPos(window, HWND_TOPMOST, state->targetRect.left, state->targetRect.top - lift,
+                state->targetRect.right - state->targetRect.left,
+                state->targetRect.bottom - state->targetRect.top, SWP_NOACTIVATE | SWP_NOZORDER);
+            if (t >= 1.0f)
+                state->animating = false;
+        }
+        for (size_t i = 0; i < state->hoverOpacity.size(); ++i) {
+            const float target = state->hoveredIndex == static_cast<int>(i) ? 1.0f : 0.0f;
+            const float before = state->hoverOpacity[i];
+            const float delta = target - before;
+            if (delta > -0.015f && delta < 0.015f)
+                state->hoverOpacity[i] = target;
+            else
+                state->hoverOpacity[i] += delta * 0.35f;
+            if (std::abs(state->hoverOpacity[i] - before) > 0.001f) {
+                const RECT rect = auroraContextMenuRowRect(window, state, static_cast<int>(i),
+                    state->browser ? windowDpi(state->browser->window) : 96);
+                InvalidateRect(window, &rect, FALSE);
+            }
+        }
+        return 0;
+    case WM_MOUSEMOVE:
+        if (!state)
+            return 0;
+        if (!state->trackingMouse) {
+            TRACKMOUSEEVENT track { };
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = window;
+            state->trackingMouse = TrackMouseEvent(&track) != FALSE;
+        }
+        {
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            int hovered = -1;
+            for (size_t i = 0; i < state->entries.size(); ++i) {
+                const RECT row = auroraContextMenuRowRect(window, state, static_cast<int>(i), dpi);
+                if (PtInRect(&row, point)) {
+                    hovered = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (hovered != state->hoveredIndex) {
+                const int previous = state->hoveredIndex;
+                state->hoveredIndex = hovered;
+                if (previous >= 0) {
+                    const RECT rect = auroraContextMenuRowRect(window, state, previous, dpi);
+                    InvalidateRect(window, &rect, FALSE);
+                }
+                if (hovered >= 0) {
+                    const RECT rect = auroraContextMenuRowRect(window, state, hovered, dpi);
+                    InvalidateRect(window, &rect, FALSE);
+                    openAuroraContextMenuSubmenu(window, hovered);
+                } else if (state->childWindow && IsWindow(state->childWindow)) {
+                    POINT cursor { };
+                    RECT childBounds { };
+                    if (!GetCursorPos(&cursor) || !GetWindowRect(state->childWindow, &childBounds) || !PtInRect(&childBounds, cursor)) {
+                        HWND oldChild = state->childWindow;
+                        state->childWindow = nullptr;
+                        closeAuroraContextMenuTree(oldChild);
+                    }
+                }
+            }
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (!state)
+            return 0;
+        state->trackingMouse = false;
+        {
+            POINT cursor { };
+            RECT bounds { };
+            if (state->childWindow && IsWindow(state->childWindow) && GetCursorPos(&cursor)
+                && GetWindowRect(state->childWindow, &bounds) && PtInRect(&bounds, cursor))
+                return 0;
+            if (state->hoveredIndex >= 0) {
+                const int previous = state->hoveredIndex;
+                state->hoveredIndex = -1;
+                const RECT rect = auroraContextMenuRowRect(window, state, previous,
+                    state->browser ? windowDpi(state->browser->window) : 96);
+                InvalidateRect(window, &rect, FALSE);
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (!state)
+            return 0;
+        {
+            const POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            for (size_t i = 0; i < state->entries.size(); ++i) {
+                const RECT row = auroraContextMenuRowRect(window, state, static_cast<int>(i), dpi);
+                if (!PtInRect(&row, point))
+                    continue;
+                const auto& entry = state->entries[i];
+                if (!entry.enabled || entry.type == kWKContextMenuItemTypeSeparator)
+                    return 0;
+                if (entry.type == kWKContextMenuItemTypeSubmenu) {
+                    openAuroraContextMenuSubmenu(window, static_cast<int>(i));
+                    return 0;
+                }
+
+                WKRetainPtr<WKPageRef> selectedPage = state->page;
+                WKRetainPtr<WKFrameInfoRef> selectedFrameInfo = state->frameInfo;
+                WKRetainPtr<WKContextMenuItemRef> selectedItem = entry.item;
+                const HWND root = state->rootWindow ? state->rootWindow : window;
+                BrowserState* browser = state->browser;
+                if (browser && browser->webContextMenuWindow == root)
+                    browser->webContextMenuWindow = nullptr;
+                closeAuroraContextMenuTree(root);
+                if (selectedPage && selectedFrameInfo && selectedItem)
+                    WKPageSelectContextMenuItem(selectedPage.get(), selectedItem.get(), selectedFrameInfo.get());
+                return 0;
+            }
+        }
+        return 0;
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            if (state->rootWindow)
+                dismissWebContextMenu(state->rootWindow, true);
+            else
+                dismissWebContextMenu(window, true);
+            return 0;
+        }
+        break;
+    case WM_PAINT: {
+        PAINTSTRUCT paint { };
+        HDC dc = BeginPaint(window, &paint);
+        RECT client { };
+        GetClientRect(window, &client);
+        const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
+        const COLORREF panel = RGB(29, 29, 31);
+        const COLORREF border = RGB(62, 62, 66);
+        const COLORREF text = RGB(246, 246, 248);
+        const COLORREF secondary = RGB(157, 157, 164);
+        const COLORREF hoverFill = RGB(58, 58, 62);
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        Gdiplus::GraphicsPath panelPath;
+        addRoundedIconRectangle(panelPath, static_cast<float>(client.left), static_cast<float>(client.top),
+            static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top),
+            static_cast<float>(MulDiv(9, dpi, 96)));
+        Gdiplus::LinearGradientBrush panelBrush(
+            Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
+            Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
+            Gdiplus::Color(255, 38, 38, 40), Gdiplus::Color(255, 26, 26, 28));
+        graphics.FillPath(&panelBrush, &panelPath);
+        Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
+        graphics.DrawPath(&panelPen, &panelPath);
+        HFONT font = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT);
+        for (size_t i = 0; state && i < state->entries.size(); ++i) {
+            const auto& entry = state->entries[i];
+            const RECT row = auroraContextMenuRowRect(window, state, static_cast<int>(i), dpi);
+            if (entry.type == kWKContextMenuItemTypeSeparator) {
+                HPEN separatorPen = CreatePen(PS_SOLID, 1, RGB(68, 68, 72));
+                HGDIOBJ oldPen = SelectObject(dc, separatorPen);
+                const int y = (row.top + row.bottom) / 2;
+                MoveToEx(dc, row.left + MulDiv(8, dpi, 96), y, nullptr);
+                LineTo(dc, row.right - MulDiv(8, dpi, 96), y);
+                SelectObject(dc, oldPen);
+                DeleteObject(separatorPen);
+                continue;
+            }
+            if (state->hoverOpacity[i] > 0.02f) {
+                RECT hover = row;
+                InflateRect(&hover, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
+                Gdiplus::GraphicsPath hoverPath;
+                addRoundedIconRectangle(hoverPath, static_cast<float>(hover.left), static_cast<float>(hover.top),
+                    static_cast<float>(hover.right - hover.left), static_cast<float>(hover.bottom - hover.top),
+                    static_cast<float>(MulDiv(6, dpi, 96)));
+                Gdiplus::SolidBrush hoverBrush(iconGdiColor(blendColor(panel, hoverFill, state->hoverOpacity[i])));
+                graphics.FillPath(&hoverBrush, &hoverPath);
+            }
+            int textLeft = row.left + MulDiv(13, dpi, 96);
+            if (entry.checked) {
+                RECT checkRect { textLeft, row.top, textLeft + MulDiv(14, dpi, 96), row.bottom };
+                SetTextColor(dc, text);
+                DrawTextW(dc, L"✓", -1, &checkRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                textLeft += MulDiv(17, dpi, 96);
+            }
+            const size_t tab = entry.title.find(L'\\t');
+            const std::wstring label = entry.title.substr(0, tab);
+            RECT labelRect { textLeft, row.top, row.right - MulDiv(entry.type == kWKContextMenuItemTypeSubmenu ? 25 : (tab == std::wstring::npos ? 8 : 76), dpi, 96), row.bottom };
+            SetTextColor(dc, entry.enabled ? text : secondary);
+            DrawTextW(dc, label.c_str(), -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            if (tab != std::wstring::npos) {
+                const std::wstring shortcut = entry.title.substr(tab + 1);
+                RECT shortcutRect { row.right - MulDiv(72, dpi, 96), row.top, row.right - MulDiv(13, dpi, 96), row.bottom };
+                SetTextColor(dc, secondary);
+                DrawTextW(dc, shortcut.c_str(), -1, &shortcutRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            if (entry.type == kWKContextMenuItemTypeSubmenu) {
+                RECT arrowRect { row.right - MulDiv(22, dpi, 96), row.top, row.right - MulDiv(7, dpi, 96), row.bottom };
+                drawChevron(dc, arrowRect, true, entry.enabled, true);
+            }
+        }
+        SelectObject(dc, oldFont);
+        DeleteObject(font);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        KillTimer(window, kWebContextMenuTimerId);
+        if (state) {
+            if (state->childWindow && IsWindow(state->childWindow)) {
+                HWND child = state->childWindow;
+                state->childWindow = nullptr;
+                closeAuroraContextMenuTree(child);
+            }
+            if (state->browser) {
+                if (state->browser->webContextMenuWindow == window)
+                    state->browser->webContextMenuWindow = nullptr;
+                if (state->parentWindow && IsWindow(state->parentWindow)) {
+                    auto* parent = reinterpret_cast<AuroraContextMenuWindowState*>(
+                        GetWindowLongPtrW(state->parentWindow, GWLP_USERDATA));
+                    if (parent && parent->childWindow == window)
+                        parent->childWindow = nullptr;
+                }
+            }
+            delete state;
+        }
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return DefWindowProcW(window, message, wParam, lParam);
+    default:
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+}
+
+
 WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationActionRef, WKWindowFeaturesRef, const void*);
 void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef, WKArrayRef*, WKHitTestResultRef, WKTypeRef, const void*);
 void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef, const void*);
+void showWebContextMenu(WKPageRef, WKPoint, WKArrayRef, const void*);
+void hideWebContextMenu(WKPageRef, const void*);
+LRESULT CALLBACK webContextMenuPopoverProcedure(HWND, UINT, WPARAM, LPARAM);
+void dismissWebContextMenu(HWND, bool notifyWebKit);
 
 struct FaviconResult {
     std::wstring url;
@@ -1041,6 +1638,7 @@ struct BrowserState {
     HMENU bookmarksMenu { nullptr };
     HWND downloadsPopoverWindow { nullptr };
     HWND sharePopoverWindow { nullptr };
+    HWND webContextMenuWindow { nullptr };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     int hoveredToolbarButton { -1 };
@@ -2827,11 +3425,13 @@ search.addEventListener('keydown',e=>{
         uiClient.createNewPage = createNewTabForWebKit;
         WKPageSetPageUIClient(page, &uiClient.base);
 
-        WKPageContextMenuClientV2 contextMenuClient { };
-        contextMenuClient.base.version = 2;
+        WKPageContextMenuClientV3 contextMenuClient { };
+        contextMenuClient.base.version = 3;
         contextMenuClient.base.clientInfo = this;
         contextMenuClient.getContextMenuFromProposedMenu = getContextMenuFromProposedMenu;
         contextMenuClient.customContextMenuItemSelected = customContextMenuItemSelected;
+        contextMenuClient.showContextMenu = showWebContextMenu;
+        contextMenuClient.hideContextMenu = hideWebContextMenu;
         WKPageSetPageContextMenuClient(page, &contextMenuClient.base);
 
         WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
@@ -7543,6 +8143,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 DestroyWindow(state->downloadsPopoverWindow);
             if (state->sharePopoverWindow && IsWindow(state->sharePopoverWindow))
                 DestroyWindow(state->sharePopoverWindow);
+            if (state->webContextMenuWindow && IsWindow(state->webContextMenuWindow))
+                dismissWebContextMenu(state->webContextMenuWindow, false);
             state->stopDownloadsAnimationTimer();
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
