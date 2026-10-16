@@ -104,6 +104,7 @@ constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
+constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
 constexpr WKContextMenuItemTag kAuroraOpenLinkInNewTabTag = kWKContextMenuItemBaseApplicationTag + 1;
 
 constexpr UINT kMenuNewTab = 2001;
@@ -191,6 +192,8 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*, int requestedSection = 0);
 void showSharePopover(BrowserState*);
 LRESULT CALLBACK sharePopoverProcedure(HWND, UINT, WPARAM, LPARAM);
+void showDownloadsPopover(BrowserState*);
+LRESULT CALLBACK downloadsPopoverProcedure(HWND, UINT, WPARAM, LPARAM);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void websiteDataCleared(void*);
 void websiteDataStorageCleared(void*);
@@ -1030,7 +1033,7 @@ struct BrowserState {
     HBRUSH addressBarBrush { nullptr };
     HMENU menu { nullptr };
     HMENU bookmarksMenu { nullptr };
-    HMENU downloadsPopupMenu { nullptr };
+    HWND downloadsPopoverWindow { nullptr };
     HWND sharePopoverWindow { nullptr };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
@@ -3222,127 +3225,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 
 
-    bool isDownloadMenuCommand(UINT command) const
-    {
-        return command >= 6000 && command < 6000 + downloads.size();
-    }
-
-    bool drawDownloadsMenuItem(const DRAWITEMSTRUCT& item) const
-    {
-        if (item.CtlType != ODT_MENU || !isDownloadMenuCommand(item.itemID))
-            return false;
-        const size_t index = item.itemID - 6000;
-        if (index >= downloads.size())
-            return false;
-        const auto& download = downloads[index];
-        const bool dark = chromeDarkTheme();
-        const bool selected = (item.itemState & ODS_SELECTED) != 0;
-        const int dpi = windowDpi(window);
-        const int leftPad = scaleForDpi(window, 16);
-        const int rightPad = scaleForDpi(window, 14);
-        const int topPad = scaleForDpi(window, 7);
-        const bool inProgress = !download.finished && !download.failed && !download.cancelled;
-        long long percent = 0;
-        if (download.totalBytes > 0)
-            percent = std::clamp<long long>((download.bytesWritten * 100) / download.totalBytes, 0, 100);
-        const COLORREF background = selected
-            ? (dark ? RGB(65, 65, 69) : RGB(239, 242, 246))
-            : (dark ? RGB(39, 39, 42) : RGB(255, 255, 255));
-        const COLORREF primary = dark ? RGB(243, 243, 246) : RGB(34, 38, 42);
-        const COLORREF secondary = dark ? RGB(166, 167, 173) : RGB(111, 116, 123);
-        HBRUSH backgroundBrush = CreateSolidBrush(background);
-        FillRect(item.hDC, &item.rcItem, backgroundBrush);
-        DeleteObject(backgroundBrush);
-        SetBkMode(item.hDC, TRANSPARENT);
-        HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
-            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT statusFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
-            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        RECT titleRect { item.rcItem.left + leftPad, item.rcItem.top + topPad,
-            item.rcItem.right - rightPad, item.rcItem.top + scaleForDpi(window, 29) };
-        HFONT oldFont = static_cast<HFONT>(SelectObject(item.hDC, titleFont));
-        SetTextColor(item.hDC, primary);
-        DrawTextW(item.hDC, download.filename.c_str(), -1, &titleRect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        RECT statusRect { item.rcItem.left + leftPad, item.rcItem.top + scaleForDpi(window, 28),
-            item.rcItem.right - rightPad, item.rcItem.top + scaleForDpi(window, 47) };
-        SelectObject(item.hDC, statusFont);
-        SetTextColor(item.hDC, secondary);
-        std::wstring status;
-        if (download.cancelled)
-            status = L"Cancelled";
-        else if (download.failed)
-            status = L"Download failed";
-        else if (download.finished)
-            status = L"Downloaded";
-        else if (download.totalBytes > 0)
-            status = L"Downloading - " + std::to_wstring(percent) + L"% ("
-                + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L")";
-        else if (download.bytesWritten > 0)
-            status = L"Downloading - " + fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
-        else
-            status = L"Starting download";
-        DrawTextW(item.hDC, status.c_str(), -1, &statusRect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SelectObject(item.hDC, oldFont);
-        DeleteObject(titleFont);
-        DeleteObject(statusFont);
-        if (inProgress) {
-            const int barHeight = std::max(3, scaleForDpi(window, 4));
-            const int barTop = item.rcItem.bottom - scaleForDpi(window, 10);
-            const int barLeft = item.rcItem.left + leftPad;
-            const int barRight = item.rcItem.right - rightPad;
-            Gdiplus::Graphics graphics(item.hDC);
-            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-            Gdiplus::GraphicsPath track;
-            addRoundedIconRectangle(track, static_cast<float>(barLeft), static_cast<float>(barTop),
-                static_cast<float>(std::max(1, barRight - barLeft)), static_cast<float>(barHeight),
-                static_cast<float>(barHeight) / 2.0f);
-            Gdiplus::SolidBrush trackBrush(iconGdiColor(dark ? RGB(78, 78, 82) : RGB(230, 233, 237)));
-            graphics.FillPath(&trackBrush, &track);
-            const int trackWidth = std::max(1, barRight - barLeft);
-            if (download.totalBytes > 0) {
-                const double shownPercent = std::clamp(download.displayedProgressPercent, 0.0, 100.0);
-                const float fillWidth = static_cast<float>(trackWidth * shownPercent / 100.0);
-                if (fillWidth > 0.5f) {
-                    Gdiplus::GraphicsPath fill;
-                    addRoundedIconRectangle(fill, static_cast<float>(barLeft), static_cast<float>(barTop),
-                        fillWidth, static_cast<float>(barHeight), static_cast<float>(barHeight) / 2.0f);
-                    Gdiplus::SolidBrush fillBrush(iconGdiColor(RGB(75, 139, 230)));
-                    graphics.FillPath(&fillBrush, &fill);
-                }
-            } else if (inProgress) {
-                // Time-based movement is independent from transfer callback frequency.
-                const int segmentWidth = std::min(trackWidth,
-                    std::max(scaleForDpi(window, 64), trackWidth / 4));
-                const int travel = std::max(1, trackWidth - segmentWidth);
-                const ULONGLONG phase = GetTickCount64() % 1400ULL;
-                const double phaseProgress = phase < 700ULL
-                    ? static_cast<double>(phase) / 700.0
-                    : static_cast<double>(1400ULL - phase) / 700.0;
-                const int segmentLeft = barLeft + static_cast<int>(phaseProgress * travel);
-                Gdiplus::GraphicsPath segment;
-                addRoundedIconRectangle(segment, static_cast<float>(segmentLeft), static_cast<float>(barTop),
-                    static_cast<float>(std::min(segmentWidth, barRight - segmentLeft)),
-                    static_cast<float>(barHeight), static_cast<float>(barHeight) / 2.0f);
-                Gdiplus::SolidBrush fillBrush(iconGdiColor(RGB(75, 139, 230)));
-                graphics.FillPath(&fillBrush, &segment);
-            }
-        }
-        HPEN dividerPen = CreatePen(PS_SOLID, 1, dark ? RGB(54, 54, 57) : RGB(241, 242, 244));
-        HPEN oldPen = static_cast<HPEN>(SelectObject(item.hDC, dividerPen));
-        MoveToEx(item.hDC, item.rcItem.left + leftPad, item.rcItem.bottom - 1, nullptr);
-        LineTo(item.hDC, item.rcItem.right - rightPad, item.rcItem.bottom - 1);
-        SelectObject(item.hDC, oldPen);
-        DeleteObject(dividerPen);
-        return true;
-    }
-
     void startDownloadsAnimationTimer()
     {
-        if (window && downloadsPopupMenu && !downloadsAnimationTimerActive) {
+        if (window && downloadsPopoverWindow && !downloadsAnimationTimerActive) {
             if (SetTimer(window, kDownloadsAnimationTimerId, 16, nullptr))
                 downloadsAnimationTimerActive = true;
         }
@@ -3357,32 +3242,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void invalidateDownloadPopupRows()
     {
-        if (!downloadsPopupMenu)
-            return;
-        HWND popupWindow = FindWindowW(L"#32768", nullptr);
-        RECT popupBounds { };
-        if (!popupWindow || !IsWindowVisible(popupWindow) || !GetWindowRect(popupWindow, &popupBounds))
-            return;
-
-        const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
-        for (size_t i = first; i < downloads.size(); ++i) {
-            RECT itemScreenRect { };
-            if (!GetMenuItemRect(window, downloadsPopupMenu, static_cast<UINT>(downloads.size() - 1 - i), &itemScreenRect))
-                continue;
-            OffsetRect(&itemScreenRect, -popupBounds.left, -popupBounds.top);
-            InvalidateRect(popupWindow, &itemScreenRect, FALSE);
-        }
+        if (downloadsPopoverWindow && IsWindow(downloadsPopoverWindow))
+            InvalidateRect(downloadsPopoverWindow, nullptr, FALSE);
     }
 
     void animateDownloadsPopup()
     {
-        if (!downloadsPopupMenu) {
+        if (!downloadsPopoverWindow || !IsWindow(downloadsPopoverWindow)) {
             stopDownloadsAnimationTimer();
             return;
         }
 
         bool animationPending = false;
-        const size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
+        const size_t first = downloads.size() > 5 ? downloads.size() - 5 : 0;
         for (size_t i = first; i < downloads.size(); ++i) {
             auto& item = downloads[i];
             const bool inProgress = !item.finished && !item.failed && !item.cancelled;
@@ -3430,14 +3302,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
                     : item.finished ? "Downloaded"
-                    : (item.totalBytes > 0
-                        ? "Downloading - " + std::to_string(percent) + "% (" + formatDownloadBytes(item.bytesWritten) + ")"
-                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
-                            : "Starting download"));
+                    : (item.bytesWritten > 0 ? "Downloading — " + formatDownloadBytes(item.bytesWritten) + " received"
+                        : "Starting download");
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
                 script += "var f=document.getElementById('download-fill-" + id + "');if(f)f.style.width='" + std::to_string(percent) + "%';";
                 script += "var b=document.getElementById('download-bar-" + id + "');if(b){b.style.display='" + std::string(inProgress ? "block" : "none") + "';b.classList.toggle('indeterminate'," + std::string(inProgress && item.totalBytes <= 0 ? "true" : "false") + ");}";
                 script += "var c=document.getElementById('download-cancel-" + id + "');if(c)c.style.display='" + std::string(inProgress ? "inline-flex" : "none") + "';";
+                script += "var d=document.getElementById('download-folder-" + id + "');if(d)d.style.display='" + std::string(item.finished && !item.failed && !item.cancelled ? "inline-flex" : "none") + "';";
             }
             script += "})();";
             auto javascript = adoptWK(WKStringCreateWithUTF8CString(script.c_str()));
@@ -3463,7 +3334,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             lastDownloadsButtonVisible = shouldShowDownloadsButton;
         }
 
-        if (downloadsPopupMenu) {
+        if (downloadsPopoverWindow && IsWindow(downloadsPopoverWindow)) {
             if (downloadsButtonVisible())
                 startDownloadsAnimationTimer();
             invalidateDownloadPopupRows();
@@ -3472,30 +3343,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void showDownloadsMenu()
     {
-        HMENU downloadsMenu = CreatePopupMenu();
-        if (!downloadsMenu)
-            return;
-        if (downloads.empty()) {
-            AppendMenuW(downloadsMenu, MF_GRAYED | MF_STRING, 5998, L"No downloads yet");
-        } else {
-            size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
-            for (size_t i = downloads.size(); i-- > first;) {
-                AppendMenuW(downloadsMenu, MF_OWNERDRAW, 6000 + static_cast<UINT>(i),
-                    reinterpret_cast<LPCWSTR>(static_cast<ULONG_PTR>(i)));
-            }
-        }
-        AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(downloadsMenu, MF_STRING, 5996, L"Show All Downloads");
-        const RECT button = rightToolbarButtonRect(1);
-        POINT point { button.right, button.bottom };
-        ClientToScreen(window, &point);
-        downloadsPopupMenu = downloadsMenu;
-        if (downloadsButtonVisible())
-            startDownloadsAnimationTimer();
-        TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
-        stopDownloadsAnimationTimer();
-        downloadsPopupMenu = nullptr;
-        DestroyMenu(downloadsMenu);
+        showDownloadsPopover(this);
     }
 
     void loadHistoryPage()
@@ -6677,25 +6525,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
-    case WM_MEASUREITEM: {
-        if (state && lParam) {
-            auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-            if (measure->CtlType == ODT_MENU && state->isDownloadMenuCommand(measure->itemID)) {
-                measure->itemWidth = static_cast<UINT>(scaleForDpi(window, 440));
-                measure->itemHeight = static_cast<UINT>(scaleForDpi(window, 68));
-                return TRUE;
-            }
-        }
-        break;
-    }
-    case WM_DRAWITEM: {
-        if (state && lParam) {
-            const auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-            if (state->drawDownloadsMenuItem(*draw))
-                return TRUE;
-        }
-        break;
-    }
     case WM_TIMER:
         if (state && wParam == kDownloadsAnimationTimerId) {
             state->animateDownloadsPopup();
@@ -6810,6 +6639,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     case WM_KEYDOWN:
+        if (state && state->downloadsPopoverWindow && wParam == VK_ESCAPE) {
+            DestroyWindow(state->downloadsPopoverWindow);
+            return 0;
+        }
         if (state && state->tabOverviewVisible && wParam == VK_ESCAPE) {
             state->activateTab(state->activeTab);
             return 0;
@@ -6904,6 +6737,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
+                DestroyWindow(state->downloadsPopoverWindow);
+                state->downloadsPopoverWindow = nullptr;
+            }
+            if (state->sharePopoverWindow && IsWindow(state->sharePopoverWindow)) {
+                DestroyWindow(state->sharePopoverWindow);
+                state->sharePopoverWindow = nullptr;
+            }
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
