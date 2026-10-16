@@ -481,6 +481,16 @@ int windowDpi(HWND window)
     return static_cast<int>(windowScaleFactor(window) * 96.0);
 }
 
+HPEN createRoundedPen(int width, COLORREF color)
+{
+    const int safeWidth = std::max(1, width);
+    LOGBRUSH brush { BS_SOLID, color, 0 };
+    HPEN pen = ExtCreatePen(
+        PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+        static_cast<DWORD>(safeWidth), &brush, 0, nullptr);
+    return pen ? pen : CreatePen(PS_SOLID, safeWidth, color);
+}
+
 void setNativeWindowBorderColor(HWND window, bool dark)
 {
     if (!window)
@@ -525,109 +535,122 @@ void drawCompass(HDC dc, const RECT& rect)
     DeleteObject(outline);
 }
 
-void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
+void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, enabled ? (dark ? RGB(220, 220, 224) : RGB(55, 60, 63)) : (dark ? RGB(103, 103, 108) : RGB(171, 176, 179)));
+    const COLORREF color = enabled
+        ? (dark ? RGB(220, 220, 224) : RGB(55, 60, 63))
+        : (dark ? RGB(103, 103, 108) : RGB(171, 176, 179));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-
-    MoveToEx(dc, cx + (forward ? -4 : 4), cy - 7, nullptr);
-    LineTo(dc, cx + (forward ? 4 : -4), cy);
-    LineTo(dc, cx + (forward ? -4 : 4), cy + 7);
-
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int dx = MulDiv(4, dpi, 96);
+    const int dy = MulDiv(7, dpi, 96);
+    MoveToEx(dc, cx + (forward ? -dx : dx), cy - dy, nullptr);
+    LineTo(dc, cx + (forward ? dx : -dx), cy);
+    LineTo(dc, cx + (forward ? -dx : dx), cy + dy);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
+void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(55, 60, 63));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int six = MulDiv(6, dpi, 96);
+    const int nine = MulDiv(9, dpi, 96);
+    const int eight = MulDiv(8, dpi, 96);
+    const int seven = MulDiv(7, dpi, 96);
     if (loading) {
-        MoveToEx(dc, cx - 6, cy - 6, nullptr);
-        LineTo(dc, cx + 6, cy + 6);
-        MoveToEx(dc, cx + 6, cy - 6, nullptr);
-        LineTo(dc, cx - 6, cy + 6);
+        MoveToEx(dc, cx - six, cy - six, nullptr);
+        LineTo(dc, cx + six, cy + six);
+        MoveToEx(dc, cx + six, cy - six, nullptr);
+        LineTo(dc, cx - six, cy + six);
     } else {
-        Arc(dc, cx - 9, cy - 9, cx + 9, cy + 9, cx + 8, cy - 7, cx + 9, cy + 7);
-        MoveToEx(dc, cx + 8, cy - 7, nullptr);
-        LineTo(dc, cx + 1, cy - 7);
-        LineTo(dc, cx + 8, cy - 1);
+        Arc(dc, cx - nine, cy - nine, cx + nine, cy + nine,
+            cx + eight, cy - seven, cx + nine, cy + seven);
+        MoveToEx(dc, cx + eight, cy - seven, nullptr);
+        LineTo(dc, cx + MulDiv(1, dpi, 96), cy - seven);
+        LineTo(dc, cx + eight, cy - MulDiv(1, dpi, 96));
     }
-
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
+void drawSidebar(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    Rectangle(dc, rect.left + 9, rect.top + 9, rect.right - 9, rect.bottom - 9);
-    int splitX = rect.left + (rect.right - rect.left) / 2;
-    MoveToEx(dc, splitX, rect.top + 9, nullptr);
-    LineTo(dc, splitX, rect.bottom - 9);
-
+    const int inset = MulDiv(9, dpi, 96);
+    const int splitX = rect.left + (rect.right - rect.left) / 2;
+    RoundRect(dc, rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset,
+        MulDiv(3, dpi, 96), MulDiv(3, dpi, 96));
+    MoveToEx(dc, splitX, rect.top + inset, nullptr);
+    LineTo(dc, splitX, rect.bottom - inset);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawShare(HDC dc, const RECT& rect, bool dark = false)
+void drawShare(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int x = (rect.left + rect.right) / 2;
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x, rect.bottom - 9);
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x - 6, rect.top + 15);
-    MoveToEx(dc, x, rect.top + 9, nullptr);
-    LineTo(dc, x + 6, rect.top + 15);
-    Rectangle(dc, rect.left + 9, rect.top + 13, rect.right - 9, rect.bottom - 8);
-
+    const int x = (rect.left + rect.right) / 2;
+    const int top = rect.top + MulDiv(9, dpi, 96);
+    const int boxInset = MulDiv(9, dpi, 96);
+    const int arrowInset = MulDiv(6, dpi, 96);
+    const int boxTop = rect.top + MulDiv(14, dpi, 96);
+    const int boxBottom = rect.bottom - MulDiv(8, dpi, 96);
+    MoveToEx(dc, x, top, nullptr);
+    LineTo(dc, x, boxTop - MulDiv(2, dpi, 96));
+    MoveToEx(dc, x, top, nullptr);
+    LineTo(dc, x - arrowInset, top + arrowInset);
+    MoveToEx(dc, x, top, nullptr);
+    LineTo(dc, x + arrowInset, top + arrowInset);
+    // Leave the tray open at the top to better match modern share glyphs.
+    MoveToEx(dc, rect.left + boxInset, boxTop, nullptr);
+    LineTo(dc, rect.left + boxInset, boxBottom);
+    LineTo(dc, rect.right - boxInset, boxBottom);
+    LineTo(dc, rect.right - boxInset, boxTop);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawTabOverview(HDC dc, const RECT& rect, bool dark)
+void drawTabOverview(HDC dc, const RECT& rect, bool dark, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(205, 205, 210) : RGB(75, 80, 84));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(205, 205, 210) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
-
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    RoundRect(dc, cx - 7, cy - 5, cx + 7, cy + 7, 3, 3);
-    RoundRect(dc, cx - 4, cy - 8, cx + 10, cy + 4, 3, 3);
-
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int seven = MulDiv(7, dpi, 96);
+    const int five = MulDiv(5, dpi, 96);
+    const int four = MulDiv(4, dpi, 96);
+    const int eight = MulDiv(8, dpi, 96);
+    const int three = MulDiv(3, dpi, 96);
+    RoundRect(dc, cx - seven, cy - five, cx + seven, cy + seven, three, three);
+    RoundRect(dc, cx - four, cy - eight, cx + seven + three, cy + four, three, three);
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawDownload(HDC dc, const RECT& rect, bool dark = false)
+void drawDownload(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(75, 80, 84));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int x = (rect.left + rect.right) / 2;
-    int shaftBottom = rect.bottom - 12;
-    MoveToEx(dc, x, rect.top + 7, nullptr);
+    const int x = (rect.left + rect.right) / 2;
+    const int shaftBottom = rect.bottom - MulDiv(12, dpi, 96);
+    const int six = MulDiv(6, dpi, 96);
+    MoveToEx(dc, x, rect.top + MulDiv(7, dpi, 96), nullptr);
     LineTo(dc, x, shaftBottom);
-    MoveToEx(dc, x - 6, shaftBottom - 6, nullptr);
+    MoveToEx(dc, x - six, shaftBottom - six, nullptr);
     LineTo(dc, x, shaftBottom);
-    LineTo(dc, x + 6, shaftBottom - 6);
-    MoveToEx(dc, rect.left + 8, rect.bottom - 7, nullptr);
-    LineTo(dc, rect.right - 8, rect.bottom - 7);
-
+    LineTo(dc, x + six, shaftBottom - six);
+    MoveToEx(dc, rect.left + MulDiv(8, dpi, 96), rect.bottom - MulDiv(7, dpi, 96), nullptr);
+    LineTo(dc, rect.right - MulDiv(8, dpi, 96), rect.bottom - MulDiv(7, dpi, 96));
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -673,52 +696,57 @@ void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
     DeleteObject(brush);
 }
 
-void drawPlus(HDC dc, const RECT& rect, bool dark = false)
+void drawPlus(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(70, 74, 77));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(70, 74, 77));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    MoveToEx(dc, cx - 5, cy, nullptr);
-    LineTo(dc, cx + 5, cy);
-    MoveToEx(dc, cx, cy - 5, nullptr);
-    LineTo(dc, cx, cy + 5);
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int five = MulDiv(5, dpi, 96);
+    MoveToEx(dc, cx - five, cy, nullptr);
+    LineTo(dc, cx + five, cy);
+    MoveToEx(dc, cx, cy - five, nullptr);
+    LineTo(dc, cx, cy + five);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawClose(HDC dc, const RECT& rect, bool dark = false)
+void drawClose(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(178, 178, 183) : RGB(105, 109, 112));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(178, 178, 183) : RGB(105, 109, 112));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
-    MoveToEx(dc, cx - 3, cy - 3, nullptr);
-    LineTo(dc, cx + 3, cy + 3);
-    MoveToEx(dc, cx + 3, cy - 3, nullptr);
-    LineTo(dc, cx - 3, cy + 3);
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int three = MulDiv(3, dpi, 96);
+    MoveToEx(dc, cx - three, cy - three, nullptr);
+    LineTo(dc, cx + three, cy + three);
+    MoveToEx(dc, cx + three, cy - three, nullptr);
+    LineTo(dc, cx - three, cy + three);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
-void drawShield(HDC dc, const RECT& rect, bool dark = false)
+void drawShield(HDC dc, const RECT& rect, bool dark = false, int dpi = 96)
 {
-    HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
+    HPEN pen = createRoundedPen(MulDiv(1, dpi, 96), dark ? RGB(220, 220, 224) : RGB(67, 72, 75));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
-
-    int cx = (rect.left + rect.right) / 2;
-    int cy = (rect.top + rect.bottom) / 2;
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+    const int six = MulDiv(6, dpi, 96);
+    const int five = MulDiv(5, dpi, 96);
+    const int four = MulDiv(4, dpi, 96);
+    const int two = MulDiv(2, dpi, 96);
+    const int seven = MulDiv(7, dpi, 96);
     POINT outline[] = {
-        { cx, cy - 7 },
-        { cx + 6, cy - 4 },
-        { cx + 5, cy + 2 },
-        { cx, cy + 7 },
-        { cx - 5, cy + 2 },
-        { cx - 6, cy - 4 },
-        { cx, cy - 7 }
+        { cx, cy - seven },
+        { cx + six, cy - four },
+        { cx + five, cy + two },
+        { cx, cy + seven },
+        { cx - five, cy + two },
+        { cx - six, cy - four },
+        { cx, cy - seven }
     };
     Polyline(dc, outline, static_cast<int>(std::size(outline)));
-
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
@@ -2922,7 +2950,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT closeRect { width - scaleForDpi(window, 48), top + scaleForDpi(window, 10),
             width - scaleForDpi(window, 10), top + scaleForDpi(window, 44) };
-        drawClose(dc, closeRect, dark);
+        drawClose(dc, closeRect, dark, dpi);
 
         RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
             width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
@@ -3123,7 +3151,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(sidebarButtonPen);
         RECT sidebarGlyph = sidebarRect;
         sidebarGlyph.right -= MulDiv(10, dpi, 96);
-        drawSidebar(dc, sidebarGlyph, dark);
+        drawSidebar(dc, sidebarGlyph, dark, dpi);
         HPEN dropdownPen = CreatePen(PS_SOLID, 1, dark ? RGB(210, 210, 215) : RGB(72, 76, 80));
         HPEN oldDropdownPen = static_cast<HPEN>(SelectObject(dc, dropdownPen));
         const int dropX = sidebarRect.right - MulDiv(7, dpi, 96);
@@ -3148,8 +3176,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
         RECT forwardRect { backRect.right, navigationRect.top, navigationRect.right - gap, navigationRect.bottom };
-        drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
-        drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
+        drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark, dpi);
+        drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark, dpi);
 
         if (tabsH > 0) {
             HBRUSH tabsBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(242, 242, 244));
@@ -3194,7 +3222,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
                 DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                 RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top, tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
-                drawClose(dc, closeRect, dark);
+                drawClose(dc, closeRect, dark, dpi);
             }
         }
 
@@ -3210,19 +3238,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(pillPen);
 
         RECT privacyGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
-        drawShield(dc, privacyGlyph, dark);
+        drawShield(dc, privacyGlyph, dark, dpi);
         const bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
-        drawReload(dc, reloadRect, loading, dark);
+        drawReload(dc, reloadRect, loading, dark, dpi);
 
         RECT shareRect = rightToolbarButtonRect(0);
         RECT downloadsRect = rightToolbarButtonRect(1);
         RECT newTabRect = rightToolbarButtonRect(2);
         RECT overviewRect = rightToolbarButtonRect(3);
-        drawShare(dc, shareRect, dark);
-        drawDownload(dc, downloadsRect, dark);
-        drawPlus(dc, newTabRect, dark);
-        drawTabOverview(dc, overviewRect, dark);
+        drawShare(dc, shareRect, dark, dpi);
+        drawDownload(dc, downloadsRect, dark, dpi);
+        drawPlus(dc, newTabRect, dark, dpi);
+        drawTabOverview(dc, overviewRect, dark, dpi);
     }
 };
 
