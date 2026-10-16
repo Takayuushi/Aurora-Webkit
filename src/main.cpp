@@ -3301,7 +3301,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled;
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
-                    : item.finished ? "Downloaded"
+                    : item.finished ? "Downloaded — " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten)
                     : (item.bytesWritten > 0 ? "Downloading — " + formatDownloadBytes(item.bytesWritten) + " received"
                         : "Starting download");
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
@@ -6075,6 +6075,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
 
     drawRoundedControl(dc, client, surface, border, static_cast<float>(corner), 1.0f);
     SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
 
     HFONT nameFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -6219,6 +6220,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     SetTextColor(dc, secondary);
     DrawTextW(dc, L"›", -1, &chevronRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
+    SelectObject(dc, originalFont);
     DeleteObject(nameFont);
     DeleteObject(statusFont);
     DeleteObject(footerFont);
@@ -7133,6 +7135,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
+            const RECT downloadsButton = state->rightToolbarButtonRect(1);
+            // Clicking the Downloads button toggles this popover; other browser clicks dismiss it immediately.
+            if (!PtInRect(&downloadsButton, point))
+                DestroyWindow(state->downloadsPopoverWindow);
+        }
 
         if (state->handleTopBarHit(point))
             return 0;
