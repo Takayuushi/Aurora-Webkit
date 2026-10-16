@@ -6426,7 +6426,7 @@ void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef proposedMenu, WKArrayR
         if (linkString) {
             if (browser)
                 browser->pendingContextMenuLinkURL = createString(linkString.get());
-            WKRetainPtr<WKStringRef> title = createWKString(L"Open Link in New Tab");
+            WKRetainPtr<WKStringRef> title = adoptWK(WKStringCreateWithUTF8CString("Open Link in New Tab"));
             newTabItem = adoptWK(WKContextMenuItemCreateAsAction(
                 kAuroraOpenLinkInNewTabTag, title.get(), true));
         }
