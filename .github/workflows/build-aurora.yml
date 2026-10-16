@@ -4,11 +4,19 @@ on:
   push:
     branches:
       - fix/safari-download-toolbar-sidebar
+    paths-ignore:
+      - ".github/workflows/build-aurora.yml"
   workflow_dispatch:
     inputs:
       webkit_sha:
-        description: "Optional WebKit commit SHA to build"
+        description: "WebKit commit SHA (only when explicitly rebuilding WebKit)"
         required: false
+        type: string
+      rebuild_webkit:
+        description: "Rebuild the WebKit engine (leave off for normal Aurora builds)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -80,29 +88,39 @@ jobs:
           if ($sha -notmatch '^[0-9a-fA-F]{40}$') { throw "Resolved WebKit revision is not a full 40-character Git commit SHA." }
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
-      - name: Cache WebKit source
+      # One cache contains the matching WebKit source, compiled output, and libraries.
+      # Keeping one snapshot avoids duplicate large caches evicting each other.
+      - name: Restore saved WebKit build
         id: cache-webkit-src
         uses: actions/cache@v4
         with:
           path: ${{ env.WEBKIT_DIR }}
           key: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
-          restore-keys: |
-            webkit-src-${{ runner.os }}-
 
-      - name: Clone WebKit
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true'
+      - name: Require saved WebKit build for normal browser builds
+        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_webkit != true)
+        shell: powershell
+        run: |
+          throw "No saved WebKit build was found for the pinned SHA. This browser build will not rebuild WebKit automatically. Re-run this workflow manually and enable 'Rebuild WebKit' only when an intentional WebKit rebuild is needed."
+
+      - name: Clone WebKit for an explicitly requested rebuild
+        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
         env:
           WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
         shell: powershell
         run: |
+          New-Item -ItemType Directory -Force -Path $env:WEBKIT_DIR | Out-Null
           if (-not (Test-Path (Join-Path $env:WEBKIT_DIR ".git"))) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $env:WEBKIT_DIR) | Out-Null
-            git -c core.longpaths=true clone --depth 1 --single-branch https://github.com/WebKit/WebKit.git $env:WEBKIT_DIR
+            git -C $env:WEBKIT_DIR init
+            git -C $env:WEBKIT_DIR remote add origin https://github.com/WebKit/WebKit.git
           }
           git -C $env:WEBKIT_DIR fetch --depth 1 origin $env:WEBKIT_SHA
-          git -C $env:WEBKIT_DIR checkout --force $env:WEBKIT_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch requested WebKit revision $env:WEBKIT_SHA" }
+          git -C $env:WEBKIT_DIR checkout --force --detach $env:WEBKIT_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Could not check out requested WebKit revision $env:WEBKIT_SHA" }
 
       - name: Verify WebKit checkout
+        if: steps.cache-webkit-src.outputs.cache-hit == 'true' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true)
         env:
           WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
         shell: powershell
@@ -118,6 +136,7 @@ jobs:
           }
 
       - name: Patch rewrite-compile-commands (Windows guard)
+        if: github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
         shell: powershell
         run: |
           $script = Join-Path $env:WEBKIT_DIR "Tools\Scripts\rewrite-compile-commands"
@@ -134,24 +153,6 @@ jobs:
             Write-Host "rewrite-compile-commands patch target not found; skipping patch."
           }
 
-      - name: Cache WebKit Windows libraries
-        id: cache-webkit-libs
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.WEBKIT_DIR }}/WebKitLibraries/win
-          key: webkit-win-libs-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
-          restore-keys: |
-            webkit-win-libs-${{ runner.os }}-
-
-      - name: Cache WebKit build output
-        id: cache-webkit-build
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.WEBKIT_DIR }}/WebKitBuild
-          key: webkit-build-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-cmake-export-off-aurora-v1
-          restore-keys: |
-            webkit-build-${{ runner.os }}-
-
       - name: Install Python dependencies
         shell: powershell
         run: |
@@ -159,8 +160,7 @@ jobs:
           python -m pip install pywin32
 
       - name: Build WebKit (Release, with Aurora in the same CMake graph)
-        # The source cache is saved after a successful full build and contains the complete WebKit tree, dependencies, and build graph. If it restores exactly, compile Aurora only.
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && (steps.cache-webkit-build.outputs.cache-hit != 'true' || steps.cache-webkit-libs.outputs.cache-hit != 'true')
+        if: github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
         shell: powershell
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -194,6 +194,24 @@ jobs:
           $cmakeArgs = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF -DCMAKE_PROJECT_INCLUDE:FILEPATH=$auroraHook -DAURORA_SOURCE_DIR:PATH=$auroraRoot"
           cmd /c "call `"$vcvars`" && cd /d `"$env:WEBKIT_DIR`" && perl Tools\Scripts\build-webkit --release --cmakeargs=`"$cmakeArgs`""
           if ($LASTEXITCODE -ne 0) { throw "build-webkit failed with exit code $LASTEXITCODE" }
+
+      - name: Verify saved WebKit build is ready
+        shell: powershell
+        env:
+          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
+        run: |
+          $actualSha = (git -C $env:WEBKIT_DIR rev-parse HEAD).Trim()
+          if ($actualSha -ne $env:WEBKIT_SHA) {
+            throw "Saved WebKit snapshot SHA mismatch. Expected $env:WEBKIT_SHA, got $actualSha."
+          }
+          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
+          if (-not (Test-Path (Join-Path $buildDir "CMakeCache.txt"))) {
+            throw "The saved WebKit snapshot has no configured Release build. Use Run workflow and enable 'Rebuild WebKit' to create a new snapshot."
+          }
+          $libraries = Join-Path $env:WEBKIT_DIR "WebKitLibraries\win"
+          if (-not (Test-Path -LiteralPath $libraries -PathType Container)) {
+            throw "The saved WebKit snapshot is missing WebKitLibraries\win. Use Run workflow and enable 'Rebuild WebKit' to recreate the snapshot."
+          }
 
       - name: Build Aurora target from the configured WebKit graph
         shell: powershell
