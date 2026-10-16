@@ -199,6 +199,7 @@ int downloadsPopoverHeight(const BrowserState*);
 RECT downloadsPopoverRowRect(HWND, int, int);
 RECT downloadsPopoverActionRect(HWND, int, int);
 RECT downloadsPopoverClearRect(HWND, int);
+void updateDownloadsPopoverLayout(BrowserState*);
 void savePageDataCompleted(WKDataRef, WKErrorRef, void*);
 void websiteDataCleared(void*);
 void websiteDataStorageCleared(void*);
@@ -3089,9 +3090,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 
 
-    void loadDownloadsPage()
+    void loadDownloadsPage(TabState* requestedTab = nullptr)
     {
-        auto* tab = active();
+        auto* tab = requestedTab ? requestedTab : active();
         if (!tab)
             return;
         tab->internalPage = L"downloads";
@@ -3198,6 +3199,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         downloads.erase(std::remove_if(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
             return item.finished || item.failed || item.cancelled;
         }), downloads.end());
+
+        // Refresh any already-open Downloads pages because row IDs are position-based.
+        for (auto& tab : tabs) {
+            if (tab->internalPage == L"downloads")
+                loadDownloadsPage(tab.get());
+        }
         refreshDownloadsPresentation();
     }
 
@@ -3438,6 +3445,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (downloadsPopoverWindow) {
+            updateDownloadsPopoverLayout(this);
             if (downloadsButtonVisible())
                 startDownloadsAnimationTimer();
             invalidateDownloadPopupRows();
@@ -6150,6 +6158,7 @@ struct DownloadsPopoverWindowState {
     BrowserState* browser { nullptr };
     RECT targetRect { };
     ULONGLONG openedAt { 0 };
+    int visibleCount { 0 };
     int hoveredRow { -1 };
     int hoveredActionRow { -1 };
     bool hoveredClear { false };
@@ -6159,6 +6168,45 @@ struct DownloadsPopoverWindowState {
     float rowHoverOpacity[5] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     float clearHoverOpacity { 0.0f };
 };
+
+
+void updateDownloadsPopoverLayout(BrowserState* browser)
+{
+    if (!browser || !browser->downloadsPopoverWindow || !IsWindow(browser->downloadsPopoverWindow))
+        return;
+    auto* state = reinterpret_cast<DownloadsPopoverWindowState*>(
+        GetWindowLongPtrW(browser->downloadsPopoverWindow, GWLP_USERDATA));
+    if (!state)
+        return;
+
+    const int newCount = downloadsPopoverVisibleCount(browser);
+    if (newCount == state->visibleCount)
+        return;
+    state->visibleCount = newCount;
+
+    const int dpi = windowDpi(browser->window);
+    const int width = MulDiv(360, dpi, 96);
+    const int height = downloadsPopoverHeight(browser);
+    state->targetRect.right = state->targetRect.left + width;
+    state->targetRect.bottom = state->targetRect.top + height;
+
+    const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
+    const float t = std::clamp(static_cast<float>(elapsed) / 150.0f, 0.0f, 1.0f);
+    const float eased = t * t * (3.0f - 2.0f * t);
+    const int lift = state->animating
+        ? static_cast<int>(MulDiv(4, dpi, 96) * (1.0f - eased) + 0.5f) : 0;
+
+    SetWindowPos(browser->downloadsPopoverWindow, HWND_TOPMOST,
+        state->targetRect.left, state->targetRect.top - lift, width, height,
+        SWP_NOACTIVATE | SWP_NOZORDER);
+    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+        MulDiv(15, dpi, 96), MulDiv(15, dpi, 96));
+    if (region) {
+        if (!SetWindowRgn(browser->downloadsPopoverWindow, region, TRUE))
+            DeleteObject(region);
+    }
+    InvalidateRect(browser->downloadsPopoverWindow, nullptr, FALSE);
+}
 
 void drawDownloadFileGlyph(HDC dc, const RECT& rect, bool dark, bool active)
 {
@@ -6305,6 +6353,7 @@ void showDownloadsPopover(BrowserState* browser)
     popupState->browser = browser;
     popupState->targetRect = { left, top, left + width, top + height };
     popupState->openedAt = GetTickCount64();
+    popupState->visibleCount = downloadsPopoverVisibleCount(browser);
     popupState->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
     HWND popup = CreateWindowExW(
