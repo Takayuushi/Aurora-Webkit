@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: aurora-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -116,6 +120,40 @@ jobs:
           $expectedSha = $env:WEBKIT_SHA
           if ($actualSha -ne $expectedSha) {
             throw "WebKit checkout SHA mismatch. Expected $expectedSha, got $actualSha."
+          }
+
+      - name: Enable Aurora custom context menus in Windows WebKit
+        shell: powershell
+        run: |
+          $file = Join-Path $env:WEBKIT_DIR "Source\WebKit\UIProcess\win\WebContextMenuProxyWin.cpp"
+          if (-not (Test-Path -LiteralPath $file)) {
+            throw "WebKit Windows context-menu proxy not found at $file"
+          }
+          $content = Get-Content -Raw -LiteralPath $file
+          $old = @'
+void WebContextMenuProxyWin::showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&& items)
+{
+    populate(m_context, m_menu, items);
+'@
+          $new = @'
+void WebContextMenuProxyWin::showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&& items)
+{
+    RefPtr page = this->page();
+    if (page && page->contextMenuClient().canShowContextMenu()) {
+        page->contextMenuClient().showContextMenu(*page, m_context.menuLocation(), items);
+        return;
+    }
+
+    populate(m_context, m_menu, items);
+'@
+          if ($content.Contains($new)) {
+            Write-Host "WebKit custom context-menu callback already enabled."
+          } elseif ($content.Contains($old)) {
+            $content = $content.Replace($old, $new)
+            [System.IO.File]::WriteAllText($file, $content, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "Enabled WebKit's client-provided Windows context-menu UI."
+          } else {
+            throw "Could not find the expected WebContextMenuProxyWin method. Check the pinned WebKit source."
           }
 
       - name: Patch rewrite-compile-commands (Windows guard)
