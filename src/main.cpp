@@ -3184,8 +3184,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         ShellExecuteW(window, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
     }
 
+    bool hasClearableDownloads() const
+    {
+        return std::any_of(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
+            return item.finished || item.failed || item.cancelled;
+        });
+    }
+
     void clearCompletedDownloads()
     {
+        if (!hasClearableDownloads())
+            return;
         downloads.erase(std::remove_if(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
             return item.finished || item.failed || item.cancelled;
         }), downloads.end());
@@ -6234,15 +6243,11 @@ void drawDownloadPopoverActionGlyph(HDC dc, const RECT& rect, bool dark, bool ac
         graphics.DrawLine(&pen, cx - radius, cy - radius, cx + radius, cy + radius);
         graphics.DrawLine(&pen, cx + radius, cy - radius, cx - radius, cy + radius);
     } else {
-        Gdiplus::GraphicsPath folder;
-        folder.StartFigure();
-        folder.AddLine(cx - 6.5f, cy - 3.8f, cx - 1.0f, cy - 3.8f);
-        folder.AddLine(cx - 1.0f, cy - 3.8f, cx + 1.0f, cy - 1.8f);
-        folder.AddLine(cx + 1.0f, cy - 1.8f, cx + 6.0f, cy - 1.8f);
-        folder.AddLine(cx + 6.0f, cy - 1.8f, cx + 6.0f, cy + 5.0f);
-        folder.AddLine(cx + 6.0f, cy + 5.0f, cx - 6.5f, cy + 5.0f);
-        folder.CloseFigure();
-        graphics.DrawPath(&pen, &folder);
+        // Safari uses a magnifier to reveal the completed item in Finder.
+        const float radius = 4.6f;
+        graphics.DrawEllipse(&pen, cx - radius - 1.0f, cy - radius - 1.0f,
+            (radius + 1.0f) * 2.0f, (radius + 1.0f) * 2.0f);
+        graphics.DrawLine(&pen, cx + 3.2f, cy + 3.2f, cx + 6.6f, cy + 6.6f);
     }
 }
 
@@ -6487,11 +6492,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             const int count = downloadsPopoverVisibleCount(browser);
             const RECT clearRect = downloadsPopoverClearRect(window, dpi);
             if (PtInRect(&clearRect, point)) {
-                browser->clearCompletedDownloads();
+                if (browser->hasClearableDownloads())
+                    browser->clearCompletedDownloads();
                 if (browser->downloads.empty())
                     DestroyWindow(window);
                 else
-                    InvalidateRect(window, nullptr, FALSE);
+                    InvalidateRect(window, &clearRect, FALSE);
                 return 0;
             }
 
@@ -6568,7 +6574,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HGDIOBJ previousFont = SelectObject(dc, clearFont);
-        SetTextColor(dc, state && state->browser && state->browser->downloads.empty()
+        SetTextColor(dc, state && state->browser && !state->browser->hasClearableDownloads()
             ? secondary : (dark ? RGB(160, 193, 255) : RGB(32, 104, 224)));
         DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, previousFont);
