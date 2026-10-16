@@ -953,8 +953,8 @@ struct BrowserState {
     {
         if (point.y < 0 || point.y >= titleBarHeight())
             return -1;
-        RECT safariMenu = menuBarItemRect(0);
-        if (point.x >= scaleForDpi(window, 14) && point.x < safariMenu.right)
+        RECT auroraMenu = menuBarItemRect(0);
+        if (point.x >= scaleForDpi(window, 14) && point.x < auroraMenu.right)
             return 0;
         for (int i = 1; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
@@ -2205,8 +2205,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         switch (menuIndex) {
-        case 0: // Safari
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+        case 0: // Aurora
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
             AppendMenuW(popup, MF_STRING, kMenuSettings, L"Settings...");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(popup, MF_STRING, kMenuThemeLight, L"Light Appearance");
@@ -2266,7 +2266,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             AppendMenuW(popup, MF_STRING, kCommandCloseTab, L"Close Tab");
             break;
         case 7: // Help
-            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Safari");
+            AppendMenuW(popup, MF_STRING, kMenuAbout, L"About Aurora");
             AppendMenuW(popup, MF_STRING, kMenuSettings, L"Browser Settings");
             break;
         default:
@@ -3495,7 +3495,8 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
     auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     switch (message) {
     case WM_CREATE:
-        SetTimer(window, 1, 60, nullptr);
+        // Frequent, inexpensive polling makes outside-click dismissal feel immediate.
+        SetTimer(window, 1, 20, nullptr);
         return 0;
 
     case WM_ERASEBKGND:
@@ -3553,8 +3554,13 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
                 y = std::clamp<int>(y, static_cast<int>(work.top),
                     std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height));
             }
-            SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
-            InvalidateRect(window, nullptr, FALSE);
+            RECT currentRect { };
+            GetWindowRect(window, &currentRect);
+            if (currentRect.left != x || currentRect.top != y
+                || currentRect.right - currentRect.left != width
+                || currentRect.bottom - currentRect.top != height) {
+                SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            }
         }
         return 0;
 
