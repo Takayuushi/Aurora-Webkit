@@ -6069,7 +6069,7 @@ RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index
     const int width = state->targetRect.right - state->targetRect.left;
     const int rowHeight = downloadsPopoverRowHeight(state);
     const int top = downloadsPopoverTopPadding(state) + index * rowHeight;
-    const int horizontalPad = MulDiv(10, dpi, 96);
+    const int horizontalPad = MulDiv(8, dpi, 96);
     return { horizontalPad, top, width - horizontalPad, top + rowHeight };
 }
 
@@ -6095,26 +6095,26 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     const int width = client.right;
     const bool dark = browser->chromeDarkTheme();
 
-    const COLORREF surface = dark ? RGB(24, 24, 26) : RGB(250, 250, 252);
+    const COLORREF surface = dark ? RGB(29, 29, 31) : RGB(250, 250, 252);
     const COLORREF border = dark ? RGB(62, 62, 66) : RGB(214, 216, 220);
     const COLORREF primary = dark ? RGB(246, 246, 248) : RGB(32, 35, 39);
     const COLORREF secondary = dark ? RGB(161, 161, 166) : RGB(105, 109, 116);
     const COLORREF separator = dark ? RGB(62, 62, 66) : RGB(231, 233, 237);
     const COLORREF hover = dark ? RGB(52, 52, 56) : RGB(242, 244, 247);
     const COLORREF accent = dark ? RGB(88, 151, 255) : RGB(10, 132, 255);
-    const int corner = MulDiv(13, dpi, 96);
+    const int corner = MulDiv(11, dpi, 96);
 
     drawRoundedControl(dc, client, surface, border, static_cast<float>(corner), 1.0f);
     SetBkMode(dc, TRANSPARENT);
     HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
 
-    HFONT nameFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
+    HFONT nameFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_MEDIUM,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable");
-    HFONT statusFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
+    HFONT statusFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT footerFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
+    HFONT footerFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
@@ -6152,8 +6152,8 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
                 drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
             }
 
-            const int left = rowRect.left + MulDiv(10, dpi, 96);
-            const int right = rowRect.right - MulDiv(10, dpi, 96);
+            const int left = rowRect.left + MulDiv(9, dpi, 96);
+            const int right = rowRect.right - MulDiv(9, dpi, 96);
             RECT nameRect { left, rowRect.top + MulDiv(4, dpi, 96),
                 right, rowRect.top + MulDiv(24, dpi, 96) };
             SelectObject(dc, nameFont);
@@ -6228,7 +6228,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
 
     HPEN footerPen = CreatePen(PS_SOLID, 1, separator);
     HGDIOBJ oldFooterPen = SelectObject(dc, footerPen);
-    const int footerDividerInset = MulDiv(4, dpi, 96);
+    const int footerDividerInset = MulDiv(2, dpi, 96);
     MoveToEx(dc, footerDividerInset, footerTop, nullptr);
     LineTo(dc, width - footerDividerInset, footerTop);
     SelectObject(dc, oldFooterPen);
@@ -6244,7 +6244,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     }
     SelectObject(dc, footerFont);
     SetTextColor(dc, primary);
-    RECT footerLabel { MulDiv(20, dpi, 96), footerTop,
+    RECT footerLabel { MulDiv(17, dpi, 96), footerTop,
         width - MulDiv(8, dpi, 96), client.bottom };
     DrawTextW(dc, L"Show All Downloads", -1, &footerLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
@@ -6279,13 +6279,13 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = scaleForDpi(browser->window, 480);
+    const int width = scaleForDpi(browser->window, 478);
     const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
     const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 68);
     const int height = contentHeight + scaleForDpi(browser->window, 5 + 26 + 3);
 
     RECT anchorRect = browser->rightToolbarButtonRect(1);
-    POINT anchor { anchorRect.right, anchorRect.bottom + MulDiv(4, dpi, 96) };
+    POINT anchor { anchorRect.right, anchorRect.bottom + MulDiv(2, dpi, 96) };
     ClientToScreen(browser->window, &anchor);
 
     HMONITOR monitor = MonitorFromWindow(browser->window, MONITOR_DEFAULTTONEAREST);
