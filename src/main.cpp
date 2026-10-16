@@ -1877,7 +1877,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const int width = scaleForDpi(window, 372);
         const int visibleRows = static_cast<int>(std::max<size_t>(1, std::min<size_t>(5, downloads.size())));
-        const int contentHeight = downloads.empty() ? 100 : visibleRows * 68;
+        const int contentHeight = downloads.empty() ? 100 : visibleRows * 64;
         const int height = scaleForDpi(window, 52 + contentHeight + 44);
         int x = anchor.x - width + scaleForDpi(window, 16);
         int y = anchor.y + scaleForDpi(window, 6);
@@ -3231,7 +3231,7 @@ int downloadsPopoverHeight(const BrowserState* browser, HWND dpiWindow)
 {
     const int contentHeight = browser->downloads.empty()
         ? 100
-        : static_cast<int>(std::min<size_t>(5, browser->downloads.size())) * 68;
+        : static_cast<int>(std::min<size_t>(5, browser->downloads.size())) * 64;
     return scaleForDpi(dpiWindow, 52 + contentHeight + 44);
 }
 
@@ -3263,6 +3263,20 @@ std::wstring formatDownloadBytes(long long bytes)
 
 void drawDownloadFileGlyph(HDC dc, const RECT& bounds, const std::wstring& filename, bool dark, int dpi)
 {
+    // Prefer the operating system's real file-type icon, like Safari's download
+    // rows use document icons instead of a single generic glyph for every file.
+    SHFILEINFOW fileInfo { };
+    const DWORD iconFlags = SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES;
+    if (SHGetFileInfoW(filename.c_str(), FILE_ATTRIBUTE_NORMAL, &fileInfo, sizeof(fileInfo), iconFlags)
+        && fileInfo.hIcon) {
+        const int iconSize = MulDiv(26, dpi, 96);
+        const int x = bounds.left + ((bounds.right - bounds.left) - iconSize) / 2;
+        const int y = bounds.top + ((bounds.bottom - bounds.top) - iconSize) / 2;
+        DrawIconEx(dc, x, y, fileInfo.hIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        DestroyIcon(fileInfo.hIcon);
+        return;
+    }
+
     RECT paper { bounds.left + MulDiv(3, dpi, 96), bounds.top + MulDiv(1, dpi, 96),
         bounds.right - MulDiv(3, dpi, 96), bounds.bottom - MulDiv(1, dpi, 96) };
     HBRUSH paperBrush = CreateSolidBrush(dark ? RGB(232, 232, 236) : RGB(255, 255, 255));
@@ -3345,9 +3359,9 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
 
-    RECT titleRect { MulDiv(8, dpi, 96), MulDiv(7, dpi, 96), width - MulDiv(8, dpi, 96), MulDiv(45, dpi, 96) };
+    RECT titleRect { MulDiv(16, dpi, 96), MulDiv(7, dpi, 96), width - MulDiv(76, dpi, 96), MulDiv(45, dpi, 96) };
     SetTextColor(dc, primary);
-    DrawTextW(dc, L"Downloads", -1, &titleRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(dc, L"Downloads", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     RECT clearRect { width - MulDiv(62, dpi, 96), MulDiv(9, dpi, 96), width - MulDiv(14, dpi, 96), MulDiv(41, dpi, 96) };
     const bool hasClearableDownloads = std::any_of(browser->downloads.begin(), browser->downloads.end(),
@@ -3357,7 +3371,7 @@ void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
     DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const int headerHeight = MulDiv(48, dpi, 96);
-    const int rowHeight = MulDiv(68, dpi, 96);
+    const int rowHeight = MulDiv(64, dpi, 96);
     const size_t visibleCount = std::min<size_t>(5, browser->downloads.size());
 
     if (visibleCount == 0) {
@@ -3520,7 +3534,7 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
     switch (message) {
     case WM_CREATE:
         // Frequent, inexpensive polling makes outside-click dismissal feel immediate.
-        SetTimer(window, 1, 20, nullptr);
+        SetTimer(window, 1, 60, nullptr);
         return 0;
 
     case WM_ERASEBKGND:
@@ -3597,7 +3611,7 @@ LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPAR
             GetClientRect(window, &client);
             const int dpi = windowDpi(window);
             const int headerHeight = MulDiv(48, dpi, 96);
-            const int rowHeight = MulDiv(68, dpi, 96);
+            const int rowHeight = MulDiv(64, dpi, 96);
             const int footerHeight = MulDiv(44, dpi, 96);
 
             RECT clearRect { client.right - MulDiv(68, dpi, 96), 0,
