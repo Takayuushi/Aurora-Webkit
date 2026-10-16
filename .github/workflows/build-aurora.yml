@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/safari-download-toolbar-sidebar
+      - feature/safari26-ui-replica
   workflow_dispatch:
     inputs:
       webkit_sha:
