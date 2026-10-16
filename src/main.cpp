@@ -777,11 +777,66 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
         }
         return 0;
     case WM_KEYDOWN:
+        if (!state)
+            return 0;
         if (wParam == VK_ESCAPE) {
             if (state->rootWindow)
                 dismissWebContextMenu(state->rootWindow, true);
             else
                 dismissWebContextMenu(window, true);
+            return 0;
+        }
+        if (wParam == VK_UP || wParam == VK_DOWN) {
+            const int count = static_cast<int>(state->entries.size());
+            if (!count)
+                return 0;
+            int candidate = state->hoveredIndex;
+            for (int step = 0; step < count; ++step) {
+                if (wParam == VK_DOWN)
+                    candidate = candidate < 0 ? 0 : (candidate + 1) % count;
+                else
+                    candidate = candidate < 0 ? count - 1 : (candidate + count - 1) % count;
+                const auto& item = state->entries[static_cast<size_t>(candidate)];
+                if (item.enabled && item.type != kWKContextMenuItemTypeSeparator)
+                    break;
+            }
+            const int previous = state->hoveredIndex;
+            state->hoveredIndex = candidate;
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            if (previous >= 0) {
+                const RECT previousRect = auroraContextMenuRowRect(window, state, previous, dpi);
+                InvalidateRect(window, &previousRect, FALSE);
+            }
+            if (candidate >= 0) {
+                const RECT rowRect = auroraContextMenuRowRect(window, state, candidate, dpi);
+                InvalidateRect(window, &rowRect, FALSE);
+            }
+            return 0;
+        }
+        if (wParam == VK_RIGHT && state->hoveredIndex >= 0
+            && state->hoveredIndex < static_cast<int>(state->entries.size())
+            && state->entries[static_cast<size_t>(state->hoveredIndex)].type == kWKContextMenuItemTypeSubmenu) {
+            openAuroraContextMenuSubmenu(window, state->hoveredIndex);
+            if (state->childWindow && IsWindow(state->childWindow))
+                SetFocus(state->childWindow);
+            return 0;
+        }
+        if (wParam == VK_LEFT && state->parentWindow && IsWindow(state->parentWindow)) {
+            const HWND parentWindow = state->parentWindow;
+            auto* parent = reinterpret_cast<AuroraContextMenuWindowState*>(
+                GetWindowLongPtrW(parentWindow, GWLP_USERDATA));
+            if (parent && parent->childWindow == window)
+                parent->childWindow = nullptr;
+            DestroyWindow(window);
+            SetFocus(parentWindow);
+            return 0;
+        }
+        if ((wParam == VK_RETURN || wParam == VK_SPACE) && state->hoveredIndex >= 0
+            && state->hoveredIndex < static_cast<int>(state->entries.size())) {
+            const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
+            const RECT rowRect = auroraContextMenuRowRect(window, state, state->hoveredIndex, dpi);
+            const LPARAM clickPoint = MAKELPARAM((rowRect.left + rowRect.right) / 2, (rowRect.top + rowRect.bottom) / 2);
+            SendMessageW(window, WM_LBUTTONUP, 0, clickPoint);
             return 0;
         }
         break;
