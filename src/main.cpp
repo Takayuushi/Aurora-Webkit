@@ -6493,7 +6493,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     break;
                 auto& item = browser->downloads[index];
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled;
-                if (PtInRect(&downloadsPopoverActionRect(window, row, dpi), point)) {
+                const RECT actionRect = downloadsPopoverActionRect(window, row, dpi);
+                if (PtInRect(&actionRect, point)) {
                     if (inProgress && item.download) {
                         item.cancelled = true;
                         WKDownloadCancel(item.download, nullptr, discardDownloadResumeData);
@@ -7438,6 +7439,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow))
+                DestroyWindow(state->downloadsPopoverWindow);
+            if (state->sharePopoverWindow && IsWindow(state->sharePopoverWindow))
+                DestroyWindow(state->sharePopoverWindow);
+            state->stopDownloadsAnimationTimer();
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
