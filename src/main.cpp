@@ -4295,7 +4295,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const RECT pill = addressPillRect();
         POINT point { pill.left + scaleForDpi(window, 16), pill.bottom };
         ClientToScreen(window, &point);
-        TrackPopupMenu(pageMenu, TPM_LEFTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        showAuroraMenuFromHMENU(this, pageMenu, point, false);
         DestroyMenu(pageMenu);
     }
 
@@ -4335,18 +4335,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT button = sidebarButtonRect();
         POINT point { button.left, button.bottom };
         ClientToScreen(window, &point);
-        const UINT command = TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-            point.x, point.y, 0, window, nullptr);
+        showAuroraMenuFromHMENU(this, popup, point, false);
         DestroyMenu(popup);
-        if (!command)
-            return;
-
-        if (command == kSidebarBookmarks) sidebarSection = 0;
-        else if (command == kSidebarReadingList) sidebarSection = 1;
-        else if (command == kSidebarHistory) sidebarSection = 2;
-        sidebarOpen = true;
-        resize();
-        InvalidateRect(window, nullptr, FALSE);
     }
 
     void executeWebEditCommand(const char* command)
@@ -4393,7 +4383,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         };
         ClientToScreen(window, &point);
 
-        TrackPopupMenu(menu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
+        showAuroraMenuFromHMENU(this, menu, point, true);
     }
 
     RECT addressPillRect() const
