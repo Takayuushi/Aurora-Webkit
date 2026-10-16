@@ -35,6 +35,7 @@
 #include <cwctype>
 #include <cstddef>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <memory>
 #include <cstring>
@@ -60,6 +61,7 @@ namespace {
 
 constexpr wchar_t windowClassName[] = L"AuroraWindow";
 constexpr wchar_t windowTitle[] = L"Aurora";
+constexpr wchar_t downloadsPopoverClassName[] = L"AuroraDownloadsPopover";
 
 constexpr UINT kCommandBack = 1001;
 constexpr UINT kCommandForward = 1002;
@@ -644,29 +646,23 @@ void drawMenu(HDC dc, const RECT& rect, bool dark = false)
     DeleteObject(brush);
 }
 
-void drawAppleMenuMark(HDC dc, int x, int y, COLORREF color)
+void drawAuroraMenuMark(HDC dc, int x, int y, COLORREF color)
 {
-    HBRUSH brush = CreateSolidBrush(color);
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, brush));
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HPEN pen = CreatePen(PS_SOLID, 2, color);
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, pen));
 
-    POINT body[] = {
-        { x + 8, y + 3 }, { x + 5, y + 1 }, { x + 2, y + 2 }, { x, y + 6 },
-        { x + 1, y + 11 }, { x + 4, y + 16 }, { x + 7, y + 17 },
-        { x + 9, y + 16 }, { x + 12, y + 17 }, { x + 15, y + 13 },
-        { x + 16, y + 8 }, { x + 14, y + 4 }, { x + 11, y + 2 }, { x + 8, y + 3 }
-    };
-    Polygon(dc, body, static_cast<int>(std::size(body)));
-    POINT leaf[] = { { x + 9, y }, { x + 14, y - 3 }, { x + 13, y + 1 }, { x + 9, y + 3 } };
-    Polygon(dc, leaf, static_cast<int>(std::size(leaf)));
+    // Original Aurora "A" mark, distinct from Apple's logo.
+    MoveToEx(dc, x + 1, y + 15, nullptr);
+    LineTo(dc, x + 8, y + 1);
+    LineTo(dc, x + 15, y + 15);
+    MoveToEx(dc, x + 4, y + 10, nullptr);
+    LineTo(dc, x + 12, y + 10);
+    MoveToEx(dc, x + 9, y + 3, nullptr);
+    LineTo(dc, x + 14, y + 1);
 
     SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
     DeleteObject(pen);
-    DeleteObject(brush);
 }
-
 void drawTrafficLight(HDC dc, int x, int y, COLORREF color)
 {
     HBRUSH brush = CreateSolidBrush(color);
@@ -728,6 +724,7 @@ void drawShield(HDC dc, const RECT& rect, bool dark = false)
 
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -773,6 +770,7 @@ struct BrowserState {
     HWND findCloseButton { nullptr };
     bool findBarVisible { false };
     HWND settingsWindow { nullptr };
+    HWND downloadsPopover { nullptr };
 
     HFONT uiFont { nullptr };
     HBRUSH addressBarBrush { nullptr };
@@ -1000,7 +998,7 @@ struct BrowserState {
         const int pad = scaleForDpi(window, 13);
         const int button = scaleForDpi(window, kToolbarButtonSize + 6);
         const int gap = scaleForDpi(window, 8);
-        const int left = client.right - pad - (3 - index) * button - (2 - index) * gap;
+        const int left = client.right - pad - (4 - index) * button - (3 - index) * gap;
         return { left, titleBarHeight() + scaleForDpi(window, 3),
             left + button, contentTop() - scaleForDpi(window, 3) };
     }
@@ -1864,38 +1862,59 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void showDownloadsMenu()
     {
-        HMENU downloadsMenu = CreatePopupMenu();
-        if (!downloadsMenu)
+        if (downloadsPopover && IsWindow(downloadsPopover)) {
+            DestroyWindow(downloadsPopover);
+            downloadsPopover = nullptr;
             return;
-
-        if (downloads.empty()) {
-            AppendMenuW(downloadsMenu, MF_GRAYED | MF_STRING, 5998, L"No downloads yet");
-        } else {
-            size_t first = downloads.size() > 7 ? downloads.size() - 7 : 0;
-            for (size_t i = downloads.size(); i-- > first;) {
-                const auto& item = downloads[i];
-                std::wstring label = item.failed ? L"Failed — " : (item.finished ? L"Downloaded — " : L"Downloading — ");
-                label += item.filename;
-                if (!item.finished && !item.failed && item.totalBytes > 0) {
-                    long long percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
-                    label += L"  " + std::to_wstring(percent) + L"%";
-                }
-                AppendMenuW(downloadsMenu, MF_STRING, 6000 + static_cast<UINT>(i), label.c_str());
-            }
         }
 
-        AppendMenuW(downloadsMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(downloadsMenu, MF_STRING, 5996, L"Show All Downloads");
+        const RECT button = rightToolbarButtonRect(1);
+        POINT anchor { button.right, button.bottom };
+        ClientToScreen(window, &anchor);
 
-        RECT client { };
-        GetClientRect(window, &client);
-        POINT point {
-            client.right - scaleForDpi(window, kToolbarHorizontalPadding) - scaleForDpi(window, kToolbarButtonSize) / 2,
-            contentTop()
-        };
-        ClientToScreen(window, &point);
-        TrackPopupMenu(downloadsMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, point.x, point.y, 0, window, nullptr);
-        DestroyMenu(downloadsMenu);
+        const int width = scaleForDpi(window, 372);
+        const int visibleRows = static_cast<int>(std::max<size_t>(1, std::min<size_t>(5, downloads.size())));
+        const int contentHeight = downloads.empty() ? 100 : visibleRows * 68;
+        const int height = scaleForDpi(window, 52 + contentHeight + 44);
+        int x = anchor.x - width + scaleForDpi(window, 16);
+        int y = anchor.y + scaleForDpi(window, 6);
+
+        HMONITOR monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo { };
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+            const RECT& work = monitorInfo.rcWork;
+            x = std::clamp<int>(x, static_cast<int>(work.left),
+                std::max(static_cast<int>(work.left), static_cast<int>(work.right) - width));
+            y = std::clamp<int>(y, static_cast<int>(work.top),
+                std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height));
+        }
+
+        HWND popup = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            downloadsPopoverClassName,
+            L"",
+            WS_POPUP,
+            x,
+            y,
+            width,
+            height,
+            window,
+            nullptr,
+            GetModuleHandleW(nullptr),
+            this
+        );
+        if (!popup)
+            return;
+
+        HRGN roundedRegion = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+            scaleForDpi(window, 17), scaleForDpi(window, 17));
+        if (roundedRegion)
+            SetWindowRgn(popup, roundedRegion, TRUE);
+
+        SetWindowPos(popup, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        ShowWindow(popup, SW_SHOWNOACTIVATE);
+        UpdateWindow(popup);
     }
 
     void loadHistoryPage()
@@ -2194,7 +2213,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             AppendMenuW(popup, MF_STRING, kMenuThemeDark, L"Dark Appearance");
             AppendMenuW(popup, MF_STRING, kMenuThemeSystem, L"Automatic Appearance");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
             break;
         case 1: // File
             AppendMenuW(popup, MF_STRING, kMenuNewTab, L"New Tab\tCtrl+T");
@@ -2206,7 +2225,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             AppendMenuW(popup, MF_STRING, kMenuPrint, L"Print...");
             AppendMenuW(popup, MF_STRING, kMenuDownloads, L"Downloads");
             AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Safari");
+            AppendMenuW(popup, MF_STRING, kMenuQuit, L"Quit Aurora");
             break;
         case 2: // Edit
             AppendMenuW(popup, MF_STRING, kEditUndo, L"Undo");
@@ -2833,9 +2852,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         const RECT shareButton = rightToolbarButtonRect(0);
-        const RECT newTabButton = rightToolbarButtonRect(1);
-        const RECT overviewButton = rightToolbarButtonRect(2);
+        const RECT downloadsButton = rightToolbarButtonRect(1);
+        const RECT newTabButton = rightToolbarButtonRect(2);
+        const RECT overviewButton = rightToolbarButtonRect(3);
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
+        if (PtInRect(&downloadsButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
@@ -3045,7 +3066,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(121, 133, 151));
+        HBRUSH titleBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(245, 246, 248));
         RECT titleRect { 0, 0, client.right, titleH };
         FillRect(dc, &titleRect, titleBrush);
         DeleteObject(titleBrush);
@@ -3069,13 +3090,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         HFONT oldMenuFont = static_cast<HFONT>(SelectObject(dc, menuFont));
         SetBkMode(dc, TRANSPARENT);
-        drawAppleMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 10),
-            RGB(255, 255, 255));
-        const wchar_t* menuLabels[] = { L"Safari", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
+        drawAuroraMenuMark(dc, scaleForDpi(window, 23), scaleForDpi(window, 10),
+            dark ? RGB(232, 232, 236) : RGB(54, 59, 64));
+        const wchar_t* menuLabels[] = { L"Aurora", L"File", L"Edit", L"View", L"History", L"Bookmarks", L"Window", L"Help" };
         for (int i = 0; i < 8; ++i) {
             RECT item = menuBarItemRect(i);
             RECT textRect { item.left + scaleForDpi(window, 2), item.top, item.right, item.bottom };
-            SetTextColor(dc, RGB(255, 255, 255));
+            SetTextColor(dc, dark ? RGB(232, 232, 236) : RGB(54, 59, 64));
             DrawTextW(dc, menuLabels[i], -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
         SelectObject(dc, oldMenuFont);
@@ -3192,13 +3213,412 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawReload(dc, reloadRect, loading, dark);
 
         RECT shareRect = rightToolbarButtonRect(0);
-        RECT newTabRect = rightToolbarButtonRect(1);
-        RECT overviewRect = rightToolbarButtonRect(2);
+        RECT downloadsRect = rightToolbarButtonRect(1);
+        RECT newTabRect = rightToolbarButtonRect(2);
+        RECT overviewRect = rightToolbarButtonRect(3);
         drawShare(dc, shareRect, dark);
+        drawDownload(dc, downloadsRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
     }
 };
+
+
+int downloadsPopoverHeight(const BrowserState* browser, HWND dpiWindow)
+{
+    const int contentHeight = browser->downloads.empty()
+        ? 100
+        : static_cast<int>(std::min<size_t>(5, browser->downloads.size())) * 68;
+    return scaleForDpi(dpiWindow, 52 + contentHeight + 44);
+}
+
+std::wstring formatDownloadBytes(long long bytes)
+{
+    if (bytes < 0)
+        bytes = 0;
+    if (bytes < 1024)
+        return std::to_wstring(bytes) + L" B";
+
+    const double kib = static_cast<double>(bytes) / 1024.0;
+    if (kib < 1024.0) {
+        std::wostringstream stream;
+        stream << std::fixed << std::setprecision(1) << kib << L" KB";
+        return stream.str();
+    }
+
+    const double mib = kib / 1024.0;
+    if (mib < 1024.0) {
+        std::wostringstream stream;
+        stream << std::fixed << std::setprecision(1) << mib << L" MB";
+        return stream.str();
+    }
+
+    std::wostringstream stream;
+    stream << std::fixed << std::setprecision(1) << (mib / 1024.0) << L" GB";
+    return stream.str();
+}
+
+void drawDownloadFileGlyph(HDC dc, const RECT& bounds, const std::wstring& filename, bool dark, int dpi)
+{
+    RECT paper { bounds.left + MulDiv(3, dpi, 96), bounds.top + MulDiv(1, dpi, 96),
+        bounds.right - MulDiv(3, dpi, 96), bounds.bottom - MulDiv(1, dpi, 96) };
+    HBRUSH paperBrush = CreateSolidBrush(dark ? RGB(232, 232, 236) : RGB(255, 255, 255));
+    HPEN paperPen = CreatePen(PS_SOLID, 1, dark ? RGB(153, 155, 162) : RGB(183, 188, 194));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, paperBrush));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, paperPen));
+    RoundRect(dc, paper.left, paper.top, paper.right, paper.bottom, MulDiv(3, dpi, 96), MulDiv(3, dpi, 96));
+
+    POINT fold[] = {
+        { paper.right - MulDiv(7, dpi, 96), paper.top },
+        { paper.right - MulDiv(7, dpi, 96), paper.top + MulDiv(7, dpi, 96) },
+        { paper.right, paper.top + MulDiv(7, dpi, 96) }
+    };
+    HPEN foldPen = CreatePen(PS_SOLID, 1, dark ? RGB(153, 155, 162) : RGB(183, 188, 194));
+    HPEN oldFoldPen = static_cast<HPEN>(SelectObject(dc, foldPen));
+    Polyline(dc, fold, static_cast<int>(std::size(fold)));
+
+    std::wstring extension;
+    const size_t dot = filename.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot + 1 < filename.size()) {
+        extension = filename.substr(dot + 1);
+        if (extension.size() > 4)
+            extension.resize(4);
+        for (auto& ch : extension)
+            ch = static_cast<wchar_t>(towupper(ch));
+    }
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, dark ? RGB(68, 92, 135) : RGB(64, 96, 148));
+    HFONT smallFont = CreateFontW(-MulDiv(7, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, smallFont));
+    RECT extensionRect { paper.left, paper.bottom - MulDiv(13, dpi, 96), paper.right, paper.bottom };
+    DrawTextW(dc, extension.c_str(), -1, &extensionRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    DeleteObject(smallFont);
+    SelectObject(dc, oldFoldPen);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(foldPen);
+    DeleteObject(paperPen);
+    DeleteObject(paperBrush);
+}
+
+void drawDownloadsPopover(HDC dc, HWND window, BrowserState* browser)
+{
+    RECT client { };
+    GetClientRect(window, &client);
+    const int dpi = windowDpi(window);
+    const int width = client.right;
+    const bool dark = browser->darkTheme();
+
+    const COLORREF surface = dark ? RGB(43, 43, 46) : RGB(250, 250, 252);
+    const COLORREF border = dark ? RGB(76, 77, 82) : RGB(214, 217, 222);
+    const COLORREF primary = dark ? RGB(242, 242, 245) : RGB(35, 39, 43);
+    const COLORREF secondary = dark ? RGB(169, 171, 178) : RGB(103, 109, 116);
+    const COLORREF separator = dark ? RGB(65, 66, 71) : RGB(230, 232, 235);
+    const COLORREF accent = RGB(49, 126, 246);
+
+    HBRUSH surfaceBrush = CreateSolidBrush(surface);
+    HPEN borderPen = CreatePen(PS_SOLID, 1, border);
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, surfaceBrush));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(dc, borderPen));
+    RoundRect(dc, 1, 1, client.right - 1, client.bottom - 1, MulDiv(17, dpi, 96), MulDiv(17, dpi, 96));
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(borderPen);
+    DeleteObject(surfaceBrush);
+
+    SetBkMode(dc, TRANSPARENT);
+    HFONT headingFont = CreateFontW(-MulDiv(15, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT itemFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT detailFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
+
+    RECT titleRect { MulDiv(18, dpi, 96), MulDiv(7, dpi, 96), width - MulDiv(72, dpi, 96), MulDiv(45, dpi, 96) };
+    SetTextColor(dc, primary);
+    DrawTextW(dc, L"Downloads", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    RECT clearRect { width - MulDiv(62, dpi, 96), MulDiv(9, dpi, 96), width - MulDiv(14, dpi, 96), MulDiv(41, dpi, 96) };
+    SetTextColor(dc, browser->downloads.empty() ? secondary : accent);
+    SelectObject(dc, detailFont);
+    DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    const int headerHeight = MulDiv(48, dpi, 96);
+    const int rowHeight = MulDiv(68, dpi, 96);
+    const size_t visibleCount = std::min<size_t>(5, browser->downloads.size());
+
+    if (visibleCount == 0) {
+        RECT emptyIcon { width / 2 - MulDiv(16, dpi, 96), headerHeight + MulDiv(7, dpi, 96),
+            width / 2 + MulDiv(16, dpi, 96), headerHeight + MulDiv(42, dpi, 96) };
+        RECT glyph { emptyIcon.left + MulDiv(8, dpi, 96), emptyIcon.top + MulDiv(1, dpi, 96),
+            emptyIcon.right - MulDiv(8, dpi, 96), emptyIcon.bottom - MulDiv(1, dpi, 96) };
+        HPEN iconPen = CreatePen(PS_SOLID, 2, secondary);
+        HPEN savedPen = static_cast<HPEN>(SelectObject(dc, iconPen));
+        MoveToEx(dc, (glyph.left + glyph.right) / 2, glyph.top, nullptr);
+        LineTo(dc, (glyph.left + glyph.right) / 2, glyph.top + MulDiv(20, dpi, 96));
+        MoveToEx(dc, glyph.left + MulDiv(3, dpi, 96), glyph.top + MulDiv(15, dpi, 96), nullptr);
+        LineTo(dc, (glyph.left + glyph.right) / 2, glyph.top + MulDiv(21, dpi, 96));
+        LineTo(dc, glyph.right - MulDiv(3, dpi, 96), glyph.top + MulDiv(15, dpi, 96));
+        MoveToEx(dc, glyph.left, glyph.bottom, nullptr);
+        LineTo(dc, glyph.right, glyph.bottom);
+        SelectObject(dc, savedPen);
+        DeleteObject(iconPen);
+
+        SelectObject(dc, itemFont);
+        SetTextColor(dc, primary);
+        RECT emptyTitle { MulDiv(14, dpi, 96), headerHeight + MulDiv(43, dpi, 96),
+            width - MulDiv(14, dpi, 96), headerHeight + MulDiv(65, dpi, 96) };
+        DrawTextW(dc, L"No Downloads Yet", -1, &emptyTitle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, detailFont);
+        SetTextColor(dc, secondary);
+        RECT emptyHint { MulDiv(14, dpi, 96), headerHeight + MulDiv(65, dpi, 96),
+            width - MulDiv(14, dpi, 96), headerHeight + MulDiv(88, dpi, 96) };
+        DrawTextW(dc, L"Files you save will appear here.", -1, &emptyHint, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        for (size_t row = 0; row < visibleCount; ++row) {
+            const size_t index = browser->downloads.size() - 1 - row;
+            const auto& item = browser->downloads[index];
+            const int top = headerHeight + static_cast<int>(row) * rowHeight;
+            if (row > 0) {
+                HPEN dividerPen = CreatePen(PS_SOLID, 1, separator);
+                HPEN savedPen = static_cast<HPEN>(SelectObject(dc, dividerPen));
+                MoveToEx(dc, MulDiv(14, dpi, 96), top, nullptr);
+                LineTo(dc, width - MulDiv(14, dpi, 96), top);
+                SelectObject(dc, savedPen);
+                DeleteObject(dividerPen);
+            }
+
+            RECT iconRect { MulDiv(16, dpi, 96), top + MulDiv(17, dpi, 96),
+                MulDiv(43, dpi, 96), top + MulDiv(49, dpi, 96) };
+            drawDownloadFileGlyph(dc, iconRect, item.filename, dark, dpi);
+
+            RECT nameRect { MulDiv(54, dpi, 96), top + MulDiv(7, dpi, 96),
+                width - MulDiv(50, dpi, 96), top + MulDiv(29, dpi, 96) };
+            SetTextColor(dc, primary);
+            SelectObject(dc, itemFont);
+            DrawTextW(dc, item.filename.c_str(), -1, &nameRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            std::wstring status;
+            if (item.failed) {
+                status = L"Download failed";
+            } else if (item.finished) {
+                status = L"Downloaded · " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
+            } else if (item.totalBytes > 0) {
+                const long long percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
+                status = formatDownloadBytes(item.bytesWritten) + L" of " + formatDownloadBytes(item.totalBytes)
+                    + L" · " + std::to_wstring(percent) + L"%";
+            } else {
+                status = L"Downloading…";
+            }
+
+            RECT statusRect { MulDiv(54, dpi, 96), top + MulDiv(29, dpi, 96),
+                width - MulDiv(18, dpi, 96), top + MulDiv(48, dpi, 96) };
+            SelectObject(dc, detailFont);
+            SetTextColor(dc, item.failed ? RGB(220, 84, 78) : secondary);
+            DrawTextW(dc, status.c_str(), -1, &statusRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            if (!item.finished && !item.failed) {
+                const int barLeft = MulDiv(54, dpi, 96);
+                const int barRight = width - MulDiv(18, dpi, 96);
+                const int barY = top + MulDiv(54, dpi, 96);
+                RECT barRect { barLeft, barY, barRight, barY + MulDiv(3, dpi, 96) };
+                HBRUSH trackBrush = CreateSolidBrush(dark ? RGB(71, 72, 77) : RGB(225, 228, 232));
+                FillRect(dc, &barRect, trackBrush);
+                DeleteObject(trackBrush);
+                if (item.totalBytes > 0) {
+                    const int barWidth = static_cast<int>((static_cast<long double>(barRight - barLeft)
+                        * std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100)) / 100.0L);
+                    RECT fillRect { barLeft, barY, barLeft + barWidth, barY + MulDiv(3, dpi, 96) };
+                    HBRUSH fillBrush = CreateSolidBrush(accent);
+                    FillRect(dc, &fillRect, fillBrush);
+                    DeleteObject(fillBrush);
+                }
+            } else if (item.finished) {
+                RECT revealCircle { width - MulDiv(33, dpi, 96), top + MulDiv(23, dpi, 96),
+                    width - MulDiv(19, dpi, 96), top + MulDiv(37, dpi, 96) };
+                HPEN revealPen = CreatePen(PS_SOLID, 1, secondary);
+                HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
+                HPEN savedPen = static_cast<HPEN>(SelectObject(dc, revealPen));
+                HBRUSH savedBrush = static_cast<HBRUSH>(SelectObject(dc, hollow));
+                Ellipse(dc, revealCircle.left, revealCircle.top, revealCircle.right, revealCircle.bottom);
+                const int cx = (revealCircle.left + revealCircle.right) / 2;
+                const int cy = (revealCircle.top + revealCircle.bottom) / 2;
+                MoveToEx(dc, cx + MulDiv(4, dpi, 96), cy + MulDiv(4, dpi, 96), nullptr);
+                LineTo(dc, cx + MulDiv(8, dpi, 96), cy + MulDiv(8, dpi, 96));
+                SelectObject(dc, savedBrush);
+                SelectObject(dc, savedPen);
+                DeleteObject(revealPen);
+            }
+        }
+    }
+
+    const int footerTop = client.bottom - MulDiv(44, dpi, 96);
+    HPEN footerPen = CreatePen(PS_SOLID, 1, separator);
+    HPEN savedFooterPen = static_cast<HPEN>(SelectObject(dc, footerPen));
+    MoveToEx(dc, MulDiv(12, dpi, 96), footerTop, nullptr);
+    LineTo(dc, width - MulDiv(12, dpi, 96), footerTop);
+    SelectObject(dc, savedFooterPen);
+    DeleteObject(footerPen);
+
+    SelectObject(dc, headingFont);
+    SetTextColor(dc, accent);
+    RECT allRect { MulDiv(16, dpi, 96), footerTop + MulDiv(3, dpi, 96),
+        width - MulDiv(16, dpi, 96), client.bottom - MulDiv(3, dpi, 96) };
+    DrawTextW(dc, L"Show All Downloads  ›", -1, &allRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    SelectObject(dc, oldFont);
+    DeleteObject(headingFont);
+    DeleteObject(itemFont);
+    DeleteObject(detailFont);
+}
+
+LRESULT CALLBACK downloadsPopoverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_NCCREATE) {
+        auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        auto* browser = static_cast<BrowserState*>(createInfo->lpCreateParams);
+        if (!browser)
+            return FALSE;
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(browser));
+        browser->downloadsPopover = window;
+        return TRUE;
+    }
+
+    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    switch (message) {
+    case WM_CREATE:
+        SetTimer(window, 1, 60, nullptr);
+        return 0;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT paint { };
+        HDC dc = BeginPaint(window, &paint);
+        if (browser)
+            drawDownloadsPopover(dc, window, browser);
+        EndPaint(window, &paint);
+        return 0;
+    }
+
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_TIMER:
+        if (!browser || !IsWindow(browser->window)) {
+            DestroyWindow(window);
+            return 0;
+        } else {
+            POINT cursor { };
+            GetCursorPos(&cursor);
+            RECT popupRect { };
+            GetWindowRect(window, &popupRect);
+
+            POINT ownerCursor = cursor;
+            ScreenToClient(browser->window, &ownerCursor);
+            const RECT downloadButton = browser->rightToolbarButtonRect(1);
+            const bool overDownloadButton = PtInRect(&downloadButton, ownerCursor) != FALSE;
+            const bool clickingOutside = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
+                && !PtInRect(&popupRect, cursor)
+                && !overDownloadButton;
+            const HWND foreground = GetForegroundWindow();
+            if (clickingOutside || (foreground != browser->window && foreground != window)) {
+                DestroyWindow(window);
+                return 0;
+            }
+
+            const RECT button = browser->rightToolbarButtonRect(1);
+            POINT anchor { button.right, button.bottom };
+            ClientToScreen(browser->window, &anchor);
+            const int width = scaleForDpi(browser->window, 372);
+            const int height = downloadsPopoverHeight(browser, browser->window);
+            int x = anchor.x - width + scaleForDpi(browser->window, 16);
+            int y = anchor.y + scaleForDpi(browser->window, 6);
+            HMONITOR monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO monitorInfo { };
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+                const RECT& work = monitorInfo.rcWork;
+                x = std::clamp<int>(x, static_cast<int>(work.left),
+                    std::max(static_cast<int>(work.left), static_cast<int>(work.right) - width));
+                y = std::clamp<int>(y, static_cast<int>(work.top),
+                    std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - height));
+            }
+            SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (!browser)
+            return 0;
+        {
+            POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            RECT client { };
+            GetClientRect(window, &client);
+            const int dpi = windowDpi(window);
+            const int headerHeight = MulDiv(48, dpi, 96);
+            const int rowHeight = MulDiv(68, dpi, 96);
+            const int footerHeight = MulDiv(44, dpi, 96);
+
+            RECT clearRect { client.right - MulDiv(68, dpi, 96), 0,
+                client.right, headerHeight };
+            if (PtInRect(&clearRect, point)) {
+                browser->downloads.clear();
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+
+            if (point.y >= client.bottom - footerHeight) {
+                DestroyWindow(window);
+                if (browser->addTab(true))
+                    browser->loadDownloadsPage();
+                return 0;
+            }
+
+            const size_t rows = std::min<size_t>(5, browser->downloads.size());
+            if (rows && point.y >= headerHeight
+                && point.y < headerHeight + static_cast<int>(rows) * rowHeight) {
+                const size_t row = static_cast<size_t>((point.y - headerHeight) / rowHeight);
+                const size_t index = browser->downloads.size() - 1 - row;
+                if (index >= browser->downloads.size())
+                    return 0;
+                const auto item = browser->downloads[index];
+                const bool revealAction = point.x >= client.right - MulDiv(46, dpi, 96);
+                if (revealAction) {
+                    if (!item.path.empty())
+                        browser->showFileInFolder(item.path);
+                    return 0;
+                }
+                if (item.finished && !item.failed && !item.path.empty()) {
+                    DestroyWindow(window);
+                    ShellExecuteW(browser->window, L"open", item.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+            }
+        }
+        return 0;
+
+    case WM_NCDESTROY:
+        KillTimer(window, 1);
+        if (browser && browser->downloadsPopover == window)
+            browser->downloadsPopover = nullptr;
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return DefWindowProcW(window, message, wParam, lParam);
+
+    default:
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+}
+
 
 std::vector<std::unique_ptr<BrowserState>> gAdditionalBrowserWindows;
 
@@ -3723,6 +4143,8 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
         if (browser->downloads.size() > 32)
             browser->downloads.erase(browser->downloads.begin());
         InvalidateRect(browser->window, nullptr, TRUE);
+        if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
+            InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
     }
 
     std::string utf8 = toUTF8(path);
@@ -3740,6 +4162,8 @@ void downloadDidWriteData(WKDownloadRef download, long long, long long totalByte
             it->bytesWritten = totalBytesWritten;
             it->totalBytes = totalBytesExpectedToWrite;
             InvalidateRect(browser->window, nullptr, TRUE);
+            if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
+                InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
             return;
         }
     }
@@ -3759,6 +4183,8 @@ void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
     }
 
     InvalidateRect(browser->window, nullptr, TRUE);
+    if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
+        InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
 }
 
 void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRef, const void* clientInfo)
@@ -3775,6 +4201,8 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     }
 
     InvalidateRect(browser->window, nullptr, TRUE);
+    if (browser->downloadsPopover && IsWindow(browser->downloadsPopover))
+        InvalidateRect(browser->downloadsPopover, nullptr, FALSE);
 
     std::wstring description = createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get());
     MessageBoxW(browser->window, description.c_str(), L"Download Failed — Aurora", MB_OK | MB_ICONWARNING);
@@ -4096,6 +4524,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            if (state->downloadsPopover && IsWindow(state->downloadsPopover)) {
+                DestroyWindow(state->downloadsPopover);
+                state->downloadsPopover = nullptr;
+            }
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
@@ -4134,6 +4566,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     if (!RegisterClassExW(&windowClass)) {
         MessageBoxW(nullptr, L"Could not register the Aurora window class.", windowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW downloadsClass { };
+    downloadsClass.cbSize = sizeof(downloadsClass);
+    downloadsClass.style = CS_DROPSHADOW;
+    downloadsClass.lpfnWndProc = downloadsPopoverWindowProcedure;
+    downloadsClass.hInstance = instance;
+    downloadsClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    downloadsClass.lpszClassName = downloadsPopoverClassName;
+    if (!RegisterClassExW(&downloadsClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        MessageBoxW(nullptr, L"Could not register the downloads popover.", windowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
 
