@@ -3253,9 +3253,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const int dpi = windowDpi(window);
         const int visibleRows = static_cast<int>(std::min<size_t>(5, downloads.size()));
-        const int rowHeight = scaleForDpi(window, 68);
+        const int rowHeight = scaleForDpi(window, 64);
         const int topPadding = scaleForDpi(window, 5);
-        const int barOffset = scaleForDpi(window, 54);
+        const int barOffset = scaleForDpi(window, 52);
         const int horizontalInset = scaleForDpi(window, 20);
         const int barRedrawPadding = std::max(2, MulDiv(2, dpi, 96));
 
@@ -6048,12 +6048,12 @@ int downloadsPopoverVisibleRows(const DownloadsPopoverWindowState* state)
 
 int downloadsPopoverRowHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 68);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 64);
 }
 
 int downloadsPopoverFooterHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 26);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 27);
 }
 
 int downloadsPopoverTopPadding(const DownloadsPopoverWindowState* state)
@@ -6095,7 +6095,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     const int width = client.right;
     const bool dark = browser->chromeDarkTheme();
 
-    const COLORREF surface = dark ? RGB(29, 29, 31) : RGB(250, 250, 252);
+    const COLORREF surface = dark ? RGB(38, 38, 41) : RGB(250, 250, 252);
     const COLORREF border = dark ? RGB(62, 62, 66) : RGB(214, 216, 220);
     const COLORREF primary = dark ? RGB(246, 246, 248) : RGB(32, 35, 39);
     const COLORREF secondary = dark ? RGB(161, 161, 166) : RGB(105, 109, 116);
@@ -6185,7 +6185,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
             if (inProgress) {
                 const int barLeft = left;
                 const int barRight = right;
-                const int barTop = rowRect.top + MulDiv(54, dpi, 96);
+                const int barTop = rowRect.top + MulDiv(52, dpi, 96);
                 const int barHeight = std::max(3, MulDiv(4, dpi, 96));
                 const int trackWidth = std::max(1, barRight - barLeft);
                 Gdiplus::Graphics graphics(dc);
@@ -6281,11 +6281,11 @@ void showDownloadsPopover(BrowserState* browser)
     const int dpi = windowDpi(browser->window);
     const int width = scaleForDpi(browser->window, 478);
     const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
-    const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 68);
+    const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 64);
     const int height = contentHeight + scaleForDpi(browser->window, 5 + 26 + 3);
 
     RECT anchorRect = browser->rightToolbarButtonRect(1);
-    POINT anchor { anchorRect.right, anchorRect.bottom + MulDiv(2, dpi, 96) };
+    POINT anchor { anchorRect.right + MulDiv(14, dpi, 96), anchorRect.bottom + MulDiv(1, dpi, 96) };
     ClientToScreen(browser->window, &anchor);
 
     HMONITOR monitor = MonitorFromWindow(browser->window, MONITOR_DEFAULTTONEAREST);
