@@ -3171,8 +3171,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::string status;
                 if (item.cancelled) status = "Cancelled";
                 else if (item.failed) status = "Download Failed";
-                else if (finished) status = "Downloaded — " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
-                else if (item.bytesWritten > 0) status = "Downloading — " + formatDownloadBytes(item.bytesWritten) + " received";
+                else if (finished) status = "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
+                else if (item.bytesWritten > 0) status = "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received";
                 else status = "Starting download";
 
                 std::wstring containingFolder = item.path;
@@ -3301,8 +3301,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled;
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
-                    : item.finished ? "Downloaded — " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten)
-                    : (item.bytesWritten > 0 ? "Downloading — " + formatDownloadBytes(item.bytesWritten) + " received"
+                    : item.finished ? "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten)
+                    : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
                         : "Starting download");
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
                 script += "var f=document.getElementById('download-fill-" + id + "');if(f)f.style.width='" + std::to_string(percent) + "%';";
@@ -6250,7 +6250,7 @@ void showDownloadsPopover(BrowserState* browser)
     const int dpi = windowDpi(browser->window);
     const int width = scaleForDpi(browser->window, 480);
     const int rows = static_cast<int>(std::min<size_t>(5, browser->downloads.size()));
-    const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 76 : rows * 76);
+    const int contentHeight = scaleForDpi(browser->window, rows == 0 ? 68 : rows * 68);
     const int height = contentHeight + scaleForDpi(browser->window, 5 + 26 + 3);
 
     RECT anchorRect = browser->rightToolbarButtonRect(1);
