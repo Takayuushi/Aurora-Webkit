@@ -336,9 +336,17 @@ jobs:
             throw "WebKit.resources was not staged correctly."
           }
 
-          $zipName = "Aurora-windows-x64-${env:GITHUB_REF_NAME}.zip"
-          if (-not $env:GITHUB_REF_NAME) { $zipName = "Aurora-windows-x64-${env:GITHUB_SHA}.zip" }
-          Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath (Join-Path $out $zipName) -Force
+          # Branch names can contain "/", which PowerShell interprets as a path separator.
+          # Sanitize the ref name so every branch produces a valid ZIP filename.
+          $refName = $env:GITHUB_REF_NAME
+          if ([string]::IsNullOrWhiteSpace($refName)) {
+            $refName = $env:GITHUB_SHA
+          } else {
+            $refName = $refName -replace '[^A-Za-z0-9._-]', '-'
+          }
+          $zipName = "Aurora-windows-x64-$refName.zip"
+          $zipPath = Join-Path $out $zipName
+          Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath $zipPath -Force
 
       - name: Upload Aurora artifact
         uses: actions/upload-artifact@v4
