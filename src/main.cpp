@@ -6033,7 +6033,7 @@ struct DownloadsPopoverWindowState {
     RECT targetRect { };
     ULONGLONG openedAt { 0 };
     int hoveredRow { -1 };
-    float rowHoverOpacity[6] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    float rowHoverOpacity[7] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool trackingMouse { false };
     bool animating { true };
     bool waitingForInitialButtonRelease { false };
@@ -6048,27 +6048,37 @@ int downloadsPopoverVisibleRows(const DownloadsPopoverWindowState* state)
 
 int downloadsPopoverArrowHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 10);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 8);
 }
 
 int downloadsPopoverHeaderHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 39);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 34);
 }
 
 int downloadsPopoverRowHeight(const DownloadsPopoverWindowState* state)
 {
-    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 66);
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 58);
+}
+
+int downloadsPopoverFooterHeight(const DownloadsPopoverWindowState* state)
+{
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 32);
+}
+
+int downloadsPopoverEmptyBodyHeight(const DownloadsPopoverWindowState* state)
+{
+    return scaleForDpi(state && state->browser ? state->browser->window : nullptr, 64);
 }
 
 int downloadsPopoverHeight(const DownloadsPopoverWindowState* state)
 {
     const int rows = downloadsPopoverVisibleRows(state);
     const int bodyHeight = rows > 0
-        ? rows * downloadsPopoverRowHeight(state)
-        : scaleForDpi(state && state->browser ? state->browser->window : nullptr, 74);
+        ? rows * downloadsPopoverRowHeight(state) : downloadsPopoverEmptyBodyHeight(state);
     return downloadsPopoverArrowHeight(state) + downloadsPopoverHeaderHeight(state)
-        + bodyHeight + scaleForDpi(state && state->browser ? state->browser->window : nullptr, 4);
+        + bodyHeight + downloadsPopoverFooterHeight(state)
+        + scaleForDpi(state && state->browser ? state->browser->window : nullptr, 4);
 }
 
 RECT downloadsPopoverRowRect(const DownloadsPopoverWindowState* state, int index)
@@ -6090,8 +6100,20 @@ RECT downloadsPopoverClearRect(const DownloadsPopoverWindowState* state)
     const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
     const int width = state->targetRect.right - state->targetRect.left;
     const int top = downloadsPopoverArrowHeight(state);
-    return { width - MulDiv(61, dpi, 96), top + MulDiv(5, dpi, 96),
-        width - MulDiv(10, dpi, 96), top + downloadsPopoverHeaderHeight(state) - MulDiv(5, dpi, 96) };
+    return { width - MulDiv(61, dpi, 96), top + MulDiv(4, dpi, 96),
+        width - MulDiv(10, dpi, 96), top + downloadsPopoverHeaderHeight(state) - MulDiv(4, dpi, 96) };
+}
+
+RECT downloadsPopoverFooterRect(const DownloadsPopoverWindowState* state)
+{
+    if (!state)
+        return { 0, 0, 0, 0 };
+    const int width = state->targetRect.right - state->targetRect.left;
+    const int rows = downloadsPopoverVisibleRows(state);
+    const int bodyHeight = rows > 0
+        ? rows * downloadsPopoverRowHeight(state) : downloadsPopoverEmptyBodyHeight(state);
+    const int top = downloadsPopoverArrowHeight(state) + downloadsPopoverHeaderHeight(state) + bodyHeight;
+    return { 0, top, width, top + downloadsPopoverFooterHeight(state) };
 }
 
 RECT downloadsPopoverActionRect(const DownloadsPopoverWindowState* state, int index)
@@ -6310,7 +6332,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     const COLORREF hover = dark ? RGB(57, 57, 62) : RGB(234, 236, 241);
     const COLORREF accent = dark ? RGB(10, 132, 255) : RGB(0, 122, 255);
     const int corner = MulDiv(16, dpi, 96);
-    const BYTE surfaceAlpha = state->acrylicBackdrop ? 218 : 255;
+    const BYTE surfaceAlpha = 255;
 
     RECT panelRect { 0, arrowHeight, width, client.bottom };
     drawDownloadsPopoverSurface(dc, panelRect, surface, border, static_cast<float>(corner), surfaceAlpha);
@@ -6338,11 +6360,11 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
     HFONT titleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable");
-    HFONT nameFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT nameFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable");
-    HFONT statusFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT statusFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HFONT clearFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
@@ -6366,6 +6388,15 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     SetTextColor(dc, hasClearableItems ? accent : secondary);
     DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+    const RECT footerRect = downloadsPopoverFooterRect(state);
+    const COLORREF footerHover = dark ? RGB(59, 59, 64) : RGB(235, 237, 241);
+    if (state->rowHoverOpacity[6] > 0.01f) {
+        RECT hoverRect = footerRect;
+        InflateRect(&hoverRect, -MulDiv(3, dpi, 96), -MulDiv(1, dpi, 96));
+        const COLORREF mixed = blendColor(surface, footerHover, state->rowHoverOpacity[6]);
+        drawRoundedControl(dc, hoverRect, mixed, mixed, static_cast<float>(MulDiv(7, dpi, 96)), 0.5f);
+    }
+
     HPEN headerPen = CreatePen(PS_SOLID, 1, separator);
     HGDIOBJ oldHeaderPen = SelectObject(dc, headerPen);
     MoveToEx(dc, MulDiv(12, dpi, 96), headerBottom, nullptr);
@@ -6375,7 +6406,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
 
     const int visible = downloadsPopoverVisibleRows(state);
     if (visible == 0) {
-        const int emptyCenterY = (headerBottom + client.bottom) / 2;
+        const int emptyCenterY = (headerBottom + footerRect.top) / 2;
         SelectObject(dc, statusFont);
         SetTextColor(dc, secondary);
         RECT emptyRect { MulDiv(16, dpi, 96), emptyCenterY - MulDiv(12, dpi, 96),
@@ -6479,6 +6510,19 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
         }
     }
 
+    HPEN footerPen = CreatePen(PS_SOLID, 1, separator);
+    HGDIOBJ oldFooterPen = SelectObject(dc, footerPen);
+    MoveToEx(dc, MulDiv(12, dpi, 96), footerRect.top, nullptr);
+    LineTo(dc, width - MulDiv(12, dpi, 96), footerRect.top);
+    SelectObject(dc, oldFooterPen);
+    DeleteObject(footerPen);
+
+    RECT footerLabel { MulDiv(18, dpi, 96), footerRect.top + MulDiv(1, dpi, 96),
+        width - MulDiv(12, dpi, 96), footerRect.bottom };
+    SelectObject(dc, clearFont);
+    SetTextColor(dc, accent);
+    DrawTextW(dc, L"Show All Downloads", -1, &footerLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
     SelectObject(dc, originalFont);
     DeleteObject(titleFont);
     DeleteObject(nameFont);
@@ -6511,7 +6555,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = scaleForDpi(browser->window, 390);
+    const int width = scaleForDpi(browser->window, 355);
     RECT anchorRect = browser->rightToolbarButtonRect(1);
     POINT anchor { anchorRect.right + MulDiv(14, dpi, 96), anchorRect.bottom };
     ClientToScreen(browser->window, &anchor);
@@ -6550,7 +6594,7 @@ void showDownloadsPopover(BrowserState* browser)
 
     applyDownloadsPopoverWindowRegion(popup, popupState);
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
-    popupState->acrylicBackdrop = enableDownloadsAcrylicBackdrop(popup, browser->chromeDarkTheme());
+    popupState->acrylicBackdrop = !browser->chromeDarkTheme() && enableDownloadsAcrylicBackdrop(popup, false);
     browser->downloadsPopoverWindow = popup;
     ShowWindow(popup, SW_SHOWNOACTIVATE);
     SetTimer(popup, kDownloadsPopoverTimerId, 15, nullptr);
@@ -6609,7 +6653,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     state->animating = false;
             }
 
-            for (int i = 0; i < 6; ++i) {
+            for (int i = 0; i < 7; ++i) {
                 const float target = state->hoveredRow == i ? 1.0f : 0.0f;
                 const float before = state->rowHoverOpacity[i];
                 const float delta = target - before;
@@ -6619,7 +6663,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     state->rowHoverOpacity[i] += delta * 0.32f;
                 if (std::abs(state->rowHoverOpacity[i] - before) > 0.001f) {
                     RECT hoverRect = i < downloadsPopoverVisibleRows(state)
-                        ? downloadsPopoverRowRect(state, i) : downloadsPopoverClearRect(state);
+                        ? downloadsPopoverRowRect(state, i)
+                        : i == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
                     InvalidateRect(window, &hoverRect, FALSE);
                 }
             }
@@ -6646,19 +6691,24 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 }
             }
             const RECT clearRect = downloadsPopoverClearRect(state);
+            const RECT footerRect = downloadsPopoverFooterRect(state);
             if (PtInRect(&clearRect, point))
                 hovered = 5;
+            else if (PtInRect(&footerRect, point))
+                hovered = 6;
             if (hovered != state->hoveredRow) {
                 const int previous = state->hoveredRow;
                 if (previous >= 0) {
                     const RECT previousRect = previous < downloadsPopoverVisibleRows(state)
-                        ? downloadsPopoverRowRect(state, previous) : downloadsPopoverClearRect(state);
+                        ? downloadsPopoverRowRect(state, previous)
+                        : previous == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
                     InvalidateRect(window, &previousRect, FALSE);
                 }
                 state->hoveredRow = hovered;
                 if (hovered >= 0) {
                     const RECT currentRect = hovered < downloadsPopoverVisibleRows(state)
-                        ? downloadsPopoverRowRect(state, hovered) : downloadsPopoverClearRect(state);
+                        ? downloadsPopoverRowRect(state)
+                        : hovered == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
                     InvalidateRect(window, &currentRect, FALSE);
                 }
             }
@@ -6669,7 +6719,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         if (state && state->hoveredRow >= 0) {
             const int previous = state->hoveredRow;
             const RECT previousRect = previous < downloadsPopoverVisibleRows(state)
-                ? downloadsPopoverRowRect(state, previous) : downloadsPopoverClearRect(state);
+                ? downloadsPopoverRowRect(state, previous)
+                : previous == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
             state->hoveredRow = -1;
             state->trackingMouse = false;
             InvalidateRect(window, &previousRect, FALSE);
@@ -6681,6 +6732,13 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             BrowserState* browser = state->browser;
             POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             const RECT clearRect = downloadsPopoverClearRect(state);
+            const RECT footerRect = downloadsPopoverFooterRect(state);
+            if (PtInRect(&footerRect, point)) {
+                DestroyWindow(window);
+                if (browser->addTab(true))
+                    browser->loadDownloadsPage();
+                return 0;
+            }
             if (PtInRect(&clearRect, point) && downloadsPopoverHasClearableItems(state)) {
                 auto& entries = browser->downloads;
                 entries.erase(std::remove_if(entries.begin(), entries.end(),
