@@ -7330,7 +7330,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         HGDIOBJ previousFont = SelectObject(dc, clearFont);
         SetTextColor(dc, state && state->browser && !state->browser->hasClearableDownloads()
             ? secondary : (dark ? RGB(160, 193, 255) : RGB(32, 104, 224)));
-        DrawTextW(dc, L"Clear", -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        RECT clearTextRect = clearRect;
+        DrawTextW(dc, L"Clear", -1, &clearTextRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, previousFont);
         DeleteObject(clearFont);
         HPEN headerDivider = CreatePen(PS_SOLID, 1, separator);
