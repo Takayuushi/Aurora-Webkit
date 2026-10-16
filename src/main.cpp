@@ -3242,8 +3242,39 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void invalidateDownloadPopupRows()
     {
-        if (downloadsPopoverWindow && IsWindow(downloadsPopoverWindow))
-            InvalidateRect(downloadsPopoverWindow, nullptr, FALSE);
+        if (!downloadsPopoverWindow || !IsWindow(downloadsPopoverWindow))
+            return;
+
+        // Transfer callbacks can arrive very frequently. Redraw only the progress
+        // tracks that are changing, not the entire layered popup, to prevent flashes.
+        RECT client { };
+        if (!GetClientRect(downloadsPopoverWindow, &client))
+            return;
+
+        const int dpi = windowDpi(window);
+        const int visibleRows = static_cast<int>(std::min<size_t>(5, downloads.size()));
+        const int rowHeight = scaleForDpi(window, 68);
+        const int topPadding = scaleForDpi(window, 5);
+        const int barOffset = scaleForDpi(window, 54);
+        const int horizontalInset = scaleForDpi(window, 20);
+        const int barRedrawPadding = std::max(2, MulDiv(2, dpi, 96));
+
+        for (int row = 0; row < visibleRows; ++row) {
+            const size_t index = downloads.size() - 1 - static_cast<size_t>(row);
+            const auto& download = downloads[index];
+            const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+            if (!inProgress)
+                continue;
+
+            const int barTop = topPadding + row * rowHeight + barOffset;
+            RECT progressRect {
+                horizontalInset,
+                barTop - barRedrawPadding,
+                std::max(horizontalInset + 1, client.right - horizontalInset),
+                barTop + scaleForDpi(window, 4) + barRedrawPadding
+            };
+            InvalidateRect(downloadsPopoverWindow, &progressRect, FALSE);
+        }
     }
 
     void animateDownloadsPopup()
@@ -6361,8 +6392,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     state->rowHoverOpacity[i] = target;
                 else
                     state->rowHoverOpacity[i] += delta * 0.32f;
-                if (std::abs(state->rowHoverOpacity[i] - before) > 0.001f)
-                    InvalidateRect(window, nullptr, FALSE);
+                if (std::abs(state->rowHoverOpacity[i] - before) > 0.001f) {
+                    RECT hoverRect = i < downloadsPopoverVisibleRows(state)
+                        ? downloadsPopoverRowRect(state, i)
+                        : downloadsPopoverFooterRect(state);
+                    InvalidateRect(window, &hoverRect, FALSE);
+                }
             }
             return 0;
         }
@@ -6393,8 +6428,20 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 }
             }
             if (row != state->hoveredRow) {
+                const int previousRow = state->hoveredRow;
+                if (previousRow >= 0) {
+                    const RECT previousRect = previousRow < rows
+                        ? downloadsPopoverRowRect(state, previousRow)
+                        : downloadsPopoverFooterRect(state);
+                    InvalidateRect(window, &previousRect, FALSE);
+                }
                 state->hoveredRow = row;
-                InvalidateRect(window, nullptr, FALSE);
+                if (row >= 0) {
+                    const RECT currentRect = row < rows
+                        ? downloadsPopoverRowRect(state, row)
+                        : downloadsPopoverFooterRect(state);
+                    InvalidateRect(window, &currentRect, FALSE);
+                }
             }
         }
         return 0;
@@ -6402,8 +6449,14 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
     case WM_MOUSELEAVE:
         if (state) {
             state->trackingMouse = false;
-            state->hoveredRow = -1;
-            InvalidateRect(window, nullptr, FALSE);
+            if (state->hoveredRow >= 0) {
+                const int previousRow = state->hoveredRow;
+                const RECT previousRect = previousRow < downloadsPopoverVisibleRows(state)
+                    ? downloadsPopoverRowRect(state, previousRow)
+                    : downloadsPopoverFooterRect(state);
+                state->hoveredRow = -1;
+                InvalidateRect(window, &previousRect, FALSE);
+            }
         }
         return 0;
 
