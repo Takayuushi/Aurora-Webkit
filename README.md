@@ -29,8 +29,8 @@ Private windows use a non-persistent website data store and skip adding visits t
 
 ### Downloads, sharing, and page actions
 
-- A custom downloads popover with file-type glyphs, live byte counts and progress bars, completion/failure states, a clear-list action, opening completed files, and Show in Folder.
-- WebKit download callbacks, suggested filenames, recent downloads, and a full Downloads page.
+- A custom downloads popover with file-type glyphs, live byte counts and progress bars, completion/failure/cancel states, a clear-list action, opening completed files, and Show in Folder.
+- WebKit download callbacks, suggested filenames, recent downloads, and a full Downloads page. The pinned Windows C API exposes cancellation but not pause/resume, so the popover uses a working cancel action instead of a nonfunctional pause control.
 - Share menu with Copy Link, Email Link, and Add Bookmark.
 - Save Page As exports an MHTML web archive where supported by the current WebKit build.
 - Print opens the current HTTP/HTTPS page in the default browser after confirmation, where Windows' native Ctrl+P print flow is available. This fallback is used because the pinned Windows WebKit port does not export its page-to-PDF drawing API; the default browser may not share Aurora's login session.
