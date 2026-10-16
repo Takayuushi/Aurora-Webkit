@@ -6707,7 +6707,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 state->hoveredRow = hovered;
                 if (hovered >= 0) {
                     const RECT currentRect = hovered < downloadsPopoverVisibleRows(state)
-                        ? downloadsPopoverRowRect(state)
+                        ? downloadsPopoverRowRect(state, hovered)
                         : hovered == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
                     InvalidateRect(window, &currentRect, FALSE);
                 }
