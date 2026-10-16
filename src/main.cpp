@@ -3270,7 +3270,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             RECT progressRect {
                 horizontalInset,
                 barTop - barRedrawPadding,
-                std::max(horizontalInset + 1, client.right - horizontalInset),
+                std::max(horizontalInset + 1, static_cast<int>(client.right) - horizontalInset),
                 barTop + scaleForDpi(window, 4) + barRedrawPadding
             };
             InvalidateRect(downloadsPopoverWindow, &progressRect, FALSE);
