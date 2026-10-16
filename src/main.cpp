@@ -701,11 +701,12 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
         RECT client { };
         GetClientRect(window, &client);
         const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
-        const COLORREF panel = RGB(29, 29, 31);
-        const COLORREF border = RGB(62, 62, 66);
-        const COLORREF text = RGB(246, 246, 248);
-        const COLORREF secondary = RGB(157, 157, 164);
-        const COLORREF hoverFill = RGB(58, 58, 62);
+        const bool dark = state && state->browser && state->browser->chromeDarkTheme();
+        const COLORREF panel = dark ? RGB(31, 31, 34) : RGB(250, 251, 253);
+        const COLORREF border = dark ? RGB(66, 66, 72) : RGB(211, 216, 223);
+        const COLORREF text = dark ? RGB(246, 246, 248) : RGB(31, 35, 40);
+        const COLORREF secondary = dark ? RGB(171, 172, 179) : RGB(105, 111, 119);
+        const COLORREF hoverFill = dark ? RGB(59, 59, 64) : RGB(232, 237, 243);
         Gdiplus::Graphics graphics(dc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
@@ -716,7 +717,8 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
         Gdiplus::LinearGradientBrush panelBrush(
             Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
             Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
-            Gdiplus::Color(255, 38, 38, 40), Gdiplus::Color(255, 26, 26, 28));
+            dark ? Gdiplus::Color(255, 42, 42, 46) : Gdiplus::Color(255, 255, 255, 255),
+            dark ? Gdiplus::Color(255, 28, 28, 31) : Gdiplus::Color(255, 243, 246, 250));
         graphics.FillPath(&panelBrush, &panelPath);
         Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
         graphics.DrawPath(&panelPen, &panelPath);
@@ -1228,6 +1230,48 @@ COLORREF blendColor(COLORREF from, COLORREF to, float amount)
     return RGB(blend(GetRValue(from), GetRValue(to)),
         blend(GetGValue(from), GetGValue(to)),
         blend(GetBValue(from), GetBValue(to)));
+}
+
+void drawLiquidGlassControl(HDC dc, const RECT& rect, bool dark, bool prominent, bool hovered, float radius)
+{
+    const float width = static_cast<float>(rect.right - rect.left);
+    const float height = static_cast<float>(rect.bottom - rect.top);
+    if (width <= 2.0f || height <= 2.0f)
+        return;
+
+    COLORREF top;
+    COLORREF bottom;
+    COLORREF edge;
+    if (dark) {
+        top = hovered ? RGB(91, 91, 97) : (prominent ? RGB(77, 77, 83) : RGB(62, 62, 67));
+        bottom = hovered ? RGB(70, 70, 76) : (prominent ? RGB(58, 58, 63) : RGB(47, 47, 51));
+        edge = hovered ? RGB(112, 112, 119) : (prominent ? RGB(92, 92, 98) : RGB(78, 78, 84));
+    } else {
+        top = RGB(255, 255, 255);
+        bottom = hovered ? RGB(231, 235, 240) : (prominent ? RGB(244, 246, 249) : RGB(235, 238, 242));
+        edge = hovered ? RGB(200, 206, 214) : (prominent ? RGB(213, 218, 225) : RGB(216, 220, 226));
+    }
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    addRoundedIconRectangle(path, static_cast<float>(rect.left) + 0.5f,
+        static_cast<float>(rect.top) + 0.5f, width - 1.0f, height - 1.0f, radius);
+    Gdiplus::LinearGradientBrush fill(
+        Gdiplus::PointF(0.0f, static_cast<float>(rect.top)),
+        Gdiplus::PointF(0.0f, static_cast<float>(rect.bottom)),
+        iconGdiColor(top), iconGdiColor(bottom));
+    Gdiplus::Pen border(iconGdiColor(edge), 1.0f);
+    graphics.FillPath(&fill, &path);
+    graphics.DrawPath(&border, &path);
+
+    const BYTE highlightAlpha = static_cast<BYTE>(dark ? (prominent ? 48 : 30) : (prominent ? 180 : 125));
+    Gdiplus::Pen highlight(Gdiplus::Color(highlightAlpha, 255, 255, 255), 0.8f);
+    const float inset = std::min(radius + 2.0f, width / 3.0f);
+    graphics.DrawLine(&highlight, static_cast<float>(rect.left) + inset,
+        static_cast<float>(rect.top) + 1.3f, static_cast<float>(rect.right) - inset,
+        static_cast<float>(rect.top) + 1.3f);
 }
 
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
@@ -4968,9 +5012,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
 
         RECT panel { 0, top, width, client.bottom };
-        HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
-        FillRect(dc, &panel, brush);
-        DeleteObject(brush);
+        Gdiplus::Graphics sidebarGraphics(dc);
+        sidebarGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::LinearGradientBrush sidebarSurface(
+            Gdiplus::PointF(0.0f, static_cast<float>(top)),
+            Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
+            Gdiplus::Color(255, dark ? 38 : 255, dark ? 38 : 255, dark ? 41 : 255),
+            Gdiplus::Color(255, dark ? 30 : 240, dark ? 30 : 242, dark ? 33 : 245));
+        sidebarGraphics.FillRectangle(&sidebarSurface, panel.left, panel.top,
+            panel.right - panel.left, panel.bottom - panel.top);
 
         HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
@@ -5009,9 +5059,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (int i = 0; i < 3; ++i) {
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (i == sidebarSection) {
-                HBRUSH selected = CreateSolidBrush(dark ? RGB(73, 73, 77) : RGB(229, 232, 235));
-                FillRect(dc, &r, selected);
-                DeleteObject(selected);
+                RECT selectedRect = r;
+                InflateRect(&selectedRect, -MulDiv(1, dpi, 96), -MulDiv(1, dpi, 96));
+                drawLiquidGlassControl(dc, selectedRect, dark, true, false,
+                    static_cast<float>(MulDiv(7, dpi, 96)));
             }
             SetTextColor(dc, i == sidebarSection ? (dark ? RGB(245, 245, 247) : RGB(35, 39, 42)) : (dark ? RGB(160, 160, 165) : RGB(115, 120, 124)));
             const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
@@ -5196,10 +5247,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(47, 47, 50) : RGB(250, 250, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
-        FillRect(dc, &toolbarRect, toolbarBrush);
-        DeleteObject(toolbarBrush);
+        Gdiplus::Graphics toolbarGraphics(dc);
+        toolbarGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::LinearGradientBrush toolbarSurface(
+            Gdiplus::PointF(0.0f, 0.0f), Gdiplus::PointF(0.0f, static_cast<float>(toolbarH)),
+            Gdiplus::Color(255, dark ? 48 : 255, dark ? 48 : 255, dark ? 52 : 255),
+            Gdiplus::Color(255, dark ? 41 : 241, dark ? 41 : 243, dark ? 45 : 246));
+        toolbarGraphics.FillRectangle(&toolbarSurface, 0, 0, client.right, toolbarH);
+        Gdiplus::Pen toolbarSheen(Gdiplus::Color(static_cast<BYTE>(dark ? 22 : 150), 255, 255, 255), 0.8f);
+        toolbarGraphics.DrawLine(&toolbarSheen, 0.0f, 0.8f, static_cast<float>(client.right), 0.8f);
 
         HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(65, 65, 69) : RGB(226, 228, 231));
         HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
@@ -5223,11 +5280,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT sidebarRect = sidebarButtonRect();
         const bool sidebarHovered = hoveredLeftControl == 0;
-        drawRoundedControl(dc, sidebarRect,
-            sidebarHovered ? (dark ? RGB(79, 79, 84) : RGB(234, 237, 241))
-                : (dark ? RGB(59, 59, 63) : RGB(251, 251, 252)),
-            sidebarHovered ? (dark ? RGB(103, 103, 109) : RGB(205, 210, 216))
-                : (dark ? RGB(82, 82, 86) : RGB(211, 214, 218)),
+        drawLiquidGlassControl(dc, sidebarRect, dark, false, sidebarHovered,
             static_cast<float>(sidebarRect.bottom - sidebarRect.top) / 2.0f);
 
         const int sidebarIconWidth = MulDiv(22, dpi, 96);
@@ -5251,11 +5304,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT navigationRect = navigationPillRect();
         const bool navigationHovered = hoveredLeftControl == 1;
-        drawRoundedControl(dc, navigationRect,
-            navigationHovered ? (dark ? RGB(74, 74, 79) : RGB(239, 241, 244))
-                : (dark ? RGB(57, 57, 61) : RGB(249, 249, 250)),
-            navigationHovered ? (dark ? RGB(100, 100, 105) : RGB(206, 211, 217))
-                : (dark ? RGB(83, 83, 87) : RGB(218, 220, 223)),
+        drawLiquidGlassControl(dc, navigationRect, dark, false, navigationHovered,
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
         RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
@@ -5264,21 +5313,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
 
         if (tabsH > 0) {
-            HBRUSH tabsBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(242, 242, 244));
             RECT tabsRow { 0, tabsTop, client.right, tabsTop + tabsH };
-            FillRect(dc, &tabsRow, tabsBrush);
-            DeleteObject(tabsBrush);
+            Gdiplus::Graphics tabsGraphics(dc);
+            tabsGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::LinearGradientBrush tabsSurface(
+                Gdiplus::PointF(0.0f, static_cast<float>(tabsTop)),
+                Gdiplus::PointF(0.0f, static_cast<float>(tabsTop + tabsH)),
+                Gdiplus::Color(255, dark ? 37 : 246, dark ? 37 : 247, dark ? 39 : 249),
+                Gdiplus::Color(255, dark ? 31 : 237, dark ? 31 : 239, dark ? 33 : 242));
+            tabsGraphics.FillRectangle(&tabsSurface, tabsRow.left, tabsRow.top,
+                tabsRow.right - tabsRow.left, tabsRow.bottom - tabsRow.top);
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
-                const float activeWeight = i == activeTab ? 1.0f : 0.0f;
-                const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
-                const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
-                const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
-                const COLORREF activeBorder = dark ? RGB(91, 91, 95) : RGB(211, 214, 216);
-                drawRoundedControl(dc, tabRect,
-                    blendColor(inactiveFill, activeFill, activeWeight),
-                    blendColor(inactiveBorder, activeBorder, activeWeight),
+                drawLiquidGlassControl(dc, tabRect, dark, i == activeTab, false,
                     static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
                 const int iconSize = MulDiv(16, dpi, 96);
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
@@ -5306,9 +5354,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT pill = addressPillRect();
-        drawRoundedControl(dc, pill,
-            dark ? RGB(63, 63, 67) : RGB(247, 248, 250),
-            dark ? RGB(88, 88, 92) : RGB(226, 229, 233),
+        drawLiquidGlassControl(dc, pill, dark, true, hoveredLeftControl == 2,
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
         if (!addressEditing) {
             const std::wstring addressText = addressDisplayText();
@@ -5349,9 +5395,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int groupInset = MulDiv(4, dpi, 96);
         RECT actionGroup { shareRect.left - groupInset, shareRect.top,
             overviewRect.right + groupInset, overviewRect.bottom };
-        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(255, 255, 255);
-        const COLORREF groupBorder = dark ? RGB(83, 83, 87) : RGB(220, 223, 227);
-        drawRoundedControl(dc, actionGroup, groupFill, groupBorder,
+        drawLiquidGlassControl(dc, actionGroup, dark, false, false,
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
         const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
         const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
@@ -5361,7 +5405,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 continue;
             RECT hoverRect { button.left + MulDiv(2, dpi, 96), button.top + MulDiv(2, dpi, 96),
                 button.right - MulDiv(2, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
-            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
+            drawLiquidGlassControl(dc, hoverRect, dark, true, true,
                 static_cast<float>(MulDiv(7, dpi, 96)));
         }
         drawShare(dc, shareRect, dark);
@@ -6710,14 +6754,30 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef download, const void*
 
 int downloadsPopoverVisibleCount(const BrowserState* browser)
 {
-    return browser ? static_cast<int>(std::min<size_t>(5, browser->downloads.size())) : 0;
+    // Keep the popover focused on the most recent items, with the full list
+    // available from the Downloads page.
+    return browser ? static_cast<int>(std::min<size_t>(3, browser->downloads.size())) : 0;
+}
+
+int downloadsPopoverWidth(const BrowserState* browser)
+{
+    if (!browser || !browser->window)
+        return 360;
+    RECT client { };
+    GetClientRect(browser->window, &client);
+    const int dpi = windowDpi(browser->window);
+    const int desired = MulDiv(360, dpi, 96);
+    const int horizontalMargin = MulDiv(20, dpi, 96);
+    const int available = std::max(MulDiv(240, dpi, 96),
+        static_cast<int>(client.right) - horizontalMargin);
+    return std::min(desired, available);
 }
 
 int downloadsPopoverHeight(const BrowserState* browser)
 {
     const int dpi = browser ? windowDpi(browser->window) : 96;
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int rowHeight = MulDiv(54, dpi, 96);
     return outer * 2 + headerHeight + downloadsPopoverVisibleCount(browser) * rowHeight;
 }
@@ -6728,7 +6788,7 @@ RECT downloadsPopoverRowRect(HWND popup, int displayRow, int dpi)
     if (popup)
         GetClientRect(popup, &client);
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int rowHeight = MulDiv(54, dpi, 96);
     const int top = outer + headerHeight + std::max(0, displayRow) * rowHeight;
     return { outer, top, client.right - outer, top + rowHeight };
@@ -6749,7 +6809,7 @@ RECT downloadsPopoverClearRect(HWND popup, int dpi)
     if (popup)
         GetClientRect(popup, &client);
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int width = MulDiv(46, dpi, 96);
     return { client.right - outer - width, outer, client.right - outer, outer + headerHeight };
 }
@@ -6785,7 +6845,7 @@ void updateDownloadsPopoverLayout(BrowserState* browser)
     state->visibleCount = newCount;
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(400, dpi, 96);
+    const int width = downloadsPopoverWidth(browser);
     const int height = downloadsPopoverHeight(browser);
     state->targetRect.right = state->targetRect.left + width;
     state->targetRect.bottom = state->targetRect.top + height;
@@ -6926,7 +6986,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(400, dpi, 96);
+    const int width = downloadsPopoverWidth(browser);
     const int height = downloadsPopoverHeight(browser);
     const RECT anchor = browser->rightToolbarButtonRect(1);
     POINT screen { anchor.right, anchor.bottom + MulDiv(5, dpi, 96) };
@@ -6968,7 +7028,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-        MulDiv(14, dpi, 96), MulDiv(14, dpi, 96));
+        MulDiv(17, dpi, 96), MulDiv(17, dpi, 96));
     if (region)
         SetWindowRgn(popup, region, TRUE);
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
@@ -7189,12 +7249,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         GetClientRect(window, &client);
         const bool dark = state && state->browser && state->browser->chromeDarkTheme();
         const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
-        const COLORREF panel = dark ? RGB(40, 40, 43) : RGB(249, 250, 252);
-        const COLORREF border = dark ? RGB(72, 72, 77) : RGB(218, 222, 228);
-        const COLORREF primary = dark ? RGB(245, 245, 248) : RGB(30, 33, 38);
-        const COLORREF secondary = dark ? RGB(166, 167, 174) : RGB(105, 111, 118);
-        const COLORREF separator = dark ? RGB(61, 61, 65) : RGB(226, 229, 233);
-        const COLORREF hoverFill = dark ? RGB(58, 58, 62) : RGB(240, 242, 245);
+        const COLORREF panel = dark ? RGB(43, 43, 47) : RGB(248, 249, 252);
+        const COLORREF border = dark ? RGB(78, 78, 84) : RGB(207, 213, 221);
+        const COLORREF primary = dark ? RGB(246, 246, 249) : RGB(27, 31, 36);
+        const COLORREF secondary = dark ? RGB(169, 170, 177) : RGB(99, 106, 115);
+        const COLORREF separator = dark ? RGB(65, 65, 70) : RGB(221, 225, 231);
+        const COLORREF hoverFill = dark ? RGB(61, 61, 66) : RGB(233, 237, 243);
         // A restrained glass-like surface: soft vertical tonal shift, crisp rim,
         // and a thin upper highlight. It stays locally painted and doesn't depend
         // on the host OS's native menu renderer.
@@ -7208,12 +7268,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         Gdiplus::LinearGradientBrush panelBrush(
             Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
             Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
-            Gdiplus::Color(255, dark ? 49 : 255, dark ? 49 : 255, dark ? 53 : 255),
-            Gdiplus::Color(255, dark ? 37 : 245, dark ? 37 : 247, dark ? 40 : 250));
+            Gdiplus::Color(255, dark ? 53 : 255, dark ? 53 : 255, dark ? 58 : 255),
+            Gdiplus::Color(255, dark ? 37 : 242, dark ? 37 : 245, dark ? 42 : 249));
         panelGraphics.FillPath(&panelBrush, &panelPath);
         Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
         panelGraphics.DrawPath(&panelPen, &panelPath);
-        Gdiplus::Pen topHighlight(Gdiplus::Color(static_cast<BYTE>(dark ? 55 : 150), 255, 255, 255),
+        Gdiplus::Pen topHighlight(Gdiplus::Color(static_cast<BYTE>(dark ? 72 : 190), 255, 255, 255),
             std::max(0.7f, dpi / 140.0f));
         panelGraphics.DrawLine(&topHighlight,
             static_cast<float>(client.left + MulDiv(16, dpi, 96)),
@@ -7233,9 +7293,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         RECT headerRect { MulDiv(8, dpi, 96), MulDiv(6, dpi, 96),
             client.right - MulDiv(8, dpi, 96), MulDiv(38, dpi, 96) };
         SetTextColor(dc, primary);
-        RECT headerTitle { headerRect.left + MulDiv(7, dpi, 96), headerRect.top,
-            headerRect.right - MulDiv(58, dpi, 96), headerRect.bottom };
-        DrawTextW(dc, L"Downloads", -1, &headerTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT headerTitle = headerRect;
+        DrawTextW(dc, L"Downloads", -1, &headerTitle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         const RECT clearRect = downloadsPopoverClearRect(window, dpi);
         if (state && state->clearHoverOpacity > 0.015f) {
             RECT hover = clearRect;
