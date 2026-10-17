@@ -8,11 +8,6 @@ on:
       - ".github/workflows/build-aurora.yml"
   workflow_dispatch:
     inputs:
-      aurora_ref:
-        description: "Aurora source branch to compile against the saved WebKit build"
-        required: false
-        type: string
-        default: fix/safari-download-toolbar-sidebar
       webkit_sha:
         description: "WebKit commit SHA (only when explicitly rebuilding WebKit)"
         required: false
@@ -33,12 +28,12 @@ jobs:
     timeout-minutes: 720
     env:
       WEBKIT_DIR: D:\a\_temp\WebKit
-      AURORA_REF: ${{ inputs.aurora_ref || github.ref_name }}
+      AURORA_REF: ${{ github.ref_name }}
     steps:
       - name: Checkout Aurora source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.aurora_ref || github.ref }}
+          ref: ${{ github.ref }}
 
       - name: Configure git line endings
         shell: powershell
