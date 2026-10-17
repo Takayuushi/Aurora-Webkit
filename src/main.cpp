@@ -545,12 +545,29 @@ void setNativeWindowBorderColor(HWND window, bool dark)
         GetProcAddress(dwmapi, "DwmSetWindowAttribute")
     );
     if (setWindowAttribute) {
-        // Keep Windows from drawing an accent-coloured outline around Aurora.
-        // The custom chrome already draws its own edge and remains resizable.
-        DWORD borderColor = 0xFFFFFFFE; // DWMWA_COLOR_NONE
+        // Match the exposed resize-frame pixels to the browser surface instead of
+        // allowing DWM to fall back to a pale default outline.
+        const DWORD borderColor = dark ? RGB(28, 28, 30) : RGB(250, 250, 251);
         setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
     }
     FreeLibrary(dwmapi);
+    RedrawWindow(window, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_NOERASE);
+}
+
+void setWindowTextIfChanged(HWND control, const wchar_t* desiredText)
+{
+    if (!control || !IsWindow(control))
+        return;
+    const std::wstring desired = desiredText ? desiredText : L"";
+    const int length = GetWindowTextLengthW(control);
+    if (length == static_cast<int>(desired.size())) {
+        std::wstring current(static_cast<size_t>(length) + 1, L'\0');
+        const int copied = GetWindowTextW(control, current.data(), length + 1);
+        current.resize(static_cast<size_t>(std::max(0, copied)));
+        if (current == desired)
+            return;
+    }
+    SetWindowTextW(control, desired.c_str());
 }
 
 void drawCompass(HDC dc, const RECT& rect)
@@ -7617,10 +7634,9 @@ void didChangeActiveURL(const void* clientInfo)
     }
 
     if (tab == tab->browser->active()) {
-        if (url == L"about:blank" || url.empty())
-            SetWindowTextW(tab->browser->addressBar, L"");
-        else
-            SetWindowTextW(tab->browser->addressBar, url.c_str());
+        const wchar_t* addressText = (url == L"about:blank" || url.empty()) ? L"" : url.c_str();
+        // Avoid resetting the native Edit control on repeated URL notifications.
+        setWindowTextIfChanged(tab->browser->addressBar, addressText);
     }
 
     tab->browser->invalidateTabChrome(tab);
@@ -7704,6 +7720,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (wParam)
             return 0;
         break;
+
+    case WM_NCPAINT:
+        // Aurora owns its entire visible frame; suppress the native pale edge.
+        return 0;
+
+    case WM_NCACTIVATE:
+        // The custom toolbar remains visible while focus changes; let DWM keep
+        // the borderless client treatment instead of repainting a default frame.
+        return TRUE;
 
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
@@ -7911,6 +7936,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->wasMinimized = wParam == SIZE_MINIMIZED;
             state->resize();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
+                setNativeWindowBorderColor(window, state->darkTheme());
                 if (auto* selected = state->active()) {
                     HWND viewWindow = WKViewGetWindow(selected->view.get());
                     if (viewWindow)
@@ -7989,7 +8015,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     windowClass.lpfnWndProc = windowProcedure;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = windowClassName;
 
     if (!RegisterClassExW(&windowClass)) {
