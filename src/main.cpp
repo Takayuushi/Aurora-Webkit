@@ -3309,13 +3309,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{min-height:100vh;background:var(--page);color:var(--text);font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased}
-.page{width:min(1080px,100%);margin:0 auto;padding:64px 42px 46px}
-.hero{width:min(680px,100%);margin:0 auto 42px}
-.search-wrap{position:relative;display:block;width:100%}
-.search-icon{position:absolute;left:17px;top:50%;width:19px;height:19px;transform:translateY(-50%);fill:none;stroke:var(--muted);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
-.search{display:block;width:100%;height:50px;margin:0;padding:0 20px 0 47px;border:1px solid var(--line);border-radius:15px;background:var(--surface);color:var(--text);outline:none;font:inherit;font-size:15px;box-shadow:0 2px 9px rgba(0,0,0,.045);transition:border-color .15s,box-shadow .15s}
-.search::placeholder{color:var(--muted)}
-.search:focus{border-color:#8daee8;box-shadow:0 0 0 3px rgba(0,122,255,.13),0 3px 11px rgba(0,0,0,.04)}
+.page{width:min(1080px,100%);margin:0 auto;padding:48px 42px 46px}
 .section{margin:0 auto 34px;width:100%;max-width:920px}
 .section h2,.reading-section h2{margin:0 0 15px;font-size:15px;font-weight:600;letter-spacing:-.16px;color:var(--text)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(94px,1fr));gap:10px 8px}
@@ -3331,17 +3325,11 @@ body{min-height:100vh;background:var(--page);color:var(--text);font-size:13px;li
 .reading-item:hover{background:var(--tile-hover);border-color:var(--muted)}
 .reading-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500}
 .reading-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
-@media(max-width:700px){.page{padding:32px 18px 28px}.hero{margin-bottom:30px}.tiles{grid-template-columns:repeat(auto-fill,minmax(82px,1fr));gap:6px}.tile{min-height:102px}.site-icon{width:48px;height:48px;flex-basis:48px;border-radius:14px}.site-icon img{width:30px;height:30px}}
+@media(max-width:700px){.page{padding:30px 18px 28px}.tiles{grid-template-columns:repeat(auto-fill,minmax(82px,1fr));gap:6px}.tile{min-height:102px}.site-icon{width:48px;height:48px;flex-basis:48px;border-radius:14px}.site-icon img{width:30px;height:30px}}
 </style>
 </head>
 <body>
 <main class="page">
-<div class="hero">
-<label class="search-wrap">
-<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/></svg>
-<input id="search" class="search" placeholder="Search or enter website name" autocomplete="off">
-</label>
-</div>
 )HTML";
 
         auto hostFor = [](const std::wstring& value) {
@@ -3459,18 +3447,8 @@ body{min-height:100vh;background:var(--page);color:var(--text);font-size:13px;li
         html += R"HTML(
 </main>
 <script>
-const search=document.getElementById('search');
 document.querySelectorAll('.tile[data-url]').forEach(tile=>{
  tile.addEventListener('click',()=>{location.href=tile.dataset.url;});
-});
-search.addEventListener('keydown',e=>{
- if(e.key!=='Enter') return;
- const value=search.value.trim();
- if(!value) return;
- if(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value) || /^www\./i.test(value) || /^[^ \t]+\.[^ \t]+$/.test(value))
-   location.href=value.includes('://')?value:'https://'+value;
- else
-   location.href='__AURORA_SEARCH_PREFIX__'+encodeURIComponent(value);
 });
 </script>
 </body></html>
@@ -3706,6 +3684,8 @@ search.addEventListener('keydown',e=>{
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
         }
+        if (tab->internalPage == L"start")
+            beginAddressEditing();
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
