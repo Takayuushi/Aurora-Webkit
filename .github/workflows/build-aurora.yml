@@ -1,10 +1,8 @@
 name: build-aurora-windows
 
+# Run Windows packaging only when explicitly requested. Source and build caches
+# are reused by the same branch so UI-only commits don't start WebKit builds.
 on:
-  push:
-    branches:
-      - fix/safari-download-toolbar-sidebar
-      - feature/safari26-ui-replica
   workflow_dispatch:
     inputs:
       webkit_sha:
@@ -20,6 +18,8 @@ concurrency:
 
 jobs:
   build:
+    # Defense in depth: push events must never invoke a Windows/WebKit build.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 720
     env:

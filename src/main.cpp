@@ -846,11 +846,12 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
         RECT client { };
         GetClientRect(window, &client);
         const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
-        const COLORREF panel = RGB(29, 29, 31);
-        const COLORREF border = RGB(62, 62, 66);
-        const COLORREF text = RGB(246, 246, 248);
-        const COLORREF secondary = RGB(157, 157, 164);
-        const COLORREF hoverFill = RGB(58, 58, 62);
+        const bool dark = state && state->browser && state->browser->chromeDarkTheme();
+        const COLORREF panel = dark ? RGB(31, 31, 34) : RGB(250, 251, 253);
+        const COLORREF border = dark ? RGB(66, 66, 72) : RGB(211, 216, 223);
+        const COLORREF text = dark ? RGB(246, 246, 248) : RGB(31, 35, 40);
+        const COLORREF secondary = dark ? RGB(171, 172, 179) : RGB(105, 111, 119);
+        const COLORREF hoverFill = dark ? RGB(59, 59, 64) : RGB(232, 237, 243);
         Gdiplus::Graphics graphics(dc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
@@ -861,7 +862,8 @@ LRESULT CALLBACK webContextMenuPopoverProcedure(HWND window, UINT message, WPARA
         Gdiplus::LinearGradientBrush panelBrush(
             Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
             Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
-            Gdiplus::Color(255, 38, 38, 40), Gdiplus::Color(255, 26, 26, 28));
+            dark ? Gdiplus::Color(255, 42, 42, 46) : Gdiplus::Color(255, 255, 255, 255),
+            dark ? Gdiplus::Color(255, 28, 28, 31) : Gdiplus::Color(255, 243, 246, 250));
         graphics.FillPath(&panelBrush, &panelPath);
         Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
         graphics.DrawPath(&panelPen, &panelPath);
@@ -1374,6 +1376,48 @@ COLORREF blendColor(COLORREF from, COLORREF to, float amount)
     return RGB(blend(GetRValue(from), GetRValue(to)),
         blend(GetGValue(from), GetGValue(to)),
         blend(GetBValue(from), GetBValue(to)));
+}
+
+void drawLiquidGlassControl(HDC dc, const RECT& rect, bool dark, bool prominent, bool hovered, float radius)
+{
+    const float width = static_cast<float>(rect.right - rect.left);
+    const float height = static_cast<float>(rect.bottom - rect.top);
+    if (width <= 2.0f || height <= 2.0f)
+        return;
+
+    COLORREF top;
+    COLORREF bottom;
+    COLORREF edge;
+    if (dark) {
+        top = hovered ? RGB(91, 91, 97) : (prominent ? RGB(77, 77, 83) : RGB(62, 62, 67));
+        bottom = hovered ? RGB(70, 70, 76) : (prominent ? RGB(58, 58, 63) : RGB(47, 47, 51));
+        edge = hovered ? RGB(112, 112, 119) : (prominent ? RGB(92, 92, 98) : RGB(78, 78, 84));
+    } else {
+        top = RGB(255, 255, 255);
+        bottom = hovered ? RGB(231, 235, 240) : (prominent ? RGB(244, 246, 249) : RGB(235, 238, 242));
+        edge = hovered ? RGB(200, 206, 214) : (prominent ? RGB(213, 218, 225) : RGB(216, 220, 226));
+    }
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    addRoundedIconRectangle(path, static_cast<float>(rect.left) + 0.5f,
+        static_cast<float>(rect.top) + 0.5f, width - 1.0f, height - 1.0f, radius);
+    Gdiplus::LinearGradientBrush fill(
+        Gdiplus::PointF(0.0f, static_cast<float>(rect.top)),
+        Gdiplus::PointF(0.0f, static_cast<float>(rect.bottom)),
+        iconGdiColor(top), iconGdiColor(bottom));
+    Gdiplus::Pen border(iconGdiColor(edge), 1.0f);
+    graphics.FillPath(&fill, &path);
+    graphics.DrawPath(&border, &path);
+
+    const BYTE highlightAlpha = static_cast<BYTE>(dark ? (prominent ? 48 : 30) : (prominent ? 180 : 125));
+    Gdiplus::Pen highlight(Gdiplus::Color(highlightAlpha, 255, 255, 255), 0.8f);
+    const float inset = std::min(radius + 2.0f, width / 3.0f);
+    graphics.DrawLine(&highlight, static_cast<float>(rect.left) + inset,
+        static_cast<float>(rect.top) + 1.3f, static_cast<float>(rect.right) - inset,
+        static_cast<float>(rect.top) + 1.3f);
 }
 
 void drawChevron(HDC dc, const RECT& rect, bool forward, bool enabled, bool dark = false)
@@ -1932,7 +1976,6 @@ struct BrowserState {
             else if (tab.internalPage == L"history") loadHistoryPage();
             else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
-            else if (tab.internalPage == L"settings") loadSettingsPage(tab);
             else if (tab.internalPage == L"settings") loadSettingsPage(tab);
         }
         if (!tabs.empty())
@@ -3009,6 +3052,7 @@ struct BrowserState {
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
         loadThemePreference();
+        setNativeWindowBorderColor(window, darkTheme());
         loadPreferences();
         loadVisitData();
         loadSavedPages(bookmarksPath(), bookmarks);
@@ -3184,9 +3228,65 @@ struct BrowserState {
         tab->hasInternalThemeSnapshot = true;
         tab->internalDarkTheme = darkTheme();
         const bool dark = darkTheme();
-        std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Extensions</title><style>)HTML";
-        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
-        html += R"HTML(</style></head><body><main style="max-width:900px;margin:auto;padding:48px 28px"><h1>Extensions</h1><p class="muted">Aurora supports local JavaScript user scripts. Put trusted .js files in the Extensions folder, then reload a page. Scripts run on regular HTTP/HTTPS pages and are disabled in Private Browsing.</p><p>)HTML";
+        std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings</title><style>
+:root{color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;--bg:)HTML"
+            + (dark ? "#1c1c1e" : "#f5f5f7") + R"HTML(;--panel:)HTML" + (dark ? "#262628" : "#ffffff")
+            + R"HTML(;--bar:)HTML" + (dark ? "#222224" : "#f5f5f7")
+            + R"HTML(;--text:)HTML" + (dark ? "#f5f5f7" : "#1d1d1f")
+            + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#6e6e73")
+            + R"HTML(;--line:)HTML" + (dark ? "#414145" : "#dedee3")
+            + R"HTML(;--line-strong:)HTML" + (dark ? "#59595f" : "#c8c8ce")
+            + R"HTML(;--selected:)HTML" + (dark ? "#3b3b40" : "#e9e9ed")
+            + R"HTML(;--control:)HTML" + (dark ? "#303033" : "#ffffff")
+            + R"HTML(;--blue:)HTML" + (dark ? "#0a84ff" : "#007aff")
+            + R"HTML(}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;line-height:1.45}
+body{background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+form{margin:0}
+button,input,select{font-family:inherit;font-size:inherit;letter-spacing:inherit}
+.shell{width:min(980px,calc(100% - 44px));margin:22px auto 30px;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 5px 24px rgba(0,0,0,.065)}
+.top{padding:16px 22px 0;background:var(--bar);border-bottom:1px solid var(--line)}
+.topline{display:flex;align-items:center;justify-content:space-between;min-height:30px;margin-bottom:12px}
+.topline strong{font-size:14px;font-weight:600;letter-spacing:-.12px}
+.done{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;background:var(--selected);color:var(--text);font:inherit;font-size:12px;font-weight:500;cursor:pointer;transition:background .14s,border-color .14s}
+.done:hover{border-color:var(--line-strong);filter:brightness(.98)}
+.categories{display:flex;align-items:stretch;justify-content:center;gap:5px;overflow-x:auto;padding:0 0 12px}
+.category{appearance:none;flex:1 1 0;min-width:76px;max-width:112px;min-height:65px;border:1px solid transparent;border-radius:11px;background:transparent;color:var(--muted);padding:8px 5px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit;font-weight:500;transition:background .14s,color .14s,border-color .14s}
+.category:hover{background:var(--tile-hover,rgba(128,128,128,.08));color:var(--text)}
+.category:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.category svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+.category span{font-size:11px;font-weight:500;white-space:nowrap}
+.category.active{background:var(--selected);color:var(--text);border-color:var(--line)}
+.content{max-width:770px;margin:0 auto;padding:30px 38px 34px}
+h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.4px;margin:0 0 6px}
+.sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 24px}
+.panel{display:none}.panel.active{display:block}
+.field{display:grid;grid-template-columns:minmax(180px,225px) minmax(0,1fr);align-items:center;gap:20px;padding:14px 0;border-bottom:1px solid var(--line)}
+.field:first-of-type{border-top:1px solid var(--line)}
+.field label,.field .fieldname{font-size:13px;font-weight:500}
+input[type=text],select{appearance:auto;width:100%;min-width:0;min-height:36px;border:1px solid var(--line-strong);border-radius:8px;background:var(--control);color:var(--text);padding:7px 10px;font:inherit;font-size:13px;outline:none;transition:border-color .14s,box-shadow .14s}
+input[type=text]:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,122,255,.14)}
+.checks{border:1px solid var(--line);border-radius:11px;overflow:hidden;margin-top:6px;background:var(--panel)}
+.checkrow{display:flex;align-items:center;gap:11px;padding:12px 14px;min-height:44px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;transition:background .12s}
+.checkrow:hover{background:var(--tile-hover,rgba(128,128,128,.06))}
+.checkrow:last-child{border-bottom:0}
+input[type=checkbox]{appearance:none;flex:0 0 16px;width:16px;height:16px;margin:0;border:1px solid var(--line-strong);border-radius:5px;background:var(--control);display:inline-grid;place-content:center;cursor:pointer}
+input[type=checkbox]::after{content:"";width:4px;height:7px;border:solid #fff;border-width:0 1.7px 1.7px 0;transform:rotate(45deg) scale(0);margin-top:-2px;transition:transform .1s}
+input[type=checkbox]:checked{background:var(--blue);border-color:var(--blue)}
+input[type=checkbox]:checked::after{transform:rotate(45deg) scale(1)}
+input[type=checkbox]:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.help{font-size:12px;color:var(--muted);line-height:1.55;margin:12px 0 0}
+.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:22px}
+.action{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid var(--line-strong);border-radius:8px;background:var(--control);color:var(--text);padding:8px 13px;min-height:35px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:background .14s,border-color .14s}
+.action:hover{background:var(--selected);border-color:var(--line-strong)}
+.action.primary{border-color:var(--blue);background:var(--blue);color:white}
+.action.primary:hover{filter:brightness(.96)}
+.status{color:var(--muted);font-size:12px;margin-left:5px}
+@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:67px;min-height:60px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}}
+</style></head><body><main style="max-width:900px;margin:auto;padding:48px 28px"><h1>Extensions</h1><p class="muted">Aurora supports local JavaScript user scripts. Put trusted .js files in the Extensions folder, then reload a page. Scripts run on regular HTTP/HTTPS pages and are disabled in Private Browsing.</p><p>)HTML";
         html += "Installed scripts: " + std::to_string(extensionScripts.size());
         html += "</p>";
         if (extensionScripts.empty())
@@ -3330,8 +3430,9 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
         tab.internalPage = L"start";
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
-        auto frequent = frequentVisits(5);
-        auto favorites = bookmarks;
+
+        const auto frequent = frequentVisits(8);
+        const auto favorites = bookmarks;
         const bool dark = darkTheme();
 
         std::string html = R"HTML(
@@ -3340,103 +3441,160 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aurora</title>
+<title>Start Page</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#5f6368") + R"HTML(;--surface:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;--border:)HTML" + (dark ? "#48484a" : "#e2e4e7") + R"HTML(;--icon-bg:)HTML" + (dark ? "#3a3a3c" : "#f0f2f5") + R"HTML(;--icon-fg:)HTML" + (dark ? "#d1d1d6" : "#42474d") + R"HTML(;--hover:)HTML" + (dark ? "#38383a" : "#fafbfc") + R"HTML(}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light")
+            + R"HTML(;--page:)HTML" + (dark ? "#1c1c1e" : "#f5f5f7")
+            + R"HTML(;--surface:)HTML" + (dark ? "#2c2c2e" : "#ffffff")
+            + R"HTML(;--text:)HTML" + (dark ? "#f5f5f7" : "#1d1d1f")
+            + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#6e6e73")
+            + R"HTML(;--line:)HTML" + (dark ? "#48484a" : "#d9d9de")
+            + R"HTML(;--icon-surface:)HTML" + (dark ? "#39393d" : "#ffffff")
+            + R"HTML(;--tile-hover:)HTML" + (dark ? "rgba(255,255,255,.07)" : "rgba(255,255,255,.72)")
+            + R"HTML(}
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%;width:100%}
-body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f7") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
-.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 24px}
-.search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:)HTML" + std::string(dark ? "#2c2c2e" : "#fff") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
-.search:focus{border-color:#aeb8c7;box-shadow:0 0 0 3px rgba(65,120,220,.12)}
-.search::placeholder{color:var(--muted)}
-.section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:var(--muted);font-size:13px;font-weight:600}
-.tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
-.tile{width:148px;min-height:106px;border-radius:14px;border:1px solid )HTML" + std::string(dark ? "#48484a" : "#e2e4e7") + R"HTML(;background:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;cursor:pointer;transition:background .12s ease,border-color .12s ease}
-.tile:hover{background:var(--hover);border-color:var(--border)}
-.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:var(--icon-bg);color:var(--icon-fg);font-weight:600;font-size:16px}
-.name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.host{font-size:11px;color:var(--muted);max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.footer{margin-top:24px;color:#8a8f96;font-size:12px}
-@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}}
+html,body{margin:0;min-height:100%;width:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{min-height:100vh;background:var(--page);color:var(--text);font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased}
+.page{width:min(1080px,100%);margin:0 auto;padding:48px 42px 46px}
+.section{margin:0 auto 34px;width:100%;max-width:920px}
+.section h2,.reading-section h2{margin:0 0 15px;font-size:15px;font-weight:600;letter-spacing:-.16px;color:var(--text)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(94px,1fr));gap:10px 8px}
+.tile{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:9px;min-width:0;min-height:112px;padding:10px 5px 9px;border:1px solid transparent;border-radius:14px;background:transparent;color:var(--text);font:inherit;cursor:pointer;transition:background .13s,border-color .13s}
+.tile:hover,.tile:focus-visible{background:var(--tile-hover);border-color:var(--line);outline:none}
+.site-icon{width:54px;height:54px;display:grid;place-items:center;flex:0 0 54px;border:1px solid rgba(0,0,0,.045);border-radius:15px;background:var(--icon-surface);box-shadow:0 2px 7px rgba(0,0,0,.055);overflow:hidden}
+.site-icon img{width:34px;height:34px;object-fit:contain}
+.site-icon .fallback{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:var(--tile-hover);color:var(--muted);font-size:18px;font-weight:600}
+.name{max-width:100%;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:12px;font-weight:500}
+.reading-section{width:100%;max-width:920px;margin:4px auto 30px}
+.reading-items{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:8px}
+.reading-item{display:flex;flex-direction:column;gap:4px;min-width:0;padding:13px 15px;border:1px solid var(--line);border-radius:11px;background:var(--surface);color:var(--text);text-decoration:none;transition:background .13s,border-color .13s}
+.reading-item:hover{background:var(--tile-hover);border-color:var(--muted)}
+.reading-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500}
+.reading-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+@media(max-width:700px){.page{padding:30px 18px 28px}.tiles{grid-template-columns:repeat(auto-fill,minmax(82px,1fr));gap:6px}.tile{min-height:102px}.site-icon{width:48px;height:48px;flex-basis:48px;border-radius:14px}.site-icon img{width:30px;height:30px}}
 </style>
 </head>
 <body>
-<div class="page">
-<input id="search" class="search" autofocus placeholder="Search the web or enter an address">
-<div class="section">)HTML";
+<main class="page">
+)HTML";
 
-        html += !favorites.empty() ? "Favorites" : (frequent.empty() ? "Quick Access" : "Frequently Visited");
-        html += R"HTML(</div><div class="tiles">)HTML";
+        auto hostFor = [](const std::wstring& value) {
+            std::wstring host = value;
+            const size_t scheme = host.find(L"://");
+            if (scheme != std::wstring::npos)
+                host.erase(0, scheme + 3);
+            const size_t end = host.find_first_of(L"/?#");
+            if (end != std::wstring::npos)
+                host.erase(end);
+            const size_t at = host.rfind(L'@');
+            if (at != std::wstring::npos)
+                host.erase(0, at + 1);
+            return host;
+        };
 
+        std::vector<std::wstring> shownFavoriteURLs;
+        auto openSection = [&](const char* heading) {
+            html += "<section class=\"section\"><h2>";
+            html += heading;
+            html += "</h2><div class=\"tiles\">";
+        };
+        auto closeSection = [&]() {
+            html += "</div></section>";
+        };
         auto addTile = [&](const std::wstring& name, const std::wstring& url, const std::wstring& host) {
-            std::string safeName = toUTF8(htmlEscape(name));
-            std::string safeUrl = toUTF8(htmlEscape(url));
-            std::string safeHost = toUTF8(htmlEscape(host));
-
+            const std::string safeName = toUTF8(htmlEscape(name));
+            const std::string safeURL = toUTF8(htmlEscape(url));
+            const std::string safeHost = toUTF8(htmlEscape(host));
             char letter = '?';
             for (wchar_t ch : name) {
                 if ((ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z')) {
-                    letter = static_cast<char>(ch < 128 ? ch : '?');
+                    letter = static_cast<char>(ch);
                     break;
                 }
             }
+            if (letter >= 'a' && letter <= 'z')
+                letter = static_cast<char>(letter - 'a' + 'A');
 
-            html += "<div class=\"tile\" onclick=\"location.href='";
-            html += safeUrl;
-            html += "'\"><div class=\"icon\">";
-            html += letter;
-            html += "</div><div class=\"name\">";
+            html += "<button class=\"tile\" type=\"button\" data-url=\"";
+            html += safeURL;
+            html += "\" aria-label=\"";
             html += safeName;
-            html += "</div><div class=\"host\">";
+            html += "\"><span class=\"site-icon\"><img alt=\"\" loading=\"lazy\" src=\"https://www.google.com/s2/favicons?domain=";
             html += safeHost;
-            html += "</div></div>";
+            html += "&amp;sz=64\" onerror=\"this.hidden=true;this.nextElementSibling.hidden=false\">";
+            html += "<span class=\"fallback\" hidden>";
+            html += letter;
+            html += "</span></span><span class=\"name\">";
+            html += safeName;
+            html += "</span></button>";
         };
 
-        if (!favorites.empty()) {
-            for (const auto& entry : favorites) {
-                std::wstring host = entry.url;
-                size_t start = host.find(L"://");
-                if (start != std::wstring::npos)
-                    host.erase(0, start + 3);
-                size_t slash = host.find_first_of(L"/?#");
-                if (slash != std::wstring::npos)
-                    host.erase(slash);
-                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
+        openSection("Favorites");
+        if (favorites.empty()) {
+            const std::pair<std::wstring, std::wstring> starterFavorites[] = {
+                { L"YouTube", L"https://www.youtube.com" },
+                { L"Reddit", L"https://www.reddit.com" },
+                { L"GitHub", L"https://github.com" },
+                { L"Wikipedia", L"https://www.wikipedia.org" },
+                { L"Google", L"https://www.google.com" },
+                { L"ChatGPT", L"https://chatgpt.com" },
+                { L"Discord", L"https://discord.com" },
+                { L"Steam", L"https://store.steampowered.com" }
+            };
+            for (const auto& entry : starterFavorites) {
+                const std::wstring host = hostFor(entry.second);
+                addTile(entry.first, entry.second, host);
+                shownFavoriteURLs.push_back(entry.second);
             }
-        } else if (frequent.empty()) {
-            addTile(L"YouTube", L"https://www.youtube.com", L"youtube.com");
-            addTile(L"Reddit", L"https://www.reddit.com", L"reddit.com");
-            addTile(L"GitHub", L"https://github.com", L"github.com");
-            addTile(L"Wikipedia", L"https://www.wikipedia.org", L"wikipedia.org");
-            addTile(L"Google", L"https://www.google.com", L"google.com");
         } else {
-            for (const auto& entry : frequent) {
-                std::wstring host = entry.url;
-                size_t start = host.find(L"://");
-                if (start != std::wstring::npos)
-                    host.erase(0, start + 3);
-                size_t slash = host.find_first_of(L"/?#");
-                if (slash != std::wstring::npos)
-                    host.erase(slash);
+            for (const auto& entry : favorites) {
+                const std::wstring host = hostFor(entry.url);
+                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
+                shownFavoriteURLs.push_back(entry.url);
+            }
+        }
+        closeSection();
+
+        std::vector<VisitEntry> unpinnedFrequent;
+        for (const auto& entry : frequent) {
+            const bool alreadyShown = std::any_of(shownFavoriteURLs.begin(), shownFavoriteURLs.end(),
+                [&](const std::wstring& url) { return url == entry.url; });
+            if (!alreadyShown)
+                unpinnedFrequent.push_back(entry);
+        }
+        if (!unpinnedFrequent.empty()) {
+            openSection("Frequently Visited");
+            for (const auto& entry : unpinnedFrequent) {
+                const std::wstring host = hostFor(entry.url);
                 addTile(entry.title.empty() ? host : entry.title, entry.url, host);
             }
+            closeSection();
+        }
+
+        if (!readingList.empty()) {
+            html += "<section class=\"reading-section\"><h2>Reading List</h2><div class=\"reading-items\">";
+            size_t count = 0;
+            for (auto entry = readingList.rbegin(); entry != readingList.rend() && count < 4; ++entry, ++count) {
+                const std::wstring displayName = entry->title.empty() ? entry->url : entry->title;
+                const std::string safeName = toUTF8(htmlEscape(displayName));
+                const std::string safeURL = toUTF8(htmlEscape(entry->url));
+                const std::string safeHost = toUTF8(htmlEscape(hostFor(entry->url)));
+                html += "<a class=\"reading-item\" href=\"";
+                html += safeURL;
+                html += "\"><span class=\"reading-name\">";
+                html += safeName;
+                html += "</span><span class=\"reading-url\">";
+                html += safeHost;
+                html += "</span></a>";
+            }
+            html += "</div></section>";
         }
 
         html += R"HTML(
-</div>
-<div class="footer">Favorites and frequently visited websites are stored locally</div>
-</div>
+</main>
 <script>
-const search=document.getElementById('search');
-search.addEventListener('keydown',e=>{
- if(e.key!=='Enter') return;
- const value=search.value.trim();
- if(!value) return;
- if(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value) || /^www\./i.test(value) || /^[^ \t]+\.[^ \t]+$/.test(value))
-   location.href=value.includes('://')?value:'https://'+value;
- else
-   location.href='__AURORA_SEARCH_PREFIX__'+encodeURIComponent(value);
+document.querySelectorAll('.tile[data-url]').forEach(tile=>{
+ tile.addEventListener('click',()=>{location.href=tile.dataset.url;});
 });
 </script>
 </body></html>
@@ -3444,7 +3602,7 @@ search.addEventListener('keydown',e=>{
 
         loadLocalHTML(tab, html);
 
-        tab.title = L"New Tab";
+        tab.title = L"Start Page";
         tab.activeUrl.clear();
         tab.lastRecordedUrl.clear();
         SetWindowTextW(addressBar, L"");
@@ -3672,6 +3830,8 @@ search.addEventListener('keydown',e=>{
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
         }
+        if (tab->internalPage == L"start")
+            beginAddressEditing();
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -4558,14 +4718,30 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         RECT pill = addressPillRect();
-        MoveWindow(
-            addressBar,
-            pill.left + scaleForDpi(window, 30),
-            pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
-            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
-            TRUE
-        );
+        const int addressX = pill.left + scaleForDpi(window, 30);
+        const int addressY = pill.top + scaleForDpi(window, 2);
+        const int addressWidth = std::max<int>(scaleForDpi(window, 140),
+            static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62)));
+        const int addressHeight = std::max<int>(scaleForDpi(window, 24),
+            static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4)));
+        RECT currentAddress { };
+        bool addressGeometryChanged = true;
+        if (addressBar && GetWindowRect(addressBar, &currentAddress)) {
+            POINT corners[2] = {
+                { currentAddress.left, currentAddress.top },
+                { currentAddress.right, currentAddress.bottom }
+            };
+            MapWindowPoints(nullptr, window, corners, 2);
+            addressGeometryChanged = corners[0].x != addressX || corners[0].y != addressY
+                || corners[1].x - corners[0].x != addressWidth
+                || corners[1].y - corners[0].y != addressHeight;
+        }
+        if (addressGeometryChanged) {
+            SetWindowPos(addressBar, nullptr, addressX, addressY, addressWidth, addressHeight,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+            if (addressEditing)
+                InvalidateRect(addressBar, nullptr, FALSE);
+        }
 
         int contentTop = this->contentTop();
         int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 286) : 0);
@@ -5104,9 +5280,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
 
         RECT panel { 0, top, width, client.bottom };
-        HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
-        FillRect(dc, &panel, brush);
-        DeleteObject(brush);
+        Gdiplus::Graphics sidebarGraphics(dc);
+        sidebarGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::LinearGradientBrush sidebarSurface(
+            Gdiplus::PointF(0.0f, static_cast<float>(top)),
+            Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
+            Gdiplus::Color(255, dark ? 38 : 255, dark ? 38 : 255, dark ? 41 : 255),
+            Gdiplus::Color(255, dark ? 30 : 240, dark ? 30 : 242, dark ? 33 : 245));
+        sidebarGraphics.FillRectangle(&sidebarSurface, panel.left, panel.top,
+            panel.right - panel.left, panel.bottom - panel.top);
 
         HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
@@ -5145,9 +5327,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (int i = 0; i < 3; ++i) {
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (i == sidebarSection) {
-                HBRUSH selected = CreateSolidBrush(dark ? RGB(73, 73, 77) : RGB(229, 232, 235));
-                FillRect(dc, &r, selected);
-                DeleteObject(selected);
+                RECT selectedRect = r;
+                InflateRect(&selectedRect, -MulDiv(1, dpi, 96), -MulDiv(1, dpi, 96));
+                drawLiquidGlassControl(dc, selectedRect, dark, true, false,
+                    static_cast<float>(MulDiv(7, dpi, 96)));
             }
             SetTextColor(dc, i == sidebarSection ? (dark ? RGB(245, 245, 247) : RGB(35, 39, 42)) : (dark ? RGB(160, 160, 165) : RGB(115, 120, 124)));
             const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
@@ -5332,10 +5515,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(47, 47, 50) : RGB(250, 250, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
-        FillRect(dc, &toolbarRect, toolbarBrush);
-        DeleteObject(toolbarBrush);
+        Gdiplus::Graphics toolbarGraphics(dc);
+        toolbarGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::LinearGradientBrush toolbarSurface(
+            Gdiplus::PointF(0.0f, 0.0f), Gdiplus::PointF(0.0f, static_cast<float>(toolbarH)),
+            Gdiplus::Color(255, dark ? 48 : 255, dark ? 48 : 255, dark ? 52 : 255),
+            Gdiplus::Color(255, dark ? 41 : 241, dark ? 41 : 243, dark ? 45 : 246));
+        toolbarGraphics.FillRectangle(&toolbarSurface, 0, 0, client.right, toolbarH);
+        Gdiplus::Pen toolbarSheen(Gdiplus::Color(static_cast<BYTE>(dark ? 22 : 150), 255, 255, 255), 0.8f);
+        toolbarGraphics.DrawLine(&toolbarSheen, 0.0f, 0.8f, static_cast<float>(client.right), 0.8f);
 
         HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(65, 65, 69) : RGB(226, 228, 231));
         HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
@@ -5359,11 +5548,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT sidebarRect = sidebarButtonRect();
         const bool sidebarHovered = hoveredLeftControl == 0;
-        drawRoundedControl(dc, sidebarRect,
-            sidebarHovered ? (dark ? RGB(79, 79, 84) : RGB(234, 237, 241))
-                : (dark ? RGB(59, 59, 63) : RGB(251, 251, 252)),
-            sidebarHovered ? (dark ? RGB(103, 103, 109) : RGB(205, 210, 216))
-                : (dark ? RGB(82, 82, 86) : RGB(211, 214, 218)),
+        drawLiquidGlassControl(dc, sidebarRect, dark, false, sidebarHovered,
             static_cast<float>(sidebarRect.bottom - sidebarRect.top) / 2.0f);
 
         const int sidebarIconWidth = MulDiv(22, dpi, 96);
@@ -5387,11 +5572,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT navigationRect = navigationPillRect();
         const bool navigationHovered = hoveredLeftControl == 1;
-        drawRoundedControl(dc, navigationRect,
-            navigationHovered ? (dark ? RGB(74, 74, 79) : RGB(239, 241, 244))
-                : (dark ? RGB(57, 57, 61) : RGB(249, 249, 250)),
-            navigationHovered ? (dark ? RGB(100, 100, 105) : RGB(206, 211, 217))
-                : (dark ? RGB(83, 83, 87) : RGB(218, 220, 223)),
+        drawLiquidGlassControl(dc, navigationRect, dark, false, navigationHovered,
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
         RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
@@ -5400,21 +5581,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
 
         if (tabsH > 0) {
-            HBRUSH tabsBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(242, 242, 244));
             RECT tabsRow { 0, tabsTop, client.right, tabsTop + tabsH };
-            FillRect(dc, &tabsRow, tabsBrush);
-            DeleteObject(tabsBrush);
+            Gdiplus::Graphics tabsGraphics(dc);
+            tabsGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::LinearGradientBrush tabsSurface(
+                Gdiplus::PointF(0.0f, static_cast<float>(tabsTop)),
+                Gdiplus::PointF(0.0f, static_cast<float>(tabsTop + tabsH)),
+                Gdiplus::Color(255, dark ? 37 : 246, dark ? 37 : 247, dark ? 39 : 249),
+                Gdiplus::Color(255, dark ? 31 : 237, dark ? 31 : 239, dark ? 33 : 242));
+            tabsGraphics.FillRectangle(&tabsSurface, tabsRow.left, tabsRow.top,
+                tabsRow.right - tabsRow.left, tabsRow.bottom - tabsRow.top);
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
-                const float activeWeight = i == activeTab ? 1.0f : 0.0f;
-                const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
-                const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
-                const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
-                const COLORREF activeBorder = dark ? RGB(91, 91, 95) : RGB(211, 214, 216);
-                drawRoundedControl(dc, tabRect,
-                    blendColor(inactiveFill, activeFill, activeWeight),
-                    blendColor(inactiveBorder, activeBorder, activeWeight),
+                drawLiquidGlassControl(dc, tabRect, dark, i == activeTab, false,
                     static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
                 const int iconSize = MulDiv(16, dpi, 96);
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
@@ -5442,9 +5622,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT pill = addressPillRect();
-        drawRoundedControl(dc, pill,
-            dark ? RGB(63, 63, 67) : RGB(247, 248, 250),
-            dark ? RGB(88, 88, 92) : RGB(226, 229, 233),
+        drawLiquidGlassControl(dc, pill, dark, true, hoveredLeftControl == 2,
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
         if (!addressEditing) {
             const std::wstring addressText = addressDisplayText();
@@ -5485,9 +5663,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int groupInset = MulDiv(4, dpi, 96);
         RECT actionGroup { shareRect.left - groupInset, shareRect.top,
             overviewRect.right + groupInset, overviewRect.bottom };
-        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(255, 255, 255);
-        const COLORREF groupBorder = dark ? RGB(83, 83, 87) : RGB(220, 223, 227);
-        drawRoundedControl(dc, actionGroup, groupFill, groupBorder,
+        drawLiquidGlassControl(dc, actionGroup, dark, false, false,
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
         const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
         const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
@@ -5497,7 +5673,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 continue;
             RECT hoverRect { button.left + MulDiv(2, dpi, 96), button.top + MulDiv(2, dpi, 96),
                 button.right - MulDiv(2, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
-            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
+            drawLiquidGlassControl(dc, hoverRect, dark, true, true,
                 static_cast<float>(MulDiv(7, dpi, 96)));
         }
         drawShare(dc, shareRect, dark);
@@ -6846,14 +7022,30 @@ void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef download, const void*
 
 int downloadsPopoverVisibleCount(const BrowserState* browser)
 {
-    return browser ? static_cast<int>(std::min<size_t>(5, browser->downloads.size())) : 0;
+    // Keep the popover focused on the most recent items, with the full list
+    // available from the Downloads page.
+    return browser ? static_cast<int>(std::min<size_t>(3, browser->downloads.size())) : 0;
+}
+
+int downloadsPopoverWidth(const BrowserState* browser)
+{
+    if (!browser || !browser->window)
+        return 360;
+    RECT client { };
+    GetClientRect(browser->window, &client);
+    const int dpi = windowDpi(browser->window);
+    const int desired = MulDiv(360, dpi, 96);
+    const int horizontalMargin = MulDiv(20, dpi, 96);
+    const int available = std::max(MulDiv(240, dpi, 96),
+        static_cast<int>(client.right) - horizontalMargin);
+    return std::min(desired, available);
 }
 
 int downloadsPopoverHeight(const BrowserState* browser)
 {
     const int dpi = browser ? windowDpi(browser->window) : 96;
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int rowHeight = MulDiv(54, dpi, 96);
     return outer * 2 + headerHeight + downloadsPopoverVisibleCount(browser) * rowHeight;
 }
@@ -6864,7 +7056,7 @@ RECT downloadsPopoverRowRect(HWND popup, int displayRow, int dpi)
     if (popup)
         GetClientRect(popup, &client);
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int rowHeight = MulDiv(54, dpi, 96);
     const int top = outer + headerHeight + std::max(0, displayRow) * rowHeight;
     return { outer, top, client.right - outer, top + rowHeight };
@@ -6885,7 +7077,7 @@ RECT downloadsPopoverClearRect(HWND popup, int dpi)
     if (popup)
         GetClientRect(popup, &client);
     const int outer = MulDiv(8, dpi, 96);
-    const int headerHeight = MulDiv(32, dpi, 96);
+    const int headerHeight = MulDiv(34, dpi, 96);
     const int width = MulDiv(46, dpi, 96);
     return { client.right - outer - width, outer, client.right - outer, outer + headerHeight };
 }
@@ -6921,7 +7113,7 @@ void updateDownloadsPopoverLayout(BrowserState* browser)
     state->visibleCount = newCount;
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(400, dpi, 96);
+    const int width = downloadsPopoverWidth(browser);
     const int height = downloadsPopoverHeight(browser);
     state->targetRect.right = state->targetRect.left + width;
     state->targetRect.bottom = state->targetRect.top + height;
@@ -7062,7 +7254,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     const int dpi = windowDpi(browser->window);
-    const int width = MulDiv(400, dpi, 96);
+    const int width = downloadsPopoverWidth(browser);
     const int height = downloadsPopoverHeight(browser);
     const RECT anchor = browser->rightToolbarButtonRect(1);
     POINT screen { anchor.right, anchor.bottom + MulDiv(5, dpi, 96) };
@@ -7104,7 +7296,7 @@ void showDownloadsPopover(BrowserState* browser)
     }
 
     HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-        MulDiv(14, dpi, 96), MulDiv(14, dpi, 96));
+        MulDiv(17, dpi, 96), MulDiv(17, dpi, 96));
     if (region)
         SetWindowRgn(popup, region, TRUE);
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
@@ -7325,12 +7517,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         GetClientRect(window, &client);
         const bool dark = state && state->browser && state->browser->chromeDarkTheme();
         const int dpi = state && state->browser ? windowDpi(state->browser->window) : 96;
-        const COLORREF panel = dark ? RGB(40, 40, 43) : RGB(249, 250, 252);
-        const COLORREF border = dark ? RGB(72, 72, 77) : RGB(218, 222, 228);
-        const COLORREF primary = dark ? RGB(245, 245, 248) : RGB(30, 33, 38);
-        const COLORREF secondary = dark ? RGB(166, 167, 174) : RGB(105, 111, 118);
-        const COLORREF separator = dark ? RGB(61, 61, 65) : RGB(226, 229, 233);
-        const COLORREF hoverFill = dark ? RGB(58, 58, 62) : RGB(240, 242, 245);
+        const COLORREF panel = dark ? RGB(43, 43, 47) : RGB(248, 249, 252);
+        const COLORREF border = dark ? RGB(78, 78, 84) : RGB(207, 213, 221);
+        const COLORREF primary = dark ? RGB(246, 246, 249) : RGB(27, 31, 36);
+        const COLORREF secondary = dark ? RGB(169, 170, 177) : RGB(99, 106, 115);
+        const COLORREF separator = dark ? RGB(65, 65, 70) : RGB(221, 225, 231);
+        const COLORREF hoverFill = dark ? RGB(61, 61, 66) : RGB(233, 237, 243);
         // A restrained glass-like surface: soft vertical tonal shift, crisp rim,
         // and a thin upper highlight. It stays locally painted and doesn't depend
         // on the host OS's native menu renderer.
@@ -7344,12 +7536,12 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         Gdiplus::LinearGradientBrush panelBrush(
             Gdiplus::PointF(0.0f, static_cast<float>(client.top)),
             Gdiplus::PointF(0.0f, static_cast<float>(client.bottom)),
-            Gdiplus::Color(255, dark ? 49 : 255, dark ? 49 : 255, dark ? 53 : 255),
-            Gdiplus::Color(255, dark ? 37 : 245, dark ? 37 : 247, dark ? 40 : 250));
+            Gdiplus::Color(255, dark ? 53 : 255, dark ? 53 : 255, dark ? 58 : 255),
+            Gdiplus::Color(255, dark ? 37 : 242, dark ? 37 : 245, dark ? 42 : 249));
         panelGraphics.FillPath(&panelBrush, &panelPath);
         Gdiplus::Pen panelPen(iconGdiColor(border), std::max(0.8f, dpi / 120.0f));
         panelGraphics.DrawPath(&panelPen, &panelPath);
-        Gdiplus::Pen topHighlight(Gdiplus::Color(static_cast<BYTE>(dark ? 55 : 150), 255, 255, 255),
+        Gdiplus::Pen topHighlight(Gdiplus::Color(static_cast<BYTE>(dark ? 72 : 190), 255, 255, 255),
             std::max(0.7f, dpi / 140.0f));
         panelGraphics.DrawLine(&topHighlight,
             static_cast<float>(client.left + MulDiv(16, dpi, 96)),
@@ -7369,9 +7561,8 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
         RECT headerRect { MulDiv(8, dpi, 96), MulDiv(6, dpi, 96),
             client.right - MulDiv(8, dpi, 96), MulDiv(38, dpi, 96) };
         SetTextColor(dc, primary);
-        RECT headerTitle { headerRect.left + MulDiv(7, dpi, 96), headerRect.top,
-            headerRect.right - MulDiv(58, dpi, 96), headerRect.bottom };
-        DrawTextW(dc, L"Downloads", -1, &headerTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT headerTitle = headerRect;
+        DrawTextW(dc, L"Downloads", -1, &headerTitle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         const RECT clearRect = downloadsPopoverClearRect(window, dpi);
         if (state && state->clearHoverOpacity > 0.015f) {
             RECT hover = clearRect;
@@ -8042,6 +8233,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         break;
 
+    case WM_ACTIVATE:
+        // Windows can restyle the active frame when focus changes. Reassert
+        // the no-border DWM preference so the accent outline does not return.
+        if (state)
+            setNativeWindowBorderColor(window, state->chromeDarkTheme());
+        break;
+
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
             MessageBoxW(window, L"WebKit could not initialize Aurora.", windowTitle, MB_OK | MB_ICONERROR);
@@ -8121,11 +8319,48 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_NCPAINT:
+        // Aurora paints its own complete window chrome and handles resize hit
+        // testing in WM_NCHITTEST. Do not let the default non-client painter
+        // add a second, system-coloured frame around the custom chrome.
+        return 0;
+
     case WM_PAINT: {
         PAINTSTRUCT paint { };
-        HDC dc = BeginPaint(window, &paint);
-        if (state)
-            state->paint(dc);
+        HDC target = BeginPaint(window, &paint);
+        if (state) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int width = client.right - client.left;
+            const int height = client.bottom - client.top;
+            HDC buffer = (width > 0 && height > 0) ? CreateCompatibleDC(target) : nullptr;
+            HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+            bool paintedOffscreen = false;
+            if (buffer && bitmap) {
+                HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
+                if (oldBitmap && oldBitmap != HGDI_ERROR) {
+                    state->paint(buffer);
+
+                    // Copy the invalid area as one composed frame. This avoids
+                    // exposing intermediate GDI/GDI+ draws during rapid progress
+                    // updates to the address pill and toolbar.
+                    const int dirtyWidth = std::max(0, paint.rcPaint.right - paint.rcPaint.left);
+                    const int dirtyHeight = std::max(0, paint.rcPaint.bottom - paint.rcPaint.top);
+                    if (dirtyWidth > 0 && dirtyHeight > 0) {
+                        BitBlt(target, paint.rcPaint.left, paint.rcPaint.top,
+                            dirtyWidth, dirtyHeight, buffer, paint.rcPaint.left, paint.rcPaint.top, SRCCOPY);
+                    }
+                    SelectObject(buffer, oldBitmap);
+                    paintedOffscreen = true;
+                }
+            }
+            if (bitmap)
+                DeleteObject(bitmap);
+            if (buffer)
+                DeleteDC(buffer);
+            if (!paintedOffscreen)
+                state->paint(target);
+        }
         EndPaint(window, &paint);
         return 0;
     }
