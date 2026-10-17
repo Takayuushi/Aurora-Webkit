@@ -3479,6 +3479,7 @@ search.addEventListener('keydown',e=>{
         loadLocalHTML(tab, html);
 
         tab.title = L"Start Page";
+        tab.activeUrl.clear();
         tab.lastRecordedUrl.clear();
         SetWindowTextW(addressBar, L"");
         SetWindowTextW(window, windowTitle);
