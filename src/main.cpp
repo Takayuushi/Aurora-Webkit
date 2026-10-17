@@ -2640,36 +2640,40 @@ struct BrowserState {
             + R"HTML(;--line:)HTML" + (dark ? "#414144" : "#dedee2") + R"HTML(;--selected:)HTML"
             + (dark ? "#3b3b3f" : "#e6e6ea") + R"HTML(;--blue:)HTML" + (dark ? "#8ab4f8" : "#1769d2")
             + R"HTML(}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:var(--bg);color:var(--text)}
 form{margin:0}
-.shell{width:min(1040px,calc(100% - 48px));margin:24px auto 32px;background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow:hidden;box-shadow:0 8px 36px rgba(0,0,0,.08)}
-.top{padding:12px 20px 0;background:var(--bar);border-bottom:1px solid var(--line)}
-.topline{display:flex;align-items:center;justify-content:space-between;min-height:26px;margin-bottom:10px}
-.topline strong{font-size:14px;font-weight:600}
-.done{display:inline-block;text-decoration:none;border:0;border-radius:9px;padding:7px 13px;background:var(--selected);color:var(--text);font:inherit;cursor:pointer}
-.categories{display:flex;align-items:stretch;justify-content:center;gap:3px;overflow-x:auto;padding-bottom:10px}
-.category{appearance:none;flex:1 1 0;min-width:72px;max-width:108px;border:0;border-radius:13px;background:transparent;color:var(--muted);padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit}
-.category svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.category span{font-size:11px;white-space:nowrap}
+button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
+.shell{width:min(1040px,calc(100% - 48px));margin:24px auto 32px;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 12px 36px rgba(0,0,0,.12)}
+.top{padding:13px 22px 0;background:var(--bar);border-bottom:1px solid var(--line)}
+.topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
+.topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
+.done{display:inline-block;text-decoration:none;border:1px solid transparent;border-radius:8px;padding:7px 13px;background:var(--selected);color:var(--text);font:inherit;line-height:1.35;cursor:pointer}
+.categories{display:flex;align-items:stretch;justify-content:center;gap:4px;overflow-x:auto;padding-bottom:10px}
+.category{appearance:none;flex:1 1 0;min-width:72px;max-width:108px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit;line-height:1.3;transition:background .12s ease,color .12s ease}
+.category svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.category span{font-size:11px;line-height:1.3;white-space:nowrap}
 .category.active{background:var(--selected);color:var(--text)}
 .content{max-width:790px;margin:0 auto;padding:30px 34px 34px}
-h1{font-size:23px;font-weight:600;letter-spacing:-.35px;margin:0 0 5px}
-.sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 28px}
+h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.35px;margin:0 0 6px}
+.sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 27px}
 .panel{display:none}.panel.active{display:block}
 .field{display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}
 .field:first-child{border-top:1px solid var(--line)}
-.field label,.field .fieldname{font-size:13px}
-input[type=text],select{width:100%;min-width:0;min-height:34px;border:1px solid var(--line);border-radius:9px;background:var(--bar);color:var(--text);padding:7px 10px;font:inherit;font-size:13px}
+.field label,.field .fieldname{font-size:13px;line-height:1.4;font-weight:500}
+input[type=text],select{width:100%;min-width:0;min-height:36px;border:1px solid var(--line);border-radius:8px;background:var(--bar);color:var(--text);padding:7px 11px;font:inherit;font-size:13px;line-height:1.35;box-shadow:inset 0 1px 1px rgba(0,0,0,.025)}
+input[type=text]:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,132,255,.18)}
 .checks{border:1px solid var(--line);border-radius:13px;overflow:hidden;margin-top:6px}
 .checkrow{display:flex;align-items:center;gap:10px;padding:13px 14px;border-bottom:1px solid var(--line);font-size:13px}
 .checkrow:last-child{border-bottom:0}
 input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 .help{font-size:12px;color:var(--muted);line-height:1.55;margin:12px 0 0}
 .actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:22px}
-.action{display:inline-block;text-decoration:none;border:1px solid var(--line);border-radius:9px;background:var(--bar);color:var(--text);padding:9px 13px;font:inherit;font-size:13px;cursor:pointer}
+.action{display:inline-block;text-decoration:none;border:1px solid var(--line);border-radius:8px;background:var(--bar);color:var(--text);padding:8px 12px;font:inherit;font-size:13px;line-height:1.35;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.action:hover,.done:hover{border-color:var(--muted);background:var(--selected)}
 .image-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .image-path{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
-.action.primary{border-color:var(--blue);background:var(--blue);color:white}
+.action.primary{border-color:var(--blue);background:var(--blue);color:white;font-weight:600}
+.action.primary:hover{filter:brightness(1.04)}
 .status{color:var(--muted);font-size:12px;margin-left:5px}
 @media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}}
 </style></head><body>
@@ -2774,13 +2778,14 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 .search:focus{border-color:rgba(255,255,255,.72);box-shadow:0 0 0 3px rgba(255,255,255,.14),0 12px 32px rgba(0,0,0,.14)}
 .search::placeholder{color:rgba(246,249,255,.72)}
 .search-icon{position:absolute;left:20px;top:50%;width:17px;height:17px;transform:translateY(-50%);stroke:rgba(248,251,255,.84);fill:none;stroke-width:1.8;stroke-linecap:round;pointer-events:none}
-.section{width:min(820px,94vw);text-align:left;margin-bottom:13px;color:rgba(249,251,255,.9);font-size:13px;font-weight:600;text-shadow:0 1px 9px rgba(0,0,0,.32)}
-.tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
-.tile{width:148px;min-height:106px;border-radius:15px;border:1px solid rgba(255,255,255,.24);background:rgba(246,249,255,.13);backdrop-filter:blur(18px);box-shadow:0 10px 26px rgba(0,0,0,.10);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;color:#fff;cursor:pointer;transition:background .14s ease,border-color .14s ease,transform .14s ease}
-.tile:hover{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.48);transform:translateY(-1px)}
-.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:rgba(255,255,255,.17);border:1px solid rgba(255,255,255,.16);color:#fff;font-weight:600;font-size:16px}
-.name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.host{font-size:11px;color:rgba(245,248,255,.7);max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.section{width:min(850px,94vw);text-align:left;margin-bottom:13px;color:rgba(249,251,255,.9);font-size:13px;font-weight:600;text-shadow:0 1px 9px rgba(0,0,0,.32)}
+.section-spaced{margin-top:22px}
+.tiles{width:min(850px,94vw);display:flex;justify-content:flex-start;align-items:flex-start;flex-wrap:wrap;gap:7px 10px}
+.tile{width:96px;min-height:100px;padding:7px 3px 9px;border-radius:13px;border:1px solid transparent;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:9px;color:#fff;cursor:pointer;transition:background .14s ease,border-color .14s ease}
+.tile:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.16)}
+.icon{width:54px;height:54px;flex:0 0 54px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(255,255,255,.08));border:1px solid rgba(255,255,255,.24);box-shadow:0 8px 22px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.13);color:#fff;font-weight:600;font-size:24px}
+.name{font-size:12px;line-height:1.35;font-weight:500;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
+.host{display:none}
 .footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
 @media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}</style>
 </head>
@@ -2794,7 +2799,7 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 <div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>
 <div class="section">)HTML";
 
-        html += !favorites.empty() ? "Favorites" : (frequent.empty() ? "Quick Access" : "Frequently Visited");
+        html += "Favorites";
         html += R"HTML(</div><div class="tiles">)HTML";
 
         auto addTile = [&](const std::wstring& name, const std::wstring& url, const std::wstring& host) {
@@ -2810,9 +2815,27 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
                 }
             }
 
+            std::wstring lowerHost = host;
+            if (!lowerHost.empty())
+                CharLowerBuffW(lowerHost.data(), static_cast<DWORD>(lowerHost.size()));
+            std::string iconBackground = "linear-gradient(145deg,#36cbb8,#287ca3)";
+            std::string iconForeground = "#ffffff";
+            if (lowerHost.find(L"youtube") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ff6961,#d81728)";
+            else if (lowerHost.find(L"github") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#50545b,#202124)";
+            else if (lowerHost.find(L"reddit") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ff9850,#e54a16)";
+            else if (lowerHost.find(L"google") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#ffffff,#eaf1ff)"; iconForeground = "#4285f4"; }
+            else if (lowerHost.find(L"wikipedia") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#ffffff,#e7e9ed)"; iconForeground = "#34383e"; }
+            else if (lowerHost.find(L"duckduckgo") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ffac54,#dd690d)";
+            else if (lowerHost.find(L"microsoft") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#5aa9ff,#6556ce)";
+            else if (lowerHost.find(L"apple") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#f6f7f9,#d4d7dd)"; iconForeground = "#34383e"; }
+
             html += "<div class=\"tile\" onclick=\"location.href='";
             html += safeUrl;
-            html += "'\"><div class=\"icon\">";
+            html += "'\"><div class=\"icon\" style=\"background:";
+            html += iconBackground;
+            html += ";color:";
+            html += iconForeground;
+            html += "\">";
             html += letter;
             html += "</div><div class=\"name\">";
             html += safeName;
@@ -2821,38 +2844,73 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
             html += "</div></div>";
         };
 
-        if (!favorites.empty()) {
-            for (const auto& entry : favorites) {
-                std::wstring host = entry.url;
-                size_t start = host.find(L"://");
-                if (start != std::wstring::npos)
-                    host.erase(0, start + 3);
-                size_t slash = host.find_first_of(L"/?#");
-                if (slash != std::wstring::npos)
-                    host.erase(slash);
-                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
-            }
-        } else if (frequent.empty()) {
-            addTile(L"YouTube", L"https://www.youtube.com", L"youtube.com");
-            addTile(L"Reddit", L"https://www.reddit.com", L"reddit.com");
-            addTile(L"GitHub", L"https://github.com", L"github.com");
-            addTile(L"Wikipedia", L"https://www.wikipedia.org", L"wikipedia.org");
-            addTile(L"Google", L"https://www.google.com", L"google.com");
-        } else {
-            for (const auto& entry : frequent) {
-                std::wstring host = entry.url;
-                size_t start = host.find(L"://");
-                if (start != std::wstring::npos)
-                    host.erase(0, start + 3);
-                size_t slash = host.find_first_of(L"/?#");
-                if (slash != std::wstring::npos)
-                    host.erase(slash);
-                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
-            }
+        std::vector<SavedPage> startPageTiles;
+        auto appendUniqueTile = [&](const std::wstring& url, const std::wstring& title) {
+            if (url.empty() || startPageTiles.size() >= 8)
+                return;
+            const auto duplicate = std::find_if(startPageTiles.begin(), startPageTiles.end(),
+                [&](const SavedPage& item) { return item.url == url; });
+            if (duplicate == startPageTiles.end())
+                startPageTiles.push_back({ url, title.empty() ? url : title, 0 });
+        };
+        for (const auto& entry : favorites)
+            appendUniqueTile(entry.url, entry.title);
+
+        // Keep the Favorites grid populated even when there are no bookmarks,
+        // or an older bookmark entry doesn't contain a usable URL.
+        const std::vector<SavedPage> starterFavorites {
+            { L"https://www.youtube.com", L"YouTube", 0 },
+            { L"https://github.com", L"GitHub", 0 },
+            { L"https://www.reddit.com", L"Reddit", 0 },
+            { L"https://www.wikipedia.org", L"Wikipedia", 0 },
+            { L"https://www.google.com", L"Google", 0 },
+            { L"https://duckduckgo.com", L"DuckDuckGo", 0 },
+            { L"https://www.microsoft.com", L"Microsoft", 0 },
+            { L"https://www.apple.com", L"Apple", 0 }
+        };
+        for (const auto& entry : starterFavorites)
+            appendUniqueTile(entry.url, entry.title);
+
+        for (const auto& entry : startPageTiles) {
+            std::wstring host = entry.url;
+            const size_t scheme = host.find(L"://");
+            if (scheme != std::wstring::npos)
+                host.erase(0, scheme + 3);
+            const size_t slash = host.find_first_of(L"/?#");
+            if (slash != std::wstring::npos)
+                host.erase(slash);
+            addTile(entry.title.empty() ? host : entry.title, entry.url, host);
         }
 
         html += R"HTML(
 </div>
+)HTML";
+        std::vector<VisitEntry> recentTiles;
+        for (const auto& entry : frequent) {
+            if (entry.url.empty())
+                continue;
+            const auto duplicate = std::find_if(startPageTiles.begin(), startPageTiles.end(),
+                [&](const SavedPage& item) { return item.url == entry.url; });
+            if (duplicate == startPageTiles.end())
+                recentTiles.push_back(entry);
+            if (recentTiles.size() >= 6)
+                break;
+        }
+        if (!recentTiles.empty()) {
+            html += R"HTML(<div class="section section-spaced">Frequently Visited</div><div class="tiles">)HTML";
+            for (const auto& entry : recentTiles) {
+                std::wstring host = entry.url;
+                const size_t scheme = host.find(L"://");
+                if (scheme != std::wstring::npos)
+                    host.erase(0, scheme + 3);
+                const size_t slash = host.find_first_of(L"/?#");
+                if (slash != std::wstring::npos)
+                    host.erase(slash);
+                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
+            }
+            html += "</div>";
+        }
+        html += R"HTML(
 <div class="footer">Favorites and frequently visited websites are stored locally</div>
 </div>
 <script>
