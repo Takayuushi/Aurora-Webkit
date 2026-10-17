@@ -12,7 +12,7 @@ on:
         description: "Aurora source branch to compile against the saved WebKit build"
         required: false
         type: string
-        default: feature/safari26-fidelity-pass
+        default: fix/safari-download-toolbar-sidebar
       webkit_sha:
         description: "WebKit commit SHA (only when explicitly rebuilding WebKit)"
         required: false
