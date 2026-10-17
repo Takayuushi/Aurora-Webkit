@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   build:
+    # Defense in depth: push events must never invoke a Windows/WebKit build.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 720
     env:
