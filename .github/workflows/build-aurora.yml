@@ -8,6 +8,11 @@ on:
       - ".github/workflows/build-aurora.yml"
   workflow_dispatch:
     inputs:
+      aurora_ref:
+        description: "Aurora source branch to compile against the saved WebKit build"
+        required: false
+        type: string
+        default: feature/safari26-fidelity-pass
       webkit_sha:
         description: "WebKit commit SHA (only when explicitly rebuilding WebKit)"
         required: false
@@ -28,9 +33,12 @@ jobs:
     timeout-minutes: 720
     env:
       WEBKIT_DIR: D:\a\_temp\WebKit
+      AURORA_REF: ${{ inputs.aurora_ref || github.ref_name }}
     steps:
-      - name: Checkout Aurora
+      - name: Checkout Aurora source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.aurora_ref || github.ref }}
 
       - name: Configure git line endings
         shell: powershell
@@ -283,7 +291,7 @@ jobs:
           $versionText = @(
             "WebKit SHA: $env:WEBKIT_SHA",
             "Aurora SHA: ${{ github.sha }}",
-            "Build ref: $env:GITHUB_REF_NAME",
+            "Aurora source ref: $env:AURORA_REF",
             "Build time (UTC): $((Get-Date).ToUniversalTime().ToString("o"))"
           ) -join "`r`n"
 
@@ -370,7 +378,7 @@ jobs:
 
           # Branch names may contain "/" (for example, fix/example). Replace
           # characters that are invalid in Windows file names before creating the ZIP.
-          $safeRefName = $env:GITHUB_REF_NAME -replace '[\\/:*?"<>|]', '-'
+          $safeRefName = $env:AURORA_REF -replace '[\\/:*?"<>|]', '-'
           if ([string]::IsNullOrWhiteSpace($safeRefName)) { $safeRefName = $env:GITHUB_SHA }
           $zipName = "Aurora-windows-x64-$safeRefName.zip"
           $zipPath = Join-Path $out $zipName
