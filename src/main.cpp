@@ -1037,6 +1037,7 @@ struct BrowserState {
     HWND sharePopoverWindow { nullptr };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
+    bool lastReloadButtonLoading { false };
     int hoveredToolbarButton { -1 };
     int hoveredLeftControl { -1 }; // Sidebar, navigation capsule, website settings
     int hoveredTrafficLight { -1 };
@@ -1339,11 +1340,18 @@ struct BrowserState {
     }
 
 
-    bool downloadsButtonVisible() const
+    bool downloadsHaveInProgress() const
     {
         return std::any_of(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
             return !item.finished && !item.failed && !item.cancelled;
         });
+    }
+
+    bool downloadsButtonVisible() const
+    {
+        // Keep the Downloads control available until the list is cleared, even after
+        // a transfer finishes or fails.
+        return !downloads.empty();
     }
 
     RECT rightToolbarButtonRect(int index) const
@@ -3227,7 +3235,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void startDownloadsAnimationTimer()
     {
-        if (window && downloadsPopoverWindow && !downloadsAnimationTimerActive) {
+        if (window && downloadsPopoverWindow && downloadsHaveInProgress() && !downloadsAnimationTimerActive) {
             if (SetTimer(window, kDownloadsAnimationTimerId, 16, nullptr))
                 downloadsAnimationTimerActive = true;
         }
@@ -3240,38 +3248,50 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         downloadsAnimationTimerActive = false;
     }
 
-    void invalidateDownloadPopupRows()
+    void invalidateDownloadPopupRows(bool redrawRows = false)
     {
         if (!downloadsPopoverWindow || !IsWindow(downloadsPopoverWindow))
             return;
 
-        // Transfer callbacks can arrive very frequently. Redraw only the progress
-        // tracks that are changing, not the entire layered popup, to prevent flashes.
         RECT client { };
         if (!GetClientRect(downloadsPopoverWindow, &client))
             return;
 
         const int dpi = windowDpi(window);
         const int visibleRows = static_cast<int>(std::min<size_t>(5, downloads.size()));
-        const int rowHeight = scaleForDpi(window, 64);
-        const int topPadding = scaleForDpi(window, 5);
-        const int barOffset = scaleForDpi(window, 52);
-        const int horizontalInset = scaleForDpi(window, 20);
+        // Match the compact popover: 8px pointer, 34px header, 58px rows.
+        const int rowHeight = scaleForDpi(window, 58);
+        const int topOffset = scaleForDpi(window, 8) + scaleForDpi(window, 34);
+        const int barOffset = scaleForDpi(window, 51);
+        const int barLeft = scaleForDpi(window, 53);
+        const int barRightInset = scaleForDpi(window, 50);
         const int barRedrawPadding = std::max(2, MulDiv(2, dpi, 96));
 
         for (int row = 0; row < visibleRows; ++row) {
             const size_t index = downloads.size() - 1 - static_cast<size_t>(row);
             const auto& download = downloads[index];
+            const int rowTop = topOffset + row * rowHeight;
+
+            if (redrawRows) {
+                RECT rowRect {
+                    scaleForDpi(window, 6), rowTop,
+                    std::max(scaleForDpi(window, 7), static_cast<int>(client.right) - scaleForDpi(window, 6)),
+                    rowTop + rowHeight
+                };
+                InvalidateRect(downloadsPopoverWindow, &rowRect, FALSE);
+                continue;
+            }
+
             const bool inProgress = !download.finished && !download.failed && !download.cancelled;
             if (!inProgress)
                 continue;
 
-            const int barTop = topPadding + row * rowHeight + barOffset;
+            const int barTop = rowTop + barOffset;
             RECT progressRect {
-                horizontalInset,
+                barLeft,
                 barTop - barRedrawPadding,
-                std::max(horizontalInset + 1, static_cast<int>(client.right) - horizontalInset),
-                barTop + scaleForDpi(window, 4) + barRedrawPadding
+                std::max(barLeft + 1, static_cast<int>(client.right) - barRightInset),
+                barTop + scaleForDpi(window, 3) + barRedrawPadding
             };
             InvalidateRect(downloadsPopoverWindow, &progressRect, FALSE);
         }
@@ -3315,7 +3335,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             stopDownloadsAnimationTimer();
     }
 
-    void refreshDownloadsPresentation()
+    void refreshDownloadsPresentation(bool redrawPopupRows = false)
     {
         if (!window)
             return;
@@ -3366,9 +3386,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (downloadsPopoverWindow && IsWindow(downloadsPopoverWindow)) {
-            if (downloadsButtonVisible())
+            if (downloadsHaveInProgress())
                 startDownloadsAnimationTimer();
-            invalidateDownloadPopupRows();
+            else
+                stopDownloadsAnimationTimer();
+            invalidateDownloadPopupRows(redrawPopupRows);
         }
     }
 
@@ -5590,7 +5612,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
             if (!entry.finished && !entry.failed && !entry.cancelled && entry.download) {
                 entry.cancelled = true;
                 WKDownloadCancel(entry.download, nullptr, discardDownloadResumeData);
-                browser->refreshDownloadsPresentation();
+                browser->refreshDownloadsPresentation(true);
             }
         }
         return;
@@ -5912,7 +5934,7 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
         browser->downloads.push_back({ filenameCandidate, path, 0, 0, false, false, download });
         if (browser->downloads.size() > 64)
             browser->downloads.erase(browser->downloads.begin());
-        browser->refreshDownloadsPresentation();
+        browser->refreshDownloadsPresentation(true);
     }
 
     const std::string utf8Path = toUTF8(path);
@@ -5952,7 +5974,7 @@ void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
         }
     }
 
-    browser->refreshDownloadsPresentation();
+    browser->refreshDownloadsPresentation(true);
 }
 
 
@@ -5975,10 +5997,10 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
     if (cancelled) {
         if (!failedPath.empty())
             DeleteFileW(failedPath.c_str());
-        browser->refreshDownloadsPresentation();
+        browser->refreshDownloadsPresentation(true);
         return;
     }
-    browser->refreshDownloadsPresentation();
+    browser->refreshDownloadsPresentation(true);
     std::wstringstream details;
     details << createString(adoptWK(WKErrorCopyLocalizedDescription(error)).get()) << L"\n\n";
     details << L"Error code: " << WKErrorGetErrorCode(error) << L"\n";
@@ -6598,7 +6620,7 @@ void showDownloadsPopover(BrowserState* browser)
     browser->downloadsPopoverWindow = popup;
     ShowWindow(popup, SW_SHOWNOACTIVATE);
     SetTimer(popup, kDownloadsPopoverTimerId, 15, nullptr);
-    if (browser->downloadsButtonVisible())
+    if (browser->downloadsHaveInProgress())
         browser->startDownloadsAnimationTimer();
     InvalidateRect(popup, nullptr, FALSE);
 }
@@ -6744,7 +6766,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                 entries.erase(std::remove_if(entries.begin(), entries.end(),
                     [](const DownloadEntry& item) { return item.finished || item.failed || item.cancelled; }),
                     entries.end());
-                browser->refreshDownloadsPresentation();
+                browser->refreshDownloadsPresentation(true);
                 if (entries.empty()) {
                     DestroyWindow(window);
                     return 0;
@@ -6777,7 +6799,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                     if (inProgress && download.download) {
                         download.cancelled = true;
                         WKDownloadCancel(download.download, nullptr, discardDownloadResumeData);
-                        browser->refreshDownloadsPresentation();
+                        browser->refreshDownloadsPresentation(true);
                         InvalidateRect(window, &rowRect, FALSE);
                     } else if (finished && !download.path.empty()) {
                         browser->showFileInFolder(download.path);
@@ -7300,10 +7322,22 @@ void didChangeActiveURL(const void* clientInfo)
 void didChangeEstimatedProgress(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (tab && tab->browser) {
-        const RECT address = tab->browser->addressPillRect();
-        InvalidateRect(tab->browser->window, &address, FALSE);
-    }
+    if (!tab || !tab->browser || tab != tab->browser->active())
+        return;
+
+    auto page = WKViewGetPage(tab->view.get());
+    const bool loading = page && WKPageGetEstimatedProgress(page) < 1.0;
+    BrowserState* browser = tab->browser;
+    // The reload/stop glyph is binary. Repainting Smart Search for every fractional
+    // progress notification caused the address pill to visibly flicker.
+    if (browser->lastReloadButtonLoading == loading)
+        return;
+    browser->lastReloadButtonLoading = loading;
+
+    const RECT pill = browser->addressPillRect();
+    RECT reloadRect { pill.right - scaleForDpi(browser->window, 30), pill.top, pill.right, pill.bottom };
+    if (reloadRect.right > reloadRect.left && reloadRect.bottom > reloadRect.top)
+        InvalidateRect(browser->window, &reloadRect, FALSE);
 }
 
 void didChangeCanGoBack(const void* clientInfo)
