@@ -156,6 +156,8 @@ constexpr UINT kSettingsImages = 7111;
 constexpr UINT kSettingsPopups = 7112;
 constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
+constexpr UINT kSettingsBrowseBackground = 7115;
+constexpr UINT kSettingsClearBackground = 7116;
 constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
@@ -1016,6 +1018,7 @@ struct BrowserState {
     bool windowCounted { false };
     bool privateBrowsing { false };
     bool customMaximized { false };
+    bool wasMinimized { false };
     RECT restoredWindowRect { };
     bool webFullscreen { false };
     bool fullscreenRestoreWasMaximized { false };
@@ -1054,6 +1057,9 @@ struct BrowserState {
     std::wstring homePage { L"https://www.google.com" };
     std::wstring searchEngine { L"Google" };
     std::wstring downloadLocation;
+    std::wstring startPageBackground;
+    std::wstring cachedStartPageBackgroundPath;
+    std::string cachedStartPageBackgroundDataUrl;
     bool javascriptEnabled { true };
     bool imagesEnabled { true };
     bool allowPopups { false };
@@ -1081,6 +1087,8 @@ struct BrowserState {
                 searchEngine = value;
             else if (key == "downloads")
                 downloadLocation = value;
+            else if (key == "startPageBackground")
+                startPageBackground = value;
             else if (key == "javascript")
                 javascriptEnabled = value == L"1" || value == L"true";
             else if (key == "images")
@@ -1105,12 +1113,15 @@ struct BrowserState {
         std::wstring safeHome = homePage;
         std::wstring safeSearch = searchEngine;
         std::wstring safeDownloads = downloadLocation;
+        std::wstring safeStartPageBackground = startPageBackground;
         replaceTabsAndNewlines(safeHome);
         replaceTabsAndNewlines(safeSearch);
         replaceTabsAndNewlines(safeDownloads);
+        replaceTabsAndNewlines(safeStartPageBackground);
         file << "home\t" << toUTF8(safeHome) << '\n'
              << "search\t" << toUTF8(safeSearch) << '\n'
              << "downloads\t" << toUTF8(safeDownloads) << '\n'
+             << "startPageBackground\t" << toUTF8(safeStartPageBackground) << '\n'
              << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
              << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
              << "popups\t" << (allowPopups ? "1" : "0") << '\n'
@@ -1138,6 +1149,140 @@ struct BrowserState {
     std::wstring effectiveDownloadsDirectory() const
     {
         return downloadLocation.empty() ? downloadsDirectory() : downloadLocation;
+    }
+
+    static std::string startPageImageMimeType(const std::wstring& path)
+    {
+        const size_t dot = path.find_last_of(L'.');
+        if (dot == std::wstring::npos)
+            return {};
+        std::wstring extension = path.substr(dot);
+        if (!extension.empty())
+            CharLowerBuffW(extension.data(), static_cast<DWORD>(extension.size()));
+        if (extension == L".png") return "image/png";
+        if (extension == L".jpg" || extension == L".jpeg") return "image/jpeg";
+        if (extension == L".webp") return "image/webp";
+        if (extension == L".gif") return "image/gif";
+        if (extension == L".bmp") return "image/bmp";
+        return {};
+    }
+
+    std::string startPageBackgroundDataUrl()
+    {
+        if (startPageBackground.empty())
+            return {};
+        if (cachedStartPageBackgroundPath == startPageBackground
+            && !cachedStartPageBackgroundDataUrl.empty())
+            return cachedStartPageBackgroundDataUrl;
+
+        const std::string mime = startPageImageMimeType(startPageBackground);
+        if (mime.empty())
+            return {};
+
+        HANDLE imageFile = CreateFileW(startPageBackground.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (imageFile == INVALID_HANDLE_VALUE)
+            return {};
+
+        LARGE_INTEGER fileSize { };
+        constexpr LONGLONG maxImageBytes = 24LL * 1024LL * 1024LL;
+        if (!GetFileSizeEx(imageFile, &fileSize) || fileSize.QuadPart <= 0
+            || fileSize.QuadPart > maxImageBytes) {
+            CloseHandle(imageFile);
+            return {};
+        }
+
+        std::vector<unsigned char> bytes(static_cast<size_t>(fileSize.QuadPart));
+        size_t offset = 0;
+        while (offset < bytes.size()) {
+            const DWORD request = static_cast<DWORD>(std::min<size_t>(bytes.size() - offset, 1024 * 1024));
+            DWORD received = 0;
+            if (!ReadFile(imageFile, bytes.data() + offset, request, &received, nullptr) || !received) {
+                CloseHandle(imageFile);
+                return {};
+            }
+            offset += received;
+        }
+        CloseHandle(imageFile);
+
+        static constexpr char encoding[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string base64;
+        base64.reserve(((bytes.size() + 2) / 3) * 4);
+        for (size_t i = 0; i < bytes.size(); i += 3) {
+            const uint32_t first = bytes[i];
+            const uint32_t second = i + 1 < bytes.size() ? bytes[i + 1] : 0;
+            const uint32_t third = i + 2 < bytes.size() ? bytes[i + 2] : 0;
+            const uint32_t triple = (first << 16) | (second << 8) | third;
+            base64.push_back(encoding[(triple >> 18) & 0x3f]);
+            base64.push_back(encoding[(triple >> 12) & 0x3f]);
+            base64.push_back(i + 1 < bytes.size() ? encoding[(triple >> 6) & 0x3f] : '=');
+            base64.push_back(i + 2 < bytes.size() ? encoding[triple & 0x3f] : '=');
+        }
+
+        cachedStartPageBackgroundPath = startPageBackground;
+        cachedStartPageBackgroundDataUrl = "data:" + mime + ";base64," + base64;
+        return cachedStartPageBackgroundDataUrl;
+    }
+
+    bool chooseStartPageBackground(HWND owner)
+    {
+        std::vector<wchar_t> selectedPath(32768, L'\0');
+        const wchar_t filter[] =
+            L"Image files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)\0*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp\0"
+            L"All files (*.*)\0*.*\0\0";
+        OPENFILENAMEW dialog { };
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = owner ? owner : window;
+        dialog.lpstrFilter = filter;
+        dialog.lpstrFile = selectedPath.data();
+        dialog.nMaxFile = static_cast<DWORD>(selectedPath.size());
+        dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST
+            | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+        if (!GetOpenFileNameW(&dialog))
+            return false;
+
+        const std::wstring candidate = selectedPath.data();
+        if (startPageImageMimeType(candidate).empty()) {
+            MessageBoxW(owner ? owner : window,
+                L"Choose a PNG, JPEG, WebP, GIF, or BMP image.",
+                L"Start Page Background", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+
+        HANDLE imageFile = CreateFileW(candidate.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        LARGE_INTEGER fileSize { };
+        constexpr LONGLONG maxImageBytes = 24LL * 1024LL * 1024LL;
+        const bool sizeValid = imageFile != INVALID_HANDLE_VALUE
+            && GetFileSizeEx(imageFile, &fileSize) && fileSize.QuadPart > 0
+            && fileSize.QuadPart <= maxImageBytes;
+        if (imageFile != INVALID_HANDLE_VALUE)
+            CloseHandle(imageFile);
+        if (!sizeValid) {
+            MessageBoxW(owner ? owner : window,
+                L"That image is empty or larger than 24 MB. Choose a smaller image for the Start Page background.",
+                L"Start Page Background", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+
+        startPageBackground = candidate;
+        cachedStartPageBackgroundPath.clear();
+        cachedStartPageBackgroundDataUrl.clear();
+        savePreferences();
+        refreshOpenStartPages();
+        return true;
+    }
+
+    void clearStartPageBackground()
+    {
+        startPageBackground.clear();
+        cachedStartPageBackgroundPath.clear();
+        cachedStartPageBackgroundDataUrl.clear();
+        savePreferences();
+        refreshOpenStartPages();
     }
 
     std::wstring searchURL(const std::wstring& query) const
@@ -2469,6 +2614,8 @@ struct BrowserState {
         const std::string engine = toUTF8(searchEngine);
         const std::string home = toUTF8(htmlEscape(homePage));
         const std::string downloadsPath = toUTF8(htmlEscape(downloadLocation));
+        const std::string startPageBackgroundLabel = startPageBackground.empty()
+            ? "Built-in Aurora wallpaper" : toUTF8(htmlEscape(startPageBackground));
         const std::string systemSelected = theme == "system" ? " selected" : "";
         const std::string lightSelected = theme == "light" ? " selected" : "";
         const std::string darkSelected = theme == "dark" ? " selected" : "";
@@ -2519,7 +2666,9 @@ input[type=text],select{width:100%;min-width:0;min-height:34px;border:1px solid 
 input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 .help{font-size:12px;color:var(--muted);line-height:1.55;margin:12px 0 0}
 .actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:22px}
-.action{border:1px solid var(--line);border-radius:9px;background:var(--bar);color:var(--text);padding:9px 13px;font:inherit;font-size:13px;cursor:pointer}
+.action{display:inline-block;text-decoration:none;border:1px solid var(--line);border-radius:9px;background:var(--bar);color:var(--text);padding:9px 13px;font:inherit;font-size:13px;cursor:pointer}
+.image-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.image-path{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .action.primary{border-color:var(--blue);background:var(--blue);color:white}
 .status{color:var(--muted);font-size:12px;margin-left:5px}
 @media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}}
@@ -2527,7 +2676,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
 <button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L8 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H6.7v-2.4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L8 8.6l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.7 1.7-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.4 1z"/></svg><span>General</span></button>
-<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Tabs</span></button>
+<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Appearance</span></button>
 <button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
 <button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
 <button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Privacy</span></button>
@@ -2538,9 +2687,10 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="field"><label for="downloads">Downloads location</label><input id="downloads" type="text" name="downloads" value="__DOWNLOADS__"></div>
 <p class="help">Enter a folder path that already exists on this PC. Leave the location blank to use the Windows Downloads folder.</p>
 </section>
-<section class="panel__ACTIVE_SECTION_TABS__" data-section="appearance"><h1>Tabs</h1><p class="sub">Choose the browser appearance and tab behavior.</p>
-<div class="field"><label for="theme">Appearance</label><select id="theme" name="theme"><option value="system"__THEME_SYSTEM__>Automatic (follow Windows)</option><option value="light"__THEME_LIGHT__>Light</option><option value="dark"__THEME_DARK__>Dark</option></select></div>
-<p class="help">This setting changes Aurora's browser chrome and built-in pages.</p></section>
+<section class="panel__ACTIVE_SECTION_TABS__" data-section="appearance"><h1>Appearance</h1><p class="sub">Choose how Aurora looks, including the Start Page wallpaper.</p>
+<div class="field"><label for="theme">Browser appearance</label><select id="theme" name="theme"><option value="system"__THEME_SYSTEM__>Automatic (follow Windows)</option><option value="light"__THEME_LIGHT__>Light</option><option value="dark"__THEME_DARK__>Dark</option></select></div>
+<div class="field"><div class="fieldname">Start Page background</div><div class="image-actions"><span class="image-path">__START_PAGE_BACKGROUND__</span><a class="action" href="aurora-settings://browse-background">Choose Image…</a><a class="action" href="aurora-settings://clear-background">Use Default</a></div></div>
+<p class="help">Choose a PNG, JPEG, WebP, GIF, or BMP image from this PC (up to 24 MB). Leave it unset to use Aurora’s built-in aurora wallpaper.</p></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
 <div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option></select></div></section>
 <section class="panel__ACTIVE_SECTION_WEBSITES__" data-section="websites"><h1>Websites</h1><p class="sub">Choose the default permissions used for websites.</p>
@@ -2560,6 +2710,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 
         const std::pair<const std::string, const std::string> replacements[] = {
             { "__HOME__", home }, { "__DOWNLOADS__", downloadsPath },
+            { "__START_PAGE_BACKGROUND__", startPageBackgroundLabel },
             { "__THEME_SYSTEM__", systemSelected }, { "__THEME_LIGHT__", lightSelected }, { "__THEME_DARK__", darkSelected },
             { "__ENGINE_GOOGLE__", googleSelected }, { "__ENGINE_BING__", bingSelected }, { "__ENGINE_DUCK__", duckSelected },
             { "__JAVASCRIPT__", checked(javascriptEnabled) }, { "__IMAGES__", checked(imagesEnabled) },
@@ -2600,28 +2751,47 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:)HTML" + std::string(dark ? "dark" : "light") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#5f6368") + R"HTML(;--surface:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;--border:)HTML" + (dark ? "#48484a" : "#e2e4e7") + R"HTML(;--icon-bg:)HTML" + (dark ? "#3a3a3c" : "#f0f2f5") + R"HTML(;--icon-fg:)HTML" + (dark ? "#d1d1d6" : "#42474d") + R"HTML(;--hover:)HTML" + (dark ? "#38383a" : "#fafbfc") + R"HTML(}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
-body{min-height:100vh;background:)HTML" + std::string(dark ? "#1c1c1e" : "#f5f5f7") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(}
-.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 24px}
-.search{width:min(680px,90vw);height:46px;margin:0 auto 38px;padding:0 20px;border:1px solid #d8dadd;border-radius:14px;background:)HTML" + std::string(dark ? "#2c2c2e" : "#fff") + R"HTML(;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;outline:none;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
-.search:focus{border-color:#aeb8c7;box-shadow:0 0 0 3px rgba(65,120,220,.12)}
-.search::placeholder{color:var(--muted)}
-.section{width:min(820px,94vw);text-align:left;margin-bottom:14px;color:var(--muted);font-size:13px;font-weight:600}
+body{min-height:100vh;background:#10243d;color:#f7f9ff;overflow-x:hidden;position:relative}
+.wallpaper{position:fixed;inset:0;z-index:0;background:
+linear-gradient(180deg,rgba(4,12,26,.04) 0%,rgba(4,12,26,.14) 38%,rgba(4,10,22,.72) 100%),
+radial-gradient(ellipse at 27% 13%,rgba(18,223,176,.68) 0%,rgba(18,223,176,0) 36%),
+radial-gradient(ellipse at 72% 10%,rgba(141,96,255,.68) 0%,rgba(141,96,255,0) 35%),
+radial-gradient(ellipse at 52% 43%,rgba(44,151,207,.36) 0%,rgba(44,151,207,0) 42%),
+linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cover;background-position:center}
+.wallpaper:before{content:"";position:absolute;left:-3%;right:-3%;bottom:0;height:48%;opacity:.78;background:linear-gradient(180deg,rgba(27,76,96,.42),rgba(4,13,27,.96));clip-path:polygon(0 37%,7% 27%,14% 43%,22% 12%,31% 36%,39% 25%,48% 48%,57% 14%,65% 35%,74% 8%,83% 40%,91% 21%,100% 38%,100% 100%,0 100%)}
+.wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
+.page{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px}
+.branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2)}
+.brand-mark{width:64px;height:64px;margin:0 auto 10px;border:1px solid rgba(255,255,255,.34);border-radius:21px;background:rgba(255,255,255,.13);backdrop-filter:blur(18px);box-shadow:0 14px 38px rgba(0,0,0,.18);display:grid;place-items:center}
+.brand-mark svg{width:45px;height:45px;display:block}
+.branding h1{font-size:35px;font-weight:600;letter-spacing:-1.2px;line-height:1.1;margin:0}
+.branding p{font-size:10px;font-weight:500;letter-spacing:4px;margin:8px 0 0;color:rgba(248,251,255,.82)}
+.search-wrap{width:min(690px,90vw);position:relative;margin:0 auto 34px}
+.search{width:100%;height:50px;margin:0;padding:0 20px 0 52px;border:1px solid rgba(255,255,255,.38);border-radius:15px;background:rgba(248,250,255,.16);backdrop-filter:blur(20px);color:#fff;outline:none;font-size:15px;box-shadow:0 12px 32px rgba(0,0,0,.12),inset 0 1px 0 rgba(255,255,255,.08)}
+.search:focus{border-color:rgba(255,255,255,.72);box-shadow:0 0 0 3px rgba(255,255,255,.14),0 12px 32px rgba(0,0,0,.14)}
+.search::placeholder{color:rgba(246,249,255,.72)}
+.search-icon{position:absolute;left:20px;top:50%;width:17px;height:17px;transform:translateY(-50%);stroke:rgba(248,251,255,.84);fill:none;stroke-width:1.8;stroke-linecap:round;pointer-events:none}
+.section{width:min(820px,94vw);text-align:left;margin-bottom:13px;color:rgba(249,251,255,.9);font-size:13px;font-weight:600;text-shadow:0 1px 9px rgba(0,0,0,.32)}
 .tiles{width:min(820px,94vw);display:flex;justify-content:flex-start;flex-wrap:wrap;gap:12px}
-.tile{width:148px;min-height:106px;border-radius:14px;border:1px solid )HTML" + std::string(dark ? "#48484a" : "#e2e4e7") + R"HTML(;background:)HTML" + (dark ? "#2c2c2e" : "#fff") + R"HTML(;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:)HTML" + (dark ? "#f5f5f7" : "#202124") + R"HTML(;cursor:pointer;transition:background .12s ease,border-color .12s ease}
-.tile:hover{background:var(--hover);border-color:var(--border)}
-.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:var(--icon-bg);color:var(--icon-fg);font-weight:600;font-size:16px}
+.tile{width:148px;min-height:106px;border-radius:15px;border:1px solid rgba(255,255,255,.24);background:rgba(246,249,255,.13);backdrop-filter:blur(18px);box-shadow:0 10px 26px rgba(0,0,0,.10);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;color:#fff;cursor:pointer;transition:background .14s ease,border-color .14s ease,transform .14s ease}
+.tile:hover{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.48);transform:translateY(-1px)}
+.icon{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:rgba(255,255,255,.17);border:1px solid rgba(255,255,255,.16);color:#fff;font-weight:600;font-size:16px}
 .name{font-size:13px;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.host{font-size:11px;color:var(--muted);max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.footer{margin-top:24px;color:#8a8f96;font-size:12px}
-@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}}
-</style>
+.host{font-size:11px;color:rgba(245,248,255,.7);max-width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
+@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}</style>
 </head>
 <body>
+<div class="wallpaper" id="wallpaper" style="__AURORA_BACKGROUND_IMAGE__"></div>
 <div class="page">
-<input id="search" class="search" autofocus placeholder="Search the web or enter an address">
+<div class="branding">
+<div class="brand-mark"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="aurora-mark" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#31d5c2"/><stop offset=".52" stop-color="#62d3ff"/><stop offset="1" stop-color="#b8a1ff"/></linearGradient></defs><path d="M9 44C20 42 20 23 32 13c7-6 13-3 14 2 1 7-9 13-14 18-6 5-8 10-8 17" fill="none" stroke="url(#aurora-mark)" stroke-width="6" stroke-linecap="round"/><path d="M22 49c9-3 16-11 22-17 5-5 10-7 12-4 2 4-4 10-9 14-6 5-13 8-22 9" fill="none" stroke="url(#aurora-mark)" stroke-width="4" stroke-linecap="round"/><path d="M30 51c7-2 12-5 17-9" fill="none" stroke="#e2fcff" stroke-opacity=".85" stroke-width="2" stroke-linecap="round"/></svg></div>
+<h1>Aurora</h1><p>BROWSE BEYOND</p>
+</div>
+<div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>
 <div class="section">)HTML";
 
         html += !favorites.empty() ? "Favorites" : (frequent.empty() ? "Quick Access" : "Frequently Visited");
@@ -2700,6 +2870,17 @@ search.addEventListener('keydown',e=>{
 </body></html>
 )HTML";
 
+        const std::string backgroundDataUrl = startPageBackgroundDataUrl();
+        const std::string backgroundPlaceholder = "__AURORA_BACKGROUND_IMAGE__";
+        const size_t backgroundPlaceholderPosition = html.find(backgroundPlaceholder);
+        if (backgroundPlaceholderPosition != std::string::npos) {
+            std::string backgroundStyle;
+            if (!backgroundDataUrl.empty()) {
+                backgroundStyle = "background-image:linear-gradient(180deg,rgba(4,12,26,.12) 0%,rgba(4,10,22,.22) 40%,rgba(4,10,22,.78) 100%),url('"
+                    + backgroundDataUrl + "');";
+            }
+            html.replace(backgroundPlaceholderPosition, backgroundPlaceholder.size(), backgroundStyle);
+        }
         loadLocalHTML(tab, html);
 
         tab.title = L"New Tab";
@@ -2707,6 +2888,30 @@ search.addEventListener('keydown',e=>{
         tab.lastRecordedUrl.clear();
         SetWindowTextW(addressBar, L"");
         SetWindowTextW(window, windowTitle);
+    }
+
+    void refreshOpenStartPages()
+    {
+        if (tabs.empty())
+            return;
+        const size_t previousActive = activeTab;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            if (tabs[i]->internalPage != L"start")
+                continue;
+            activeTab = i;
+            loadStartPage(*tabs[i]);
+        }
+        activeTab = std::min(previousActive, tabs.size() - 1);
+        if (auto* selected = active()) {
+            const wchar_t* address = selected->activeUrl.empty() || selected->activeUrl == L"about:blank"
+                ? L"" : selected->activeUrl.c_str();
+            SetWindowTextW(addressBar, address);
+            const std::wstring titleText = (selected->title.empty() ? L"New Tab" : selected->title) + L" — Aurora";
+            SetWindowTextW(window, titleText.c_str());
+            invalidateTabChrome(selected);
+        }
+        resize();
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
     }
 
     void loadURL(TabState& tab, const std::wstring& value)
@@ -3286,6 +3491,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (!inProgress)
                 continue;
 
+            RECT statusRect {
+                barLeft,
+                rowTop + scaleForDpi(window, 28),
+                std::max(barLeft + 1, static_cast<int>(client.right) - barRightInset),
+                rowTop + scaleForDpi(window, 45)
+            };
+            InvalidateRect(downloadsPopoverWindow, &statusRect, FALSE);
+
             const int barTop = rowTop + barOffset;
             RECT progressRect {
                 barLeft,
@@ -3390,7 +3603,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 startDownloadsAnimationTimer();
             else
                 stopDownloadsAnimationTimer();
-            invalidateDownloadPopupRows(redrawPopupRows);
+            // Transfer callbacks can arrive faster than display refresh. Let the
+            // animation timer own progress/status paints to prevent two paint sources racing.
+            if (redrawPopupRows)
+                invalidateDownloadPopupRows(true);
         }
     }
 
@@ -4806,6 +5022,7 @@ struct SettingsDialogState {
     HWND popupsCheck { nullptr };
     HWND localStorageCheck { nullptr };
     HWND developerToolsCheck { nullptr };
+    HWND startPageBackgroundLabel { nullptr };
     HWND navigationButtons[kSettingsPageCount] { };
     std::vector<HWND> pageControls[kSettingsPageCount];
     int activePage { 0 };
@@ -4917,7 +5134,12 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         SendMessageW(dialog->themeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Dark"));
         SendMessageW(dialog->themeCombo, CB_SETCURSEL,
             browser->themeMode == ThemeMode::System ? 0 : (browser->themeMode == ThemeMode::Light ? 1 : 2), 0);
-        label(1, L"Choose the appearance for browser chrome and built-in pages.", 32, 242, 790, 36);
+        label(1, L"Choose the appearance for browser chrome and built-in pages.", 32, 242, 790, 28);
+        actionButton(1, L"Choose Start Page Image…", kSettingsBrowseBackground, 32, 282, 210);
+        actionButton(1, L"Use Default Background", kSettingsClearBackground, 254, 282, 190);
+        const std::wstring backgroundDescription = browser->startPageBackground.empty()
+            ? L"Using the built-in Aurora wallpaper" : browser->startPageBackground;
+        dialog->startPageBackgroundLabel = label(1, backgroundDescription.c_str(), 32, 323, 790, 42);
 
         // Search
         label(2, L"Default search engine", 32, 174, 790, 22);
@@ -5087,6 +5309,17 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
                     SetWindowTextW(dialog->downloadsEdit, path);
                 CoTaskMemFree(folder);
             }
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsBrowseBackground) {
+            if (dialog->browser->chooseStartPageBackground(window) && dialog->startPageBackgroundLabel)
+                SetWindowTextW(dialog->startPageBackgroundLabel, dialog->browser->startPageBackground.c_str());
+            return 0;
+        }
+        if (LOWORD(wParam) == kSettingsClearBackground) {
+            dialog->browser->clearStartPageBackground();
+            if (dialog->startPageBackgroundLabel)
+                SetWindowTextW(dialog->startPageBackgroundLabel, L"Using the built-in Aurora wallpaper");
             return 0;
         }
         if (LOWORD(wParam) == kSettingsClearHistory) {
@@ -5626,6 +5859,16 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     std::wstring command = url.substr(0, queryStart);
     while (!command.empty() && command.back() == L'/')
         command.pop_back();
+    if (command == L"aurora-settings://browse-background") {
+        browser->chooseStartPageBackground(browser->window);
+        browser->loadSettingsPage(*tab, 1);
+        return;
+    }
+    if (command == L"aurora-settings://clear-background") {
+        browser->clearStartPageBackground();
+        browser->loadSettingsPage(*tab, 1);
+        return;
+    }
     if (command == L"aurora-settings://close") {
         if (browser->tabs.size() > 1)
             browser->closeTab(browser->activeTab);
@@ -6826,8 +7069,29 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
     case WM_PAINT: {
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(window, &paint);
-        if (state)
-            drawDownloadsPopover(dc, window, state);
+        RECT client { };
+        GetClientRect(window, &client);
+        HDC bufferDC = CreateCompatibleDC(dc);
+        HBITMAP bufferBitmap = bufferDC
+            ? CreateCompatibleBitmap(dc, std::max(1L, client.right), std::max(1L, client.bottom)) : nullptr;
+        if (bufferDC && bufferBitmap) {
+            HGDIOBJ oldBitmap = SelectObject(bufferDC, bufferBitmap);
+            const bool dark = state && state->browser && state->browser->chromeDarkTheme();
+            HBRUSH background = CreateSolidBrush(dark ? RGB(40, 40, 44) : RGB(247, 247, 250));
+            FillRect(bufferDC, &client, background);
+            DeleteObject(background);
+            if (state)
+                drawDownloadsPopover(bufferDC, window, state);
+            BitBlt(dc, 0, 0, client.right, client.bottom, bufferDC, 0, 0, SRCCOPY);
+            SelectObject(bufferDC, oldBitmap);
+            DeleteObject(bufferBitmap);
+            DeleteDC(bufferDC);
+        } else {
+            if (bufferDC)
+                DeleteDC(bufferDC);
+            if (state)
+                drawDownloadsPopover(dc, window, state);
+        }
         EndPaint(window, &paint);
         return 0;
     }
@@ -7584,8 +7848,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_SIZE:
-        if (state)
+        if (state) {
+            const bool restoredFromMinimized = state->wasMinimized && wParam != SIZE_MINIMIZED;
+            state->wasMinimized = wParam == SIZE_MINIMIZED;
             state->resize();
+            if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
+                if (auto* selected = state->active()) {
+                    HWND viewWindow = WKViewGetWindow(selected->view.get());
+                    if (viewWindow)
+                        RedrawWindow(viewWindow, nullptr, nullptr,
+                            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+                }
+                RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            }
+        }
         return 0;
 
     case WM_DPICHANGED:
