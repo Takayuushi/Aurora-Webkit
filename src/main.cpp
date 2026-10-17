@@ -8096,6 +8096,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         break;
 
+    case WM_ACTIVATE:
+        // Windows can restyle the active frame when focus changes. Reassert
+        // the no-border DWM preference so the accent outline does not return.
+        if (state)
+            setNativeWindowBorderColor(window, state->chromeDarkTheme());
+        break;
+
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
             MessageBoxW(window, L"WebKit could not initialize Aurora.", windowTitle, MB_OK | MB_ICONERROR);
@@ -8175,11 +8182,47 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_NCPAINT:
+        // Aurora paints its own complete window chrome and handles resize hit
+        // testing in WM_NCHITTEST. Do not let the default non-client painter
+        // add a second, system-coloured frame around the custom chrome.
+        return 0;
+
     case WM_PAINT: {
         PAINTSTRUCT paint { };
-        HDC dc = BeginPaint(window, &paint);
-        if (state)
-            state->paint(dc);
+        HDC target = BeginPaint(window, &paint);
+        if (state) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int width = client.right - client.left;
+            const int height = client.bottom - client.top;
+            HDC buffer = (width > 0 && height > 0) ? CreateCompatibleDC(target) : nullptr;
+            HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+            if (buffer && bitmap) {
+                HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
+                state->paint(buffer);
+
+                // Copy the invalid area as one composed frame. This avoids
+                // exposing intermediate GDI/GDI+ draws during rapid progress
+                // updates to the address pill and toolbar.
+                const int dirtyWidth = std::max(0, paint.rcPaint.right - paint.rcPaint.left);
+                const int dirtyHeight = std::max(0, paint.rcPaint.bottom - paint.rcPaint.top);
+                if (dirtyWidth > 0 && dirtyHeight > 0) {
+                    BitBlt(target, paint.rcPaint.left, paint.rcPaint.top,
+                        dirtyWidth, dirtyHeight, buffer, paint.rcPaint.left, paint.rcPaint.top, SRCCOPY);
+                }
+                if (oldBitmap)
+                    SelectObject(buffer, oldBitmap);
+                DeleteObject(bitmap);
+                DeleteDC(buffer);
+            } else {
+                if (bitmap)
+                    DeleteObject(bitmap);
+                if (buffer)
+                    DeleteDC(buffer);
+                state->paint(target);
+            }
+        }
         EndPaint(window, &paint);
         return 0;
     }
