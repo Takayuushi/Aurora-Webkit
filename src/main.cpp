@@ -3119,7 +3119,7 @@ h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.4px;margin:0
 .sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 24px}
 .panel{display:none}.panel.active{display:block}
 .field{display:grid;grid-template-columns:minmax(180px,225px) minmax(0,1fr);align-items:center;gap:20px;padding:14px 0;border-bottom:1px solid var(--line)}
-.field:first-child{border-top:1px solid var(--line)}
+.field:first-of-type{border-top:1px solid var(--line)}
 .field label,.field .fieldname{font-size:13px;font-weight:500}
 input[type=text],select{appearance:auto;width:100%;min-width:0;min-height:36px;border:1px solid var(--line-strong);border-radius:8px;background:var(--control);color:var(--text);padding:7px 10px;font:inherit;font-size:13px;outline:none;transition:border-color .14s,box-shadow .14s}
 input[type=text]:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,122,255,.14)}
@@ -8096,6 +8096,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         break;
 
+    case WM_ACTIVATE:
+        // Windows can restyle the active frame when focus changes. Reassert
+        // the no-border DWM preference so the accent outline does not return.
+        if (state)
+            setNativeWindowBorderColor(window, state->chromeDarkTheme());
+        break;
+
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
             MessageBoxW(window, L"WebKit could not initialize Aurora.", windowTitle, MB_OK | MB_ICONERROR);
@@ -8175,11 +8182,48 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_NCPAINT:
+        // Aurora paints its own complete window chrome and handles resize hit
+        // testing in WM_NCHITTEST. Do not let the default non-client painter
+        // add a second, system-coloured frame around the custom chrome.
+        return 0;
+
     case WM_PAINT: {
         PAINTSTRUCT paint { };
-        HDC dc = BeginPaint(window, &paint);
-        if (state)
-            state->paint(dc);
+        HDC target = BeginPaint(window, &paint);
+        if (state) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int width = client.right - client.left;
+            const int height = client.bottom - client.top;
+            HDC buffer = (width > 0 && height > 0) ? CreateCompatibleDC(target) : nullptr;
+            HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+            bool paintedOffscreen = false;
+            if (buffer && bitmap) {
+                HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
+                if (oldBitmap && oldBitmap != HGDI_ERROR) {
+                    state->paint(buffer);
+
+                    // Copy the invalid area as one composed frame. This avoids
+                    // exposing intermediate GDI/GDI+ draws during rapid progress
+                    // updates to the address pill and toolbar.
+                    const int dirtyWidth = std::max(0, paint.rcPaint.right - paint.rcPaint.left);
+                    const int dirtyHeight = std::max(0, paint.rcPaint.bottom - paint.rcPaint.top);
+                    if (dirtyWidth > 0 && dirtyHeight > 0) {
+                        BitBlt(target, paint.rcPaint.left, paint.rcPaint.top,
+                            dirtyWidth, dirtyHeight, buffer, paint.rcPaint.left, paint.rcPaint.top, SRCCOPY);
+                    }
+                    SelectObject(buffer, oldBitmap);
+                    paintedOffscreen = true;
+                }
+            }
+            if (bitmap)
+                DeleteObject(bitmap);
+            if (buffer)
+                DeleteDC(buffer);
+            if (!paintedOffscreen)
+                state->paint(target);
+        }
         EndPaint(window, &paint);
         return 0;
     }
