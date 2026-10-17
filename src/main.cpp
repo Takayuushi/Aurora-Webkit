@@ -533,27 +533,26 @@ int windowDpi(HWND window)
     return static_cast<int>(windowScaleFactor(window) * 96.0);
 }
 
-void setNativeWindowBorderColor(HWND window, bool dark)
+void disableNativeWindowBorder(HWND window)
 {
     if (!window)
         return;
-    HMODULE dwmapi = LoadLibraryW(L"dwmapi.dll");
-    if (!dwmapi)
-        return;
-    using DwmSetWindowAttributeFunction = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
-    auto setWindowAttribute = reinterpret_cast<DwmSetWindowAttributeFunction>(
-        GetProcAddress(dwmapi, "DwmSetWindowAttribute")
-    );
-    if (setWindowAttribute) {
-        // Match the exposed resize-frame pixels to the browser surface instead of
-        // allowing DWM to fall back to a pale default outline.
-        const DWORD borderColor = dark ? RGB(28, 28, 30) : RGB(250, 250, 251);
-        setWindowAttribute(window, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor));
-    }
-    FreeLibrary(dwmapi);
-    RedrawWindow(window, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_NOERASE);
-}
 
+    using DwmSetWindowAttributeFunction = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    static DwmSetWindowAttributeFunction setWindowAttribute = []() -> DwmSetWindowAttributeFunction {
+        HMODULE module = LoadLibraryW(L"dwmapi.dll");
+        if (!module)
+            return nullptr;
+        return reinterpret_cast<DwmSetWindowAttributeFunction>(
+            GetProcAddress(module, "DwmSetWindowAttribute"));
+    }();
+    if (!setWindowAttribute)
+        return;
+
+    // DWMWA_COLOR_NONE (0xFFFFFFFE) tells DWM not to draw the system border.
+    constexpr DWORD noBorder = 0xFFFFFFFEu;
+    setWindowAttribute(window, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
+}
 void setWindowTextIfChanged(HWND control, const wchar_t* desiredText)
 {
     if (!control || !IsWindow(control))
@@ -1332,7 +1331,7 @@ struct BrowserState {
     void applyTheme()
     {
         saveThemePreference();
-        setNativeWindowBorderColor(window, darkTheme());
+        disableNativeWindowBorder(window);
         const size_t previousTab = activeTab;
         for (size_t i = 0; i < tabs.size(); ++i) {
             auto& tab = *tabs[i];
@@ -3537,54 +3536,26 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!GetClientRect(downloadsPopoverWindow, &client))
             return;
 
-        const int dpi = windowDpi(window);
         const int visibleRows = static_cast<int>(std::min<size_t>(5, downloads.size()));
-        // Match the compact popover: 8px pointer, 34px header, 58px rows.
         const int rowHeight = scaleForDpi(window, 58);
         const int topOffset = scaleForDpi(window, 8) + scaleForDpi(window, 34);
-        const int barOffset = scaleForDpi(window, 51);
-        const int barLeft = scaleForDpi(window, 53);
-        const int barRightInset = scaleForDpi(window, 50);
-        const int barRedrawPadding = std::max(2, MulDiv(2, dpi, 96));
 
         for (int row = 0; row < visibleRows; ++row) {
             const size_t index = downloads.size() - 1 - static_cast<size_t>(row);
             const auto& download = downloads[index];
-            const int rowTop = topOffset + row * rowHeight;
-
-            if (redrawRows) {
-                RECT rowRect {
-                    scaleForDpi(window, 6), rowTop,
-                    std::max(scaleForDpi(window, 7), static_cast<int>(client.right) - scaleForDpi(window, 6)),
-                    rowTop + rowHeight
-                };
-                InvalidateRect(downloadsPopoverWindow, &rowRect, FALSE);
-                continue;
-            }
-
             const bool inProgress = !download.finished && !download.failed && !download.cancelled;
-            if (!inProgress)
+            if (!redrawRows && !inProgress)
                 continue;
 
-            RECT statusRect {
-                barLeft,
-                rowTop + scaleForDpi(window, 28),
-                std::max(barLeft + 1, static_cast<int>(client.right) - barRightInset),
-                rowTop + scaleForDpi(window, 45)
+            const int rowTop = topOffset + row * rowHeight;
+            RECT rowRect {
+                scaleForDpi(window, 6), rowTop,
+                std::max(scaleForDpi(window, 7), static_cast<int>(client.right) - scaleForDpi(window, 6)),
+                rowTop + rowHeight
             };
-            InvalidateRect(downloadsPopoverWindow, &statusRect, FALSE);
-
-            const int barTop = rowTop + barOffset;
-            RECT progressRect {
-                barLeft,
-                barTop - barRedrawPadding,
-                std::max(barLeft + 1, static_cast<int>(client.right) - barRightInset),
-                barTop + scaleForDpi(window, 3) + barRedrawPadding
-            };
-            InvalidateRect(downloadsPopoverWindow, &progressRect, FALSE);
+            InvalidateRect(downloadsPopoverWindow, &rowRect, FALSE);
         }
     }
-
     void animateDownloadsPopup()
     {
         if (!downloadsPopoverWindow || !IsWindow(downloadsPopoverWindow)) {
@@ -7722,13 +7693,19 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         break;
 
     case WM_NCPAINT:
-        // Aurora owns its entire visible frame; suppress the native pale edge.
+        // Windows may restore a default frame during activation/composition changes.
+        // Disable DWM's outer border again and suppress native non-client painting.
+        disableNativeWindowBorder(window);
         return 0;
 
     case WM_NCACTIVATE:
-        // The custom toolbar remains visible while focus changes; let DWM keep
-        // the borderless client treatment instead of repainting a default frame.
+        // Keep the browser borderless when focus moves between windows.
+        disableNativeWindowBorder(window);
         return TRUE;
+
+    case WM_DWMCOMPOSITIONCHANGED:
+        disableNativeWindowBorder(window);
+        return 0;
 
     case WM_CREATE:
         if (!state || !state->initialize(window)) {
@@ -7936,7 +7913,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->wasMinimized = wParam == SIZE_MINIMIZED;
             state->resize();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
-                setNativeWindowBorderColor(window, state->darkTheme());
+                disableNativeWindowBorder(window);
                 if (auto* selected = state->active()) {
                     HWND viewWindow = WKViewGetWindow(selected->view.get());
                     if (viewWindow)
@@ -8048,7 +8025,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     }
 
     // Match the DWM border to the selected browser appearance.
-    setNativeWindowBorderColor(window, browserState.darkTheme());
+    disableNativeWindowBorder(window);
 
     ShowWindow(window, showCommand == SW_MAXIMIZE ? SW_MAXIMIZE : SW_SHOWNORMAL);
     UpdateWindow(window);
