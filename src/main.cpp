@@ -3293,15 +3293,15 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        if (selectedView) {
-            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        }
+        // Size every WebKit view before changing sibling z-order. Promoting the selected
+        // view first lets later MoveWindow calls for background views overlap the selected
+        // surface during a tab switch, briefly exposing a black renderer frame.
         resize();
         if (selectedView) {
-            // A hidden Win32 child can retain an invalid region while it is inactive.
-            // Request a paint through WebKit's normal WM_PAINT path after it is raised
-            // and resized so the selected page does not remain visually stale.
+            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            // A child view can retain an invalid region while it sits behind another tab.
+            // Request its normal paint only after layout and final z-order are established.
             RedrawWindow(selectedView, nullptr, nullptr,
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
