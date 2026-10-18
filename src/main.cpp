@@ -1058,7 +1058,9 @@ struct BrowserState {
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
     int hoveredToolbarButton { -1 };
-    int hoveredLeftControl { -1 }; // Sidebar, navigation capsule, website settings
+    int hoveredLeftControl { -1 }; // Sidebar button and website settings control
+    int hoveredNavigationButton { -1 }; // Back and Forward halves of the navigation capsule
+    int hoveredSidebarRow { -1 };
     int hoveredTrafficLight { -1 };
     float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
     bool mouseTrackingForChrome { false };
@@ -1460,11 +1462,21 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int width = scaleForDpi(window, 286);
+        const int width = scaleForDpi(window, 300);
         const int margin = scaleForDpi(window, 12);
         const int height = scaleForDpi(window, 52);
         const int bottomMargin = scaleForDpi(window, 8);
         return { margin, client.bottom - height, width - margin, client.bottom - bottomMargin };
+    }
+
+    RECT sidebarRowRect(int index) const
+    {
+        const int width = scaleForDpi(window, 300);
+        const int rowTop = contentTop() + scaleForDpi(window, 88);
+        const int rowHeight = scaleForDpi(window, 46);
+        const int inset = scaleForDpi(window, 8);
+        return { inset, rowTop + index * rowHeight + scaleForDpi(window, 1),
+            width - inset, rowTop + (index + 1) * rowHeight - scaleForDpi(window, 1) };
     }
 
     RECT navigationPillRect() const
@@ -1593,7 +1605,7 @@ struct BrowserState {
         }
 
         int nextLeftControl = -1;
-        for (int i = 0; i < 3; ++i) {
+        for (int i : { 0, 2 }) {
             const RECT control = leftToolbarControlRect(i);
             if (control.right > control.left && control.bottom > control.top && PtInRect(&control, point)) {
                 nextLeftControl = i;
@@ -1612,6 +1624,45 @@ struct BrowserState {
                 const RECT rect = leftToolbarControlRect(nextLeftControl);
                 if (rect.right > rect.left && rect.bottom > rect.top)
                     InvalidateRect(window, &rect, FALSE);
+            }
+        }
+
+        int nextNavigationButton = -1;
+        const RECT navigationRect = navigationPillRect();
+        if (point.y >= toolbarTop && point.y < toolbarBottom && PtInRect(&navigationRect, point))
+            nextNavigationButton = point.x < navigationRect.left + (navigationRect.right - navigationRect.left) / 2 ? 0 : 1;
+        if (nextNavigationButton != hoveredNavigationButton) {
+            hoveredNavigationButton = nextNavigationButton;
+            InvalidateRect(window, &navigationRect, FALSE);
+        }
+
+        int nextSidebarRow = -1;
+        if (sidebarOpen) {
+            const int sidebarWidth = scaleForDpi(window, 300);
+            const int rowTop = contentTop() + scaleForDpi(window, 88);
+            const int rowHeight = scaleForDpi(window, 46);
+            const RECT settings = sidebarSettingsRect();
+            const int listBottom = settings.top - scaleForDpi(window, 8);
+            if (point.x >= 0 && point.x < sidebarWidth && point.y >= rowTop && point.y < listBottom) {
+                const int row = (point.y - rowTop) / std::max(1, rowHeight);
+                const size_t count = sidebarSection == 0 ? bookmarks.size()
+                    : sidebarSection == 1 ? readingList.size() : visits.size();
+                const size_t visible = std::min<size_t>(10,
+                    listBottom > rowTop ? static_cast<size_t>((listBottom - rowTop) / rowHeight) : 0);
+                if (row >= 0 && static_cast<size_t>(row) < count && static_cast<size_t>(row) < visible)
+                    nextSidebarRow = row;
+            }
+        }
+        if (nextSidebarRow != hoveredSidebarRow) {
+            const int previous = hoveredSidebarRow;
+            hoveredSidebarRow = nextSidebarRow;
+            if (previous >= 0) {
+                const RECT rect = sidebarRowRect(previous);
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (nextSidebarRow >= 0) {
+                const RECT rect = sidebarRowRect(nextSidebarRow);
+                InvalidateRect(window, &rect, FALSE);
             }
         }
 
@@ -1699,7 +1750,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarOpen ? scaleForDpi(window, 286) : 0;
+        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
         return { left, contentTop(), client.right, client.bottom };
     }
 
@@ -1854,13 +1905,13 @@ struct BrowserState {
         const int dpi = windowDpi(window);
         HFONT headingFont = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT bodyFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
         SetBkMode(dc, TRANSPARENT);
 
@@ -2427,7 +2478,7 @@ struct BrowserState {
         uiFont = CreateFontW(
             -MulDiv(12, windowDpi(window), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text"
         );
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
@@ -2608,7 +2659,7 @@ struct BrowserState {
         tab->internalDarkTheme = darkTheme();
         const bool dark = darkTheme();
         std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Extensions</title><style>)HTML";
-        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
+        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
         html += R"HTML(</style></head><body><main style="max-width:900px;margin:auto;padding:48px 28px"><h1>Extensions</h1><p class="muted">Aurora supports local JavaScript user scripts. Put trusted .js files in the Extensions folder, then reload a page. Scripts run on regular HTTP/HTTPS pages and are disabled in Private Browsing.</p><p>)HTML";
         html += "Installed scripts: " + std::to_string(extensionScripts.size());
         html += "</p>";
@@ -2775,7 +2826,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
 body{min-height:100vh;background:#10243d;color:#f7f9ff;overflow-x:hidden;position:relative}
@@ -3323,14 +3374,14 @@ search.addEventListener('keydown',e=>{
 )HTML";
         html += dark ? R"CSS(
 :root{color-scheme:dark}
-body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .wrap{max-width:980px;margin:auto;padding:54px 32px}
 .item{padding:16px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
 .name{font-size:15px}.url{font-size:12px;color:#a1a1a6;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{padding:22px;color:#a1a1a6}
 )CSS" : R"CSS(
 :root{color-scheme:light}
-body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .wrap{max-width:980px;margin:auto;padding:54px 32px}
 .item{padding:16px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
 .name{font-size:15px}.url{font-size:12px;color:#70777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3406,7 +3457,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             + ";--hover:" + hover + ";--blue:" + blue + ";--danger:" + danger + "}"
             + "*{box-sizing:border-box}"
             "html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',Arial,sans-serif;"
             "-webkit-font-smoothing:antialiased}"
             ".wrap{width:min(960px,calc(100% - 48px));margin:0 auto;padding:56px 0 72px}"
             ".page-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 24px}"
@@ -3695,13 +3746,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 )HTML";
         html += dark ? R"CSS(
 :root{color-scheme:dark}
-body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .item{padding:15px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:8px 0}
 .name{font-size:15px}.meta{font-size:12px;color:#a1a1a6;margin-top:5px}
 .item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#a1a1a6}
 )CSS" : R"CSS(
 :root{color-scheme:light}
-body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .item{padding:15px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:8px 0}
 .name{font-size:15px}.meta{font-size:12px;color:#73777d;margin-top:5px}
 .item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#777}
@@ -4048,7 +4099,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         );
 
         int contentTop = this->contentTop();
-        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 286) : 0);
+        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
@@ -4578,7 +4629,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         const bool dark = chromeDarkTheme();
-        int width = scaleForDpi(window, 286);
+        int width = scaleForDpi(window, 300);
         int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
@@ -4596,15 +4647,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(divider);
 
         int dpi = windowDpi(window);
-        HFONT font = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT font = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT secondaryFont = CreateFontW(-MulDiv(9, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT headingFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
         SetBkMode(dc, TRANSPARENT);
 
@@ -4621,21 +4672,28 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
             width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
-        int part = (selector.right - selector.left) / 3;
+        drawRoundedControl(dc, selector,
+            dark ? RGB(43, 43, 46) : RGB(236, 238, 241),
+            dark ? RGB(57, 57, 60) : RGB(224, 226, 230),
+            static_cast<float>(MulDiv(8, dpi, 96)));
+        const int part = (selector.right - selector.left) / 3;
         for (int i = 0; i < 3; ++i) {
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (i == sidebarSection) {
-                HBRUSH selected = CreateSolidBrush(dark ? RGB(73, 73, 77) : RGB(229, 232, 235));
-                FillRect(dc, &r, selected);
-                DeleteObject(selected);
+                RECT selectedRect { r.left + scaleForDpi(window, 2), r.top + scaleForDpi(window, 2),
+                    r.right - scaleForDpi(window, 2), r.bottom - scaleForDpi(window, 2) };
+                drawRoundedControl(dc, selectedRect,
+                    dark ? RGB(76, 76, 80) : RGB(255, 255, 255),
+                    dark ? RGB(88, 88, 92) : RGB(220, 223, 228),
+                    static_cast<float>(MulDiv(6, dpi, 96)));
             }
-            SetTextColor(dc, i == sidebarSection ? (dark ? RGB(245, 245, 247) : RGB(35, 39, 42)) : (dark ? RGB(160, 160, 165) : RGB(115, 120, 124)));
+            SetTextColor(dc, i == sidebarSection ? (dark ? RGB(248, 248, 250) : RGB(32, 34, 38)) : (dark ? RGB(166, 166, 171) : RGB(103, 108, 115)));
             const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
             DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
         int rowTop = top + scaleForDpi(window, 88);
-        int rowHeight = scaleForDpi(window, 42);
+        int rowHeight = scaleForDpi(window, 46);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
@@ -4653,7 +4711,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (sidebarSection == 0) {
                 for (size_t i = 0; i < std::min(visibleRows, bookmarks.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
+                    if (static_cast<int>(i) == hoveredSidebarRow) {
+                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
+                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
+                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                            static_cast<float>(MulDiv(7, dpi, 96)));
+                    }
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
                     DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
                     SelectObject(dc, secondaryFont);
@@ -4665,7 +4729,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             } else if (sidebarSection == 1) {
                 for (size_t i = 0; i < std::min(visibleRows, readingList.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
+                    if (static_cast<int>(i) == hoveredSidebarRow) {
+                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
+                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
+                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                            static_cast<float>(MulDiv(7, dpi, 96)));
+                    }
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
                     DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
                     SelectObject(dc, secondaryFont);
@@ -4679,7 +4749,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
                 for (size_t i = 0; i < std::min(visibleRows, sorted.size()); ++i) {
                     int y = rowTop + static_cast<int>(i) * rowHeight;
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 2), width - scaleForDpi(window, 16), y + scaleForDpi(window, 20) };
+                    if (static_cast<int>(i) == hoveredSidebarRow) {
+                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
+                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
+                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                            static_cast<float>(MulDiv(7, dpi, 96)));
+                    }
+                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
                     DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
                     RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
                     SelectObject(dc, secondaryFont);
@@ -4722,7 +4798,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!sidebarOpen)
             return false;
 
-        int width = scaleForDpi(window, 286);
+        int width = scaleForDpi(window, 300);
         int top = contentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
@@ -4755,7 +4831,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         int rowTop = top + scaleForDpi(window, 88);
-        int rowHeight = scaleForDpi(window, 42);
+        int rowHeight = scaleForDpi(window, 46);
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
             ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
@@ -4866,16 +4942,35 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(dropdownPen);
 
         RECT navigationRect = navigationPillRect();
-        const bool navigationHovered = hoveredLeftControl == 1;
         drawRoundedControl(dc, navigationRect,
-            navigationHovered ? (dark ? RGB(74, 74, 79) : RGB(239, 241, 244))
-                : (dark ? RGB(57, 57, 61) : RGB(249, 249, 250)),
-            navigationHovered ? (dark ? RGB(100, 100, 105) : RGB(206, 211, 217))
-                : (dark ? RGB(83, 83, 87) : RGB(218, 220, 223)),
+            dark ? RGB(57, 57, 61) : RGB(249, 249, 250),
+            dark ? RGB(83, 83, 87) : RGB(218, 220, 223),
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
+
+        const int navigationMiddle = navigationRect.left + (navigationRect.right - navigationRect.left) / 2;
+        if (hoveredNavigationButton >= 0) {
+            RECT hoverRect = hoveredNavigationButton == 0
+                ? RECT { navigationRect.left + scaleForDpi(window, 2), navigationRect.top + scaleForDpi(window, 2),
+                    navigationMiddle - scaleForDpi(window, 1), navigationRect.bottom - scaleForDpi(window, 2) }
+                : RECT { navigationMiddle + scaleForDpi(window, 1), navigationRect.top + scaleForDpi(window, 2),
+                    navigationRect.right - scaleForDpi(window, 2), navigationRect.bottom - scaleForDpi(window, 2) };
+            const COLORREF hoverFill = dark ? RGB(77, 77, 82) : RGB(233, 236, 240);
+            const COLORREF hoverBorder = dark ? RGB(88, 88, 93) : RGB(222, 225, 229);
+            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
+                static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
+        }
+
+        HPEN navigationDivider = CreatePen(PS_SOLID, 1, dark ? RGB(83, 83, 87) : RGB(219, 221, 225));
+        HGDIOBJ oldNavigationDivider = SelectObject(dc, navigationDivider);
+        MoveToEx(dc, navigationMiddle, navigationRect.top + scaleForDpi(window, 8), nullptr);
+        LineTo(dc, navigationMiddle, navigationRect.bottom - scaleForDpi(window, 8));
+        SelectObject(dc, oldNavigationDivider);
+        DeleteObject(navigationDivider);
+
         RECT backRect { navigationRect.left + gap, navigationRect.top,
-            navigationRect.left + (navigationRect.right - navigationRect.left) / 2, navigationRect.bottom };
-        RECT forwardRect { backRect.right, navigationRect.top, navigationRect.right - gap, navigationRect.bottom };
+            navigationMiddle, navigationRect.bottom };
+        RECT forwardRect { navigationMiddle, navigationRect.top,
+            navigationRect.right - gap, navigationRect.bottom };
         drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
         drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
 
@@ -5276,10 +5371,10 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         const int dpi = windowDpi(window);
         HFONT titleFont = CreateFontW(-MulDiv(20, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT subtitleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, titleFont));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, textColor);
@@ -5332,7 +5427,7 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         HFONT textFont = CreateFontW(-MulDiv(12, windowDpi(window), 96), 0, 0, 0,
             selected ? FW_SEMIBOLD : FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT oldText = static_cast<HFONT>(SelectObject(item->hDC, textFont));
         RECT labelRect = item->rcItem;
         labelRect.top += 32;
@@ -5687,10 +5782,10 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM w
         const int dpi = browser ? windowDpi(browser->window) : 96;
         HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
         const int rowHeight = MulDiv(50, dpi, 96);
         if (browser) {
             for (size_t i = 0; i < browser->addressSuggestionEntries.size(); ++i) {
@@ -6593,7 +6688,7 @@ void drawDownloadsFileIcon(HDC dc, const RECT& rect, const std::wstring& filenam
 
     HFONT extensionFont = CreateFontW(-std::max(7, MulDiv(7, dpi, 96)), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
     HGDIOBJ oldFont = SelectObject(dc, extensionFont);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, dark ? RGB(79, 95, 120) : RGB(86, 103, 127));
@@ -6683,16 +6778,16 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
     HFONT titleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
     HFONT nameFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
     HFONT statusFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
     HFONT clearFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
 
     RECT headerRect { 0, headerTop, width, headerBottom };
     SelectObject(dc, titleFont);
@@ -7430,7 +7525,7 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
             const COLORREF hoverFill = dark ? RGB(60, 60, 65) : RGB(239, 242, 246);
             HFONT font = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
                 FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
             HGDIOBJ oldFont = SelectObject(dc, font);
             SetBkMode(dc, TRANSPARENT);
             const wchar_t* labels[] = { L"Copy Link", L"Email Link", L"Add Bookmark" };
@@ -7769,9 +7864,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->mouseTrackingForChrome = false;
             const int previousHovered = state->hoveredToolbarButton;
             const int previousLeft = state->hoveredLeftControl;
+            const int previousNavigation = state->hoveredNavigationButton;
+            const int previousSidebarRow = state->hoveredSidebarRow;
             const int previousLight = state->hoveredTrafficLight;
             state->hoveredToolbarButton = -1;
             state->hoveredLeftControl = -1;
+            state->hoveredNavigationButton = -1;
+            state->hoveredSidebarRow = -1;
             state->hoveredTrafficLight = -1;
             for (float& opacity : state->toolbarHoverOpacity)
                 opacity = 0.0f;
@@ -7784,6 +7883,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 const RECT rect = state->leftToolbarControlRect(previousLeft);
                 if (rect.right > rect.left && rect.bottom > rect.top)
                     InvalidateRect(window, &rect, FALSE);
+            }
+            if (previousNavigation >= 0) {
+                const RECT rect = state->navigationPillRect();
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (previousSidebarRow >= 0) {
+                const RECT rect = state->sidebarRowRect(previousSidebarRow);
+                InvalidateRect(window, &rect, FALSE);
             }
             if (previousLight >= 0) {
                 const RECT rect = state->trafficLightHitRect(previousLight);
