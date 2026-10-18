@@ -3523,9 +3523,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             ".bar{height:4px;width:100%;min-width:80px;background:" + std::string(dark ? "#4a4a4e" : "#e3e5e9")
             + ";border-radius:99px;overflow:hidden;margin-top:8px}"
             + ".bar[hidden]{display:none}.fill{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .16s linear}"
-            ".bar.indeterminate .fill{width:28%!important;-webkit-animation:download-sweep 1.15s ease-in-out infinite alternate;animation:download-sweep 1.15s ease-in-out infinite alternate}"
-            "@-webkit-keyframes download-sweep{from{-webkit-transform:translateX(0);transform:translateX(0)}to{-webkit-transform:translateX(255%);transform:translateX(255%)}}"
-            "@keyframes download-sweep{from{transform:translateX(0)}to{transform:translateX(255%)}}"
+            ".bar.indeterminate .fill{position:relative;left:0;width:28%!important;-webkit-animation:download-sweep 1.15s ease-in-out infinite alternate;animation:download-sweep 1.15s ease-in-out infinite alternate}"
+            "@-webkit-keyframes download-sweep{from{left:0}to{left:72%}}"
+            "@keyframes download-sweep{from{left:0}to{left:72%}}"
             ".actions{display:flex;align-items:center;justify-content:flex-end;gap:3px;padding-left:8px}"
             ".action{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:5px 8px;"
             "border:0;border-radius:7px;background:transparent;color:var(--blue);font:inherit;font-size:12px;"
@@ -6378,7 +6378,12 @@ WKStringRef downloadDecideDestinationWithResponse(WKDownloadRef download, WKURLR
     }
 
     if (browser) {
-        browser->downloads.push_back({ filenameCandidate, path, 0, 0, false, false, download });
+        // The download progress callback may not repeat the expected length
+        // on every update. Capture it from the initial HTTP response first.
+        const long long responseLength = response
+            ? WKURLResponseGetExpectedContentLength(response) : 0;
+        browser->downloads.push_back({ filenameCandidate, path, 0,
+            responseLength > 0 ? responseLength : 0, false, false, download });
         if (browser->downloads.size() > 64)
             browser->downloads.erase(browser->downloads.begin());
         browser->refreshDownloadsPresentation(true);
@@ -6401,7 +6406,10 @@ void downloadDidWriteData(WKDownloadRef download, long long bytesWritten, long l
                 it->bytesWritten = reportedTotal;
             else if (reportedTotal == 0 && reportedDelta > 0)
                 it->bytesWritten += reportedDelta;
-            it->totalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0;
+            // Some WebKit ports report an unknown length (-1/0) on later callbacks.
+            // Preserve a valid response length instead of reverting to indeterminate.
+            if (totalBytesExpectedToWrite > 0)
+                it->totalBytes = totalBytesExpectedToWrite;
             browser->refreshDownloadsPresentation();
             return;
         }
