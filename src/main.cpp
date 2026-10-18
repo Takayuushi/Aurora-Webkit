@@ -633,6 +633,42 @@ void drawRoundedControl(HDC dc, const RECT& rect, COLORREF fillColor,
     graphics.DrawPath(&border, &path);
 }
 
+int CALLBACK findFontFamilyCallback(const LOGFONTW* font, const TEXTMETRICW*, DWORD, LPARAM context)
+{
+    auto* found = reinterpret_cast<bool*>(context);
+    if (found && font && font->lfFaceName[0]) {
+        *found = true;
+        return 0;
+    }
+    return 1;
+}
+
+bool isFontFamilyInstalled(const wchar_t* family)
+{
+    if (!family || !*family)
+        return false;
+    HDC dc = GetDC(nullptr);
+    if (!dc)
+        return false;
+
+    LOGFONTW requested { };
+    requested.lfCharSet = DEFAULT_CHARSET;
+    wcsncpy_s(requested.lfFaceName, LF_FACESIZE, family, _TRUNCATE);
+    bool found = false;
+    EnumFontFamiliesExW(dc, &requested, findFontFamilyCallback,
+        reinterpret_cast<LPARAM>(&found), 0);
+    ReleaseDC(nullptr, dc);
+    return found;
+}
+
+const wchar_t* uiFontFamily()
+{
+    // Inter is a close, open-source SF-style alternative when available locally.
+    // Prefer the Windows variable UI font otherwise; never assume Inter is installed.
+    static const bool interAvailable = isFontFamilyInstalled(L"Inter");
+    return interAvailable ? L"Inter" : L"Segoe UI Variable Text";
+}
+
 COLORREF blendColor(COLORREF from, COLORREF to, float amount)
 {
     amount = std::clamp(amount, 0.0f, 1.0f);
@@ -1061,6 +1097,7 @@ struct BrowserState {
     int hoveredLeftControl { -1 }; // Sidebar button and website settings control
     int hoveredNavigationButton { -1 }; // Back and Forward halves of the navigation capsule
     int hoveredSidebarRow { -1 };
+    bool hoveredSidebarSettings { false };
     int hoveredTrafficLight { -1 };
     float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
     bool mouseTrackingForChrome { false };
@@ -1666,6 +1703,13 @@ struct BrowserState {
             }
         }
 
+        const RECT sidebarSettings = sidebarSettingsRect();
+        const bool nextSidebarSettings = sidebarOpen && PtInRect(&sidebarSettings, point);
+        if (nextSidebarSettings != hoveredSidebarSettings) {
+            hoveredSidebarSettings = nextSidebarSettings;
+            InvalidateRect(window, &sidebarSettings, FALSE);
+        }
+
         int nextTrafficLight = -1;
         for (int i = 0; i < 3; ++i) {
             RECT painted = trafficLightHitRect(i);
@@ -1905,13 +1949,13 @@ struct BrowserState {
         const int dpi = windowDpi(window);
         HFONT headingFont = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT bodyFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, headingFont));
         SetBkMode(dc, TRANSPARENT);
 
@@ -2478,7 +2522,7 @@ struct BrowserState {
         uiFont = CreateFontW(
             -MulDiv(12, windowDpi(window), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text"
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily()
         );
         addressBarBrush = CreateSolidBrush(RGB(255, 255, 255));
 
@@ -2659,7 +2703,7 @@ struct BrowserState {
         tab->internalDarkTheme = darkTheme();
         const bool dark = darkTheme();
         std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Extensions</title><style>)HTML";
-        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
+        html += dark ? R"CSS(:root{color-scheme:dark}body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#2c2c2e;border:1px solid #48484a;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#a1a1a6})CSS" : R"CSS(:root{color-scheme:light}body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}.item{background:#fff;border:1px solid #e1e4e6;padding:16px;border-radius:12px;margin:10px 0}.muted{color:#73777d})CSS";
         html += R"HTML(</style></head><body><main style="max-width:900px;margin:auto;padding:48px 28px"><h1>Extensions</h1><p class="muted">Aurora supports local JavaScript user scripts. Put trusted .js files in the Extensions folder, then reload a page. Scripts run on regular HTTP/HTTPS pages and are disabled in Private Browsing.</p><p>)HTML";
         html += "Installed scripts: " + std::to_string(extensionScripts.size());
         html += "</p>";
@@ -2826,7 +2870,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
 body{min-height:100vh;background:#10243d;color:#f7f9ff;overflow-x:hidden;position:relative}
@@ -3374,14 +3418,14 @@ search.addEventListener('keydown',e=>{
 )HTML";
         html += dark ? R"CSS(
 :root{color-scheme:dark}
-body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .wrap{max-width:980px;margin:auto;padding:54px 32px}
 .item{padding:16px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
 .name{font-size:15px}.url{font-size:12px;color:#a1a1a6;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{padding:22px;color:#a1a1a6}
 )CSS" : R"CSS(
 :root{color-scheme:light}
-body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .wrap{max-width:980px;margin:auto;padding:54px 32px}
 .item{padding:16px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:9px 0;display:block;color:inherit;text-decoration:none}
 .name{font-size:15px}.url{font-size:12px;color:#70777d;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3457,7 +3501,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             + ";--hover:" + hover + ";--blue:" + blue + ";--danger:" + danger + "}"
             + "*{box-sizing:border-box}"
             "html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',Arial,sans-serif;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI Variable Text','Segoe UI',Arial,sans-serif;"
             "-webkit-font-smoothing:antialiased}"
             ".wrap{width:min(960px,calc(100% - 48px));margin:0 auto;padding:56px 0 72px}"
             ".page-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 24px}"
@@ -3746,13 +3790,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 )HTML";
         html += dark ? R"CSS(
 :root{color-scheme:dark}
-body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+body{margin:0;background:#1c1c1e;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .item{padding:15px 18px;background:#2c2c2e;border:1px solid #48484a;border-radius:12px;margin:8px 0}
 .name{font-size:15px}.meta{font-size:12px;color:#a1a1a6;margin-top:5px}
 .item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#a1a1a6}
 )CSS" : R"CSS(
 :root{color-scheme:light}
-body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 .item{padding:15px 18px;background:#fff;border:1px solid #e1e4e6;border-radius:12px;margin:8px 0}
 .name{font-size:15px}.meta{font-size:12px;color:#73777d;margin-top:5px}
 .item a{color:inherit;text-decoration:none}.empty{padding:22px;color:#777}
@@ -4649,13 +4693,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int dpi = windowDpi(window);
         HFONT font = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT secondaryFont = CreateFontW(-MulDiv(9, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
         SetBkMode(dc, TRANSPARENT);
 
@@ -4771,6 +4815,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HBRUSH footerBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
         FillRect(dc, &footer, footerBrush);
         DeleteObject(footerBrush);
+        if (hoveredSidebarSettings) {
+            RECT hoverRect { settingsRect.left, settingsRect.top + scaleForDpi(window, 2),
+                settingsRect.right, settingsRect.bottom - scaleForDpi(window, 2) };
+            const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
+            drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                static_cast<float>(MulDiv(7, dpi, 96)));
+        }
 
         HPEN footerDivider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldFooterPen = static_cast<HPEN>(SelectObject(dc, footerDivider));
@@ -5371,10 +5422,10 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         const int dpi = windowDpi(window);
         HFONT titleFont = CreateFontW(-MulDiv(20, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT subtitleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, titleFont));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, textColor);
@@ -5427,7 +5478,7 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         HFONT textFont = CreateFontW(-MulDiv(12, windowDpi(window), 96), 0, 0, 0,
             selected ? FW_SEMIBOLD : FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT oldText = static_cast<HFONT>(SelectObject(item->hDC, textFont));
         RECT labelRect = item->rcItem;
         labelRect.top += 32;
@@ -5782,10 +5833,10 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM w
         const int dpi = browser ? windowDpi(browser->window) : 96;
         HFONT titleFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_MEDIUM,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT urlFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         const int rowHeight = MulDiv(50, dpi, 96);
         if (browser) {
             for (size_t i = 0; i < browser->addressSuggestionEntries.size(); ++i) {
@@ -6688,7 +6739,7 @@ void drawDownloadsFileIcon(HDC dc, const RECT& rect, const std::wstring& filenam
 
     HFONT extensionFont = CreateFontW(-std::max(7, MulDiv(7, dpi, 96)), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
     HGDIOBJ oldFont = SelectObject(dc, extensionFont);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, dark ? RGB(79, 95, 120) : RGB(86, 103, 127));
@@ -6778,16 +6829,16 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
     HGDIOBJ originalFont = GetCurrentObject(dc, OBJ_FONT);
     HFONT titleFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
     HFONT nameFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
     HFONT statusFont = CreateFontW(-MulDiv(10, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
     HFONT clearFont = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
 
     RECT headerRect { 0, headerTop, width, headerBottom };
     SelectObject(dc, titleFont);
@@ -7525,7 +7576,7 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
             const COLORREF hoverFill = dark ? RGB(60, 60, 65) : RGB(239, 242, 246);
             HFONT font = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
                 FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
             HGDIOBJ oldFont = SelectObject(dc, font);
             SetBkMode(dc, TRANSPARENT);
             const wchar_t* labels[] = { L"Copy Link", L"Email Link", L"Add Bookmark" };
@@ -7866,11 +7917,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             const int previousLeft = state->hoveredLeftControl;
             const int previousNavigation = state->hoveredNavigationButton;
             const int previousSidebarRow = state->hoveredSidebarRow;
+            const bool previousSidebarSettings = state->hoveredSidebarSettings;
             const int previousLight = state->hoveredTrafficLight;
             state->hoveredToolbarButton = -1;
             state->hoveredLeftControl = -1;
             state->hoveredNavigationButton = -1;
             state->hoveredSidebarRow = -1;
+            state->hoveredSidebarSettings = false;
             state->hoveredTrafficLight = -1;
             for (float& opacity : state->toolbarHoverOpacity)
                 opacity = 0.0f;
@@ -7890,6 +7943,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (previousSidebarRow >= 0) {
                 const RECT rect = state->sidebarRowRect(previousSidebarRow);
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (previousSidebarSettings) {
+                const RECT rect = state->sidebarSettingsRect();
                 InvalidateRect(window, &rect, FALSE);
             }
             if (previousLight >= 0) {
