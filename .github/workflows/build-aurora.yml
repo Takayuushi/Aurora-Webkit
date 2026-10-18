@@ -355,6 +355,16 @@ jobs:
           }
           Copy-Item -LiteralPath $webkitResources -Destination (Join-Path $pkg "WebKit.resources") -Recurse -Force
           if ($hasAdditionalResources) { Copy-Item (Join-Path $resources "*") $resOut -Recurse -Force }
+          # Always stage Aurora-owned branding images beside the packaged executable.
+          $projectResources = Join-Path $env:GITHUB_WORKSPACE "Resources"
+          foreach ($brandAsset in @("aurora-logo.png", "aurora-about-cover.jpg")) {
+            $sourceAsset = Join-Path $projectResources $brandAsset
+            if (-not (Test-Path -LiteralPath $sourceAsset -PathType Leaf)) { throw "Required Aurora branding asset is missing: $sourceAsset" }
+            Copy-Item -LiteralPath $sourceAsset -Destination (Join-Path $resOut $brandAsset) -Force
+          }
+          foreach ($brandAsset in @("aurora-logo.png", "aurora-about-cover.jpg")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $resOut $brandAsset) -PathType Leaf)) { throw "Branding asset was not staged: $brandAsset" }
+          }
 
           $libDir = Join-Path $release "lib"
           if (Test-Path $libDir) { Copy-Item (Join-Path $libDir "*") $libOut -Recurse -Force }

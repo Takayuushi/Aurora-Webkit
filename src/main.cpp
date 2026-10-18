@@ -49,6 +49,7 @@
 #include <cwctype>
 #include <cstddef>
 #include <fstream>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <cstring>
@@ -74,6 +75,65 @@ namespace {
 
 constexpr wchar_t windowClassName[] = L"AuroraWindow";
 constexpr wchar_t windowTitle[] = L"Aurora";
+
+std::wstring auroraExecutableDirectory()
+{
+    wchar_t executablePath[32768] { };
+    const DWORD length = GetModuleFileNameW(nullptr, executablePath, static_cast<DWORD>(std::size(executablePath)));
+    if (!length || length >= std::size(executablePath)) return L".";
+    std::wstring path(executablePath, length);
+    const size_t separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) return L".";
+    path.resize(separator);
+    return path;
+}
+std::wstring auroraResourcePath(const wchar_t* filename)
+{
+    return auroraExecutableDirectory() + L"\\Resources\\" + (filename ? filename : L"");
+}
+std::string encodeBase64(const std::vector<unsigned char>& bytes)
+{
+    static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out; out.reserve(((bytes.size()+2)/3)*4);
+    for (size_t i=0;i<bytes.size();i+=3) {
+        const unsigned int a=bytes[i], b=i+1<bytes.size()?bytes[i+1]:0, c=i+2<bytes.size()?bytes[i+2]:0;
+        const unsigned int v=(a<<16)|(b<<8)|c;
+        out.push_back(alphabet[(v>>18)&63]); out.push_back(alphabet[(v>>12)&63]);
+        out.push_back(i+1<bytes.size()?alphabet[(v>>6)&63]:'=');
+        out.push_back(i+2<bytes.size()?alphabet[v&63]:'=');
+    }
+    return out;
+}
+std::string imageDataUrl(const wchar_t* filename, const char* mime)
+{
+    if (!filename || !mime) return {};
+    std::ifstream stream(std::filesystem::path(auroraResourcePath(filename)), std::ios::binary);
+    if (!stream) return {};
+    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    if (bytes.empty()) return {};
+    return std::string("data:")+mime+";base64,"+encodeBase64(bytes);
+}
+std::string auroraLogoDataUrl()
+{
+    static const std::string value=imageDataUrl(L"aurora-logo.png","image/png");
+    return value;
+}
+std::string auroraAboutCoverDataUrl()
+{
+    static const std::string value=imageDataUrl(L"aurora-about-cover.jpg","image/jpeg");
+    return value;
+}
+HICON createAuroraIcon()
+{
+    const auto path=auroraResourcePath(L"aurora-logo.png");
+    Gdiplus::Bitmap bitmap(path.c_str());
+    if (bitmap.GetLastStatus()!=Gdiplus::Ok) return nullptr;
+    HICON icon=nullptr;
+    if (bitmap.GetHICON(&icon)!=Gdiplus::Ok) return nullptr;
+    return icon;
+}
+HICON gAuroraAppIcon { nullptr };
+
 
 constexpr UINT kCommandBack = 1001;
 constexpr UINT kCommandForward = 1002;
@@ -2853,6 +2913,38 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
     }
 
 
+
+    void loadAboutPage(TabState& tab)
+    {
+        tab.internalPage=L"about"; tab.hasInternalThemeSnapshot=true; tab.internalDarkTheme=darkTheme();
+        tab.title=L"About Aurora"; tab.activeUrl=L"about:aurora"; tab.lastRecordedUrl.clear();
+        const bool dark=darkTheme();
+        std::string html=R"HTML(
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>About Aurora</title><style>
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+body{background:var(--bg);color:var(--text);padding:28px 20px 40px}main{width:min(900px,100%);margin:0 auto}
+.cover{display:block;width:100%;height:auto;max-height:520px;object-fit:contain;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.12)}
+.details{margin:20px auto 0;max-width:760px;padding:20px 24px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
+.details h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.35px;margin:0 0 8px}.details p{font-size:14px;line-height:1.65;color:var(--muted);margin:0}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:18px}.pill{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:6px 10px;border-radius:999px}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}footer{font-size:12px;color:var(--muted);text-align:center;margin:18px 0 0}
+@media(max-width:600px){body{padding:16px 12px 28px}.details{padding:16px}.cover{border-radius:12px}}
+</style></head><body><main><img class="cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
+<section class="details"><h1>About Aurora</h1><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p>
+<div class="meta"><span class="pill">Windows</span><span class="pill">WebKit engine</span><span class="pill">Experimental project</span></div></section>
+<footer>Version 1.0.0 · <a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub</a></footer></main></body></html>
+)HTML";
+        const std::string palette=dark
+            ? ":root{color-scheme:dark;--bg:#1c1c1e;--panel:#2c2c2e;--line:#48484a;--text:#f5f5f7;--muted:#a1a1a6;--blue:#0a84ff}"
+            : ":root{color-scheme:light;--bg:#f5f6f8;--panel:#fff;--line:#dfe2e7;--text:#202124;--muted:#656b73;--blue:#0675e8}";
+        const size_t style=html.find("<style>");
+        if(style!=std::string::npos) html.insert(style+sizeof("<style>")-1,palette);
+        const std::string token="__AURORA_ABOUT_COVER__"; const size_t at=html.find(token);
+        if(at!=std::string::npos) { const auto image=auroraAboutCoverDataUrl(); html.replace(at,token.size(),image); }
+        loadLocalHTML(tab,html);
+    }
+
     void loadStartPage(TabState& tab)
     {
         tab.internalPage = L"start";
@@ -2884,8 +2976,8 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 .wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
 .page{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px}
 .branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2)}
-.brand-mark{width:64px;height:64px;margin:0 auto 10px;border:1px solid rgba(255,255,255,.34);border-radius:21px;background:rgba(255,255,255,.13);backdrop-filter:blur(18px);box-shadow:0 14px 38px rgba(0,0,0,.18);display:grid;place-items:center}
-.brand-mark svg{width:45px;height:45px;display:block}
+.brand-mark{width:80px;height:80px;margin:0 auto 10px;border:0;border-radius:0;background:transparent;box-shadow:none;display:grid;place-items:center}
+.brand-mark img{width:80px;height:80px;display:block;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(0,0,0,.22))}
 .branding h1{font-size:35px;font-weight:600;letter-spacing:-1.2px;line-height:1.1;margin:0}
 .branding p{font-size:10px;font-weight:500;letter-spacing:4px;margin:8px 0 0;color:rgba(248,251,255,.82)}
 .search-wrap{width:min(690px,90vw);position:relative;margin:0 auto 34px}
@@ -2908,7 +3000,7 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 <div class="wallpaper" id="wallpaper" style="__AURORA_BACKGROUND_IMAGE__"></div>
 <div class="page">
 <div class="branding">
-<div class="brand-mark"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="aurora-mark" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#31d5c2"/><stop offset=".52" stop-color="#62d3ff"/><stop offset="1" stop-color="#b8a1ff"/></linearGradient></defs><path d="M9 44C20 42 20 23 32 13c7-6 13-3 14 2 1 7-9 13-14 18-6 5-8 10-8 17" fill="none" stroke="url(#aurora-mark)" stroke-width="6" stroke-linecap="round"/><path d="M22 49c9-3 16-11 22-17 5-5 10-7 12-4 2 4-4 10-9 14-6 5-13 8-22 9" fill="none" stroke="url(#aurora-mark)" stroke-width="4" stroke-linecap="round"/><path d="M30 51c7-2 12-5 17-9" fill="none" stroke="#e2fcff" stroke-opacity=".85" stroke-width="2" stroke-linecap="round"/></svg></div>
+<div class="brand-mark"><img src="__AURORA_LOGO_IMAGE__" alt="Aurora logo"></div></svg></div>
 <h1>Aurora</h1><p>BROWSE BEYOND</p>
 </div>
 <div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>
@@ -3043,6 +3135,12 @@ search.addEventListener('keydown',e=>{
 </body></html>
 )HTML";
 
+        const std::string logoPlaceholder = "__AURORA_LOGO_IMAGE__";
+        const size_t logoAt = html.find(logoPlaceholder);
+        if (logoAt != std::string::npos) {
+            const std::string logoData = auroraLogoDataUrl();
+            html.replace(logoAt, logoPlaceholder.size(), logoData);
+        }
         const std::string backgroundDataUrl = startPageBackgroundDataUrl();
         const std::string backgroundPlaceholder = "__AURORA_BACKGROUND_IMAGE__";
         const size_t backgroundPlaceholderPosition = html.find(backgroundPlaceholder);
@@ -4404,12 +4502,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openBrowserSettings(this);
             break;
         case kMenuAbout:
-            MessageBoxW(
-                window,
-                L"Aurora\n\nA WebKit browser for Windows.\n\nSafari-inspired interface with original Aurora branding.",
-                L"About Aurora",
-                MB_OK | MB_ICONINFORMATION
-            );
+            if (auto* tab = active())
+                loadAboutPage(*tab);
             break;
         case 5997: {
             std::wstring folder = downloadsDirectory();
@@ -5048,6 +5142,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     tabRect.left + MulDiv(9, dpi, 96) + iconSize, iconTop + iconSize };
                 if (tabs[i]->favicon)
                     DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                else if (gAuroraAppIcon)
+                    DrawIconEx(dc, iconRect.left, iconRect.top, gAuroraAppIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
                 else
                     drawCompass(dc, iconRect);
                 RECT titleText = tabRect;
@@ -8182,6 +8278,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         MessageBoxW(nullptr, L"Could not initialize smooth browser icon rendering.", windowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
+    gAuroraAppIcon = createAuroraIcon();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSEXW windowClass { };
@@ -8189,6 +8286,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     windowClass.lpfnWndProc = windowProcedure;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    windowClass.hIcon = gAuroraAppIcon;
+    windowClass.hIconSm = gAuroraAppIcon;
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = windowClassName;
 
@@ -8221,6 +8320,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         return 1;
     }
 
+    if (gAuroraAppIcon) {
+        SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(gAuroraAppIcon));
+        SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(gAuroraAppIcon));
+    }
     // Match the DWM border to the selected browser appearance.
     disableNativeWindowBorder(window);
 
