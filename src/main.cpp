@@ -2368,6 +2368,10 @@ struct BrowserState {
                 continue;
             std::wstring url = fromUTF8(line.substr(first + 1, second - first - 1));
             std::wstring title = fromUTF8(line.substr(second + 1));
+            // Older saved entries can contain embedded NULs from previously
+            // over-allocated UTF-8 conversions. Keep them from truncating pages.
+            url.erase(std::remove(url.begin(), url.end(), L'\0'), url.end());
+            title.erase(std::remove(title.begin(), title.end(), L'\0'), title.end());
             if (!url.empty())
                 pages.push_back({ url, title.empty() ? url : title, added });
         }
@@ -3294,6 +3298,9 @@ search.addEventListener('keydown',e=>{
     void loadLocalHTML(TabState& tab, const std::string& sourceHtml)
     {
         std::string html = sourceHtml;
+        // HTML strings are passed to WebKit as NUL-terminated UTF-8; remove any
+        // embedded NUL introduced by old persisted browser data before conversion.
+        html.erase(std::remove(html.begin(), html.end(), '\0'), html.end());
         const std::string searchPrefix = searchEngine == L"Bing"
             ? "https://www.bing.com/search?q="
             : (searchEngine == L"DuckDuckGo" ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
@@ -3421,7 +3428,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             ".bar{height:4px;width:100%;min-width:80px;background:" + std::string(dark ? "#4a4a4e" : "#e3e5e9")
             + ";border-radius:99px;overflow:hidden;margin-top:8px}"
             + ".bar[hidden]{display:none}.fill{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .16s linear}"
-            ".bar.indeterminate .fill{width:28%!important;animation:download-sweep 1.15s ease-in-out infinite alternate}"
+            ".bar.indeterminate .fill{width:28%!important;-webkit-animation:download-sweep 1.15s ease-in-out infinite alternate;animation:download-sweep 1.15s ease-in-out infinite alternate}"
+            "@-webkit-keyframes download-sweep{from{-webkit-transform:translateX(0);transform:translateX(0)}to{-webkit-transform:translateX(255%);transform:translateX(255%)}}"
             "@keyframes download-sweep{from{transform:translateX(0)}to{transform:translateX(255%)}}"
             ".actions{display:flex;align-items:center;justify-content:flex-end;gap:3px;padding-left:8px}"
             ".action{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:5px 8px;"
@@ -3459,6 +3467,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 if (item.cancelled) status = "Cancelled";
                 else if (item.failed) status = "Download Failed";
                 else if (finished) status = "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
+                else if (item.bytesWritten > 0 && item.totalBytes > 0)
+                    status = "Downloading - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes);
                 else if (item.bytesWritten > 0) status = "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received";
                 else status = "Starting download";
 
@@ -3612,8 +3622,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
                     : item.finished ? "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten)
-                    : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
-                        : "Starting download");
+                    : (item.bytesWritten > 0 && item.totalBytes > 0
+                        ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes)
+                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
+                            : "Starting download"));
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
                 script += "var f=document.getElementById('download-fill-" + id + "');if(f)f.style.width='" + std::to_string(percent) + "%';";
                 script += "var b=document.getElementById('download-bar-" + id + "');if(b){b.style.display='" + std::string(inProgress ? "block" : "none") + "';b.classList.toggle('indeterminate'," + std::string(inProgress && item.totalBytes <= 0 ? "true" : "false") + ");}";
@@ -6536,7 +6548,7 @@ std::wstring downloadsPopoverStatus(const DownloadEntry& download)
         return fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" of "
             + fromUTF8(formatDownloadBytes(download.totalBytes));
     if (download.bytesWritten > 0)
-        return fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" downloaded";
+        return fromUTF8(formatDownloadBytes(download.bytesWritten)) + L" received";
     return L"Starting…";
 }
 
@@ -6977,6 +6989,19 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
                         ? downloadsPopoverRowRect(state, i)
                         : i == 5 ? downloadsPopoverClearRect(state) : downloadsPopoverFooterRect(state);
                     InvalidateRect(window, &hoverRect, FALSE);
+                }
+            }
+
+            // Unknown-size downloads use a moving segment. Drive its repaint from
+            // the popover timer itself so the segment visibly sweeps side to side.
+            const int progressRows = downloadsPopoverVisibleRows(state);
+            for (int row = 0; row < progressRows; ++row) {
+                const size_t index = browser->downloads.size() - 1 - static_cast<size_t>(row);
+                const auto& download = browser->downloads[index];
+                const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+                if (inProgress && download.totalBytes <= 0) {
+                    const RECT progressRow = downloadsPopoverRowRect(state, row);
+                    InvalidateRect(window, &progressRow, FALSE);
                 }
             }
             return 0;
