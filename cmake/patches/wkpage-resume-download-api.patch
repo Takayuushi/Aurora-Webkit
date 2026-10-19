@@ -1,7 +1,7 @@
 diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/API/C/WKPage.cpp
 --- a/Source/WebKit/UIProcess/API/C/WKPage.cpp
 +++ b/Source/WebKit/UIProcess/API/C/WKPage.cpp
-@@ -240,8 +240,27 @@
+@@ -240,8 +240,31 @@
  void WKPageLoadURLRequest(WKPageRef pageRef, WKURLRequestRef urlRequestRef)
  {
      CRASH_IF_SUSPENDED;
