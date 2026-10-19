@@ -1444,7 +1444,7 @@ struct BrowserState {
             else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
             else if (tab.internalPage == L"settings") loadSettingsPage(tab);
-            else if (tab.internalPage == L"settings") loadSettingsPage(tab);
+            else if (tab.internalPage == L"about") loadAboutPage(tab);
         }
         if (!tabs.empty())
             activeTab = std::min(previousTab, tabs.size() - 1);
@@ -2943,6 +2943,9 @@ a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}foote
         const std::string token="__AURORA_ABOUT_COVER__"; const size_t at=html.find(token);
         if(at!=std::string::npos) { const auto image=auroraAboutCoverDataUrl(); html.replace(at,token.size(),image); }
         loadLocalHTML(tab,html);
+        SetWindowTextW(addressBar, tab.activeUrl.c_str());
+        const std::wstring caption = tab.title + L" — Aurora";
+        SetWindowTextW(window, caption.c_str());
     }
 
     void loadStartPage(TabState& tab)
@@ -2993,6 +2996,11 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 .icon{width:54px;height:54px;flex:0 0 54px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(255,255,255,.08));border:1px solid rgba(255,255,255,.24);box-shadow:0 8px 22px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.13);color:#fff;font-weight:600;font-size:24px}
 .name{font-size:12px;line-height:1.35;font-weight:500;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
 .host{display:none}
+.reading-list{width:min(850px,94vw);display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}
+.reading-item{min-width:0;display:flex;flex-direction:column;gap:4px;padding:12px 15px;border:1px solid rgba(255,255,255,.2);border-radius:12px;background:rgba(255,255,255,.1);backdrop-filter:blur(16px);color:#fff;text-decoration:none;transition:background .14s ease,border-color .14s ease}
+.reading-item:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.32)}
+.reading-name{font-size:12px;line-height:1.4;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reading-url{font-size:11px;color:rgba(245,248,255,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
 .footer a{color:rgba(245,248,255,.82);text-decoration:none;margin-left:8px}
 .footer a:hover{color:#fff;text-decoration:underline}
@@ -3119,6 +3127,29 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
             }
             html += "</div>";
         }
+        if (!readingList.empty()) {
+            html += R"HTML(<div class="section section-spaced">Reading List</div><div class="reading-list">)HTML";
+            size_t shownReadingItems = 0;
+            for (auto entry = readingList.rbegin(); entry != readingList.rend() && shownReadingItems < 4; ++entry, ++shownReadingItems) {
+                const std::wstring displayName = entry->title.empty() ? entry->url : entry->title;
+                std::wstring host = entry->url;
+                const size_t scheme = host.find(L"://");
+                if (scheme != std::wstring::npos)
+                    host.erase(0, scheme + 3);
+                const size_t slash = host.find_first_of(L"/?#");
+                if (slash != std::wstring::npos)
+                    host.erase(slash);
+                html += "<a class=\"reading-item\" href=\"";
+                html += toUTF8(htmlEscape(entry->url));
+                html += "\"><span class=\"reading-name\">";
+                html += toUTF8(htmlEscape(displayName));
+                html += "</span><span class=\"reading-url\">";
+                html += toUTF8(htmlEscape(host));
+                html += "</span></a>";
+            }
+            html += "</div>";
+        }
+
         html += R"HTML(
 <div class="footer">Favorites and frequently visited websites are stored locally <a href="about:aurora">About Aurora</a></div>
 </div>
