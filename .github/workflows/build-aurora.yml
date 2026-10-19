@@ -227,6 +227,32 @@ jobs:
             throw "The saved WebKit build has no bin/bin64 runtime directory. Use Run workflow and enable 'Rebuild WebKit' to recreate the snapshot."
           }
 
+      - name: Patch WebKit with resumable download C API
+        shell: powershell
+        run: |
+          $source = Join-Path $env:WEBKIT_DIR "Source\WebKit\UIProcess\API\C\WKPage.cpp"
+          $patch = Join-Path $env:GITHUB_WORKSPACE "cmake\patches\wkpage-resume-download-api.patch"
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "WebKit WKPage.cpp not found at $source"
+          }
+          if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
+            throw "Aurora's resume-download API patch was not found at $patch"
+          }
+
+          $sourceText = Get-Content -Raw -Path $source
+          if ($sourceText.Contains("WKPageResumeDownloadFromResumeData")) {
+            Write-Host "WebKit already contains Aurora's resume-download wrapper."
+          } else {
+            git -C $env:WEBKIT_DIR apply --check $patch
+            if ($LASTEXITCODE -ne 0) {
+              throw "The WebKit resume-download patch does not match the pinned source. Do not build with a mismatched API."
+            }
+            git -C $env:WEBKIT_DIR apply $patch
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not apply Aurora's resume-download API patch."
+            }
+          }
+
       - name: Build Aurora target from the configured WebKit graph
         shell: powershell
         run: |
@@ -255,7 +281,7 @@ jobs:
 
           $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
           if (-not (Test-Path (Join-Path $buildDir "CMakeCache.txt"))) { throw "WebKit CMake build directory not found at $buildDir" }
-          # Refresh the cached CMake graph so Aurora source/include/link changes are picked up without rebuilding WebKit.
+          # Refresh the cached graph; the new resume API invalidates one WebKit C API translation unit, so it is rebuilt and relinked incrementally.
           cmd /c "call `"$vcvars`" && cmake -S `"$env:WEBKIT_DIR`" -B `"$buildDir`" && cmake --build `"$buildDir`" --target Aurora --config Release"
           if ($LASTEXITCODE -ne 0) { throw "Building the Aurora target failed with exit code $LASTEXITCODE" }
 
