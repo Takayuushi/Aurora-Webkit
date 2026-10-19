@@ -1,14 +1,7 @@
 diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/API/C/WKPage.cpp
 --- a/Source/WebKit/UIProcess/API/C/WKPage.cpp
 +++ b/Source/WebKit/UIProcess/API/C/WKPage.cpp
-@@ -240,8 +240,31 @@
- void WKPageLoadURLRequest(WKPageRef pageRef, WKURLRequestRef urlRequestRef)
- {
-     CRASH_IF_SUSPENDED;
-     auto resourceRequest = toImpl(urlRequestRef)->resourceRequest();
-     protect(toImpl(pageRef))->loadRequest(WTF::move(resourceRequest));
- }
- 
+@@ -247,1 +247,24 @@
 +using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
 +
 +extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
