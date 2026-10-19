@@ -6149,7 +6149,7 @@ void discardDownloadResumeData(WKDataRef, const void*)
 
 struct DownloadOperationContext {
     BrowserState* browser { nullptr };
-    WKDownloadRef download { nullptr };
+    std::wstring path;
 };
 
 void copyDownloadResumeData(DownloadEntry& entry, WKDataRef data)
@@ -6171,7 +6171,7 @@ void pauseDownloadCompleted(WKDataRef data, const void* rawContext)
 
     BrowserState* browser = context->browser;
     auto found = std::find_if(browser->downloads.rbegin(), browser->downloads.rend(),
-        [&](const DownloadEntry& item) { return item.download == context->download; });
+        [&](const DownloadEntry& item) { return item.path == context->path; });
     if (found == browser->downloads.rend())
         return;
 
@@ -6271,7 +6271,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
             if (!entry.finished && !entry.failed && !entry.cancelled
                 && !entry.paused && !entry.pausePending && !entry.resumePending && entry.download) {
                 entry.pausePending = true;
-                auto* context = new DownloadOperationContext { browser, entry.download };
+                auto* context = new DownloadOperationContext { browser, entry.path };
                 WKDownloadCancel(entry.download, context, pauseDownloadCompleted);
                 browser->refreshDownloadsPresentation(true);
             }
@@ -6292,7 +6292,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
                     browser->refreshDownloadsPresentation(true);
                     return;
                 }
-                auto* context = new DownloadOperationContext { browser, entry.download };
+                auto* context = new DownloadOperationContext { browser, entry.path };
                 entry.resumePending = true;
                 entry.paused = false;
                 entry.resumeUnavailable = false;
@@ -6668,6 +6668,10 @@ void downloadDidWriteData(WKDownloadRef download, long long bytesWritten, long l
 
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
+            if (it->paused || it->resumePending) {
+                browser->refreshDownloadsPresentation();
+                return;
+            }
             const long long reportedTotal = std::max(0LL, totalBytesWritten);
             const long long reportedDelta = std::max(0LL, bytesWritten);
             if (reportedTotal > it->bytesWritten)
@@ -6720,7 +6724,7 @@ void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRe
             failedPath = it->path;
             if (cancelled) {
                 it->resumeData.clear();
-            } else if (it->pausePending || it->paused) {
+            } else if (it->pausePending || it->paused || it->resumePending) {
                 copyDownloadResumeData(*it, resumeData);
                 it->pausePending = false;
                 it->paused = true;
@@ -6779,7 +6783,7 @@ void resumeDownloadDidStart(WKDownloadRef resumedDownload, const void* rawContex
 
     BrowserState* browser = context->browser;
     auto found = std::find_if(browser->downloads.rbegin(), browser->downloads.rend(),
-        [&](const DownloadEntry& item) { return item.download == context->download; });
+        [&](const DownloadEntry& item) { return item.path == context->path; });
     if (found == browser->downloads.rend()) {
         if (resumedDownload)
             WKDownloadCancel(resumedDownload, nullptr, discardDownloadResumeData);
