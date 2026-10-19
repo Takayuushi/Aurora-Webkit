@@ -116,7 +116,7 @@ std::string imageDataUrl(const wchar_t* filename, const char* mime)
 }
 std::string auroraLogoDataUrl()
 {
-    static const std::string value=imageDataUrl(L"aurora-emblem.svg","image/svg+xml");
+    static const std::string value=imageDataUrl(L"aurora-logo.png","image/png");
     return value;
 }
 HICON createAuroraIcon()
