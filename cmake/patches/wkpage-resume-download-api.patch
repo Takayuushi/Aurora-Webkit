@@ -1,0 +1,38 @@
+diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/API/C/WKPage.cpp
+--- a/Source/WebKit/UIProcess/API/C/WKPage.cpp
++++ b/Source/WebKit/UIProcess/API/C/WKPage.cpp
+@@
+ void WKPageLoadURLRequest(WKPageRef pageRef, WKURLRequestRef urlRequestRef)
+ {
+     CRASH_IF_SUSPENDED;
+     auto resourceRequest = toImpl(urlRequestRef)->resourceRequest();
+     protect(toImpl(pageRef))->loadRequest(WTF::move(resourceRequest));
+ }
+ 
++using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
++
++extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
++    WKPageRef pageRef,
++    WKDataRef resumeDataRef,
++    WKStringRef pathRef,
++    const void* functionContext,
++    AuroraWKPageResumeDownloadCallback callback)
++{
++    if (!callback)
++        return;
++
++    if (!pageRef || !resumeDataRef || !pathRef) {
++        callback(nullptr, functionContext);
++        return;
++    }
++
++    protect(toImpl(pageRef))->resumeDownload(*toImpl(resumeDataRef), toWTFString(pathRef),
++        [functionContext, callback](auto* download) {
++            callback(download ? toAPI(download) : nullptr, functionContext);
++        });
++}
++
+ void WKPageLoadURLRequestWithUserData(WKPageRef pageRef, WKURLRequestRef urlRequestRef, WKTypeRef userDataRef)
+ {
+     CRASH_IF_SUSPENDED;
+     auto resourceRequest = toImpl(urlRequestRef)->resourceRequest();
