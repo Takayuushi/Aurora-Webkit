@@ -343,15 +343,15 @@ jobs:
             "Build time (UTC): $((Get-Date).ToUniversalTime().ToString("o"))"
           ) -join "`r`n"
 
-          $auroraExe = $null
-          foreach ($candidate in @((Join-Path $bin64 "Aurora.exe"), (Join-Path $bin "Aurora.exe"))) {
-            if (Test-Path $candidate) { $auroraExe = $candidate; break }
+          # The configured target build links the freshly built app to bin\Aurora.exe.
+          # Do not prefer bin64: the restored WebKit cache can contain a stale Aurora.exe there.
+          $auroraExe = Join-Path $bin "Aurora.exe"
+          if (-not (Test-Path -LiteralPath $auroraExe -PathType Leaf)) {
+            throw "Freshly built Aurora.exe was not found at $auroraExe. Refusing to package a possibly stale executable from another directory."
           }
-          if (-not $auroraExe) {
-            $found = Get-ChildItem -Path $release -Filter "Aurora.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $auroraExe = $found.FullName }
-          }
-          if (-not $auroraExe) { throw "Aurora.exe was not found under $release" }
+          $auroraExeInfo = Get-Item -LiteralPath $auroraExe
+          Write-Host "Packaging freshly linked Aurora target: $($auroraExeInfo.FullName)"
+          Write-Host "Executable last-write UTC: $($auroraExeInfo.LastWriteTimeUtc.ToString('o'))"
 
           $requiredHelpers = @("WebKitWebProcess.exe", "WebKitNetworkProcess.exe", "WebKitGPUProcess.exe")
           $helperPaths = @{}
