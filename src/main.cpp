@@ -31,6 +31,7 @@
 #include <WebKit/WKHTTPCookieStoreRef.h>
 #include <WebKit/WKData.h>
 #include "WKPagePrivate.h"
+#include "WKPageResumeDownload.h"
 #include <WebKit/WKFindOptions.h>
 #include <WebKit/WKPageConfigurationRef.h>
 #include <WebKit/WKPageStateClient.h>
@@ -251,6 +252,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef, WKFramePo
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
+void resumeDownloadDidStart(WKDownloadRef, const void*);
 void openBrowserSettings(BrowserState*, int requestedSection = 0);
 void showSharePopover(BrowserState*);
 LRESULT CALLBACK sharePopoverProcedure(HWND, UINT, WPARAM, LPARAM);
@@ -331,6 +333,11 @@ struct DownloadEntry {
     WKDownloadRef download { nullptr };
     bool cancelled { false };
     double displayedProgressPercent { 0.0 };
+    bool paused { false };
+    bool pausePending { false };
+    bool resumePending { false };
+    bool resumeUnavailable { false };
+    std::vector<unsigned char> resumeData;
 };
 
 std::string formatDownloadBytes(long long bytes)
@@ -1613,7 +1620,7 @@ struct BrowserState {
     bool downloadsHaveInProgress() const
     {
         return std::any_of(downloads.begin(), downloads.end(), [](const DownloadEntry& item) {
-            return !item.finished && !item.failed && !item.cancelled;
+            return !item.finished && !item.failed && !item.cancelled && !item.paused;
         });
     }
 
@@ -3662,6 +3669,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             "border:0;border-radius:7px;background:transparent;color:var(--blue);font:inherit;font-size:12px;"
             "text-decoration:none;white-space:nowrap;cursor:pointer}"
             ".action:hover{background:var(--hover)}.action.cancel{color:var(--danger)}"
+            ".action.pause{color:var(--muted)}.action.resume{color:var(--blue)}"
             ".action:focus-visible{outline:2px solid var(--blue);outline-offset:1px}"
             ".empty{min-height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;"
             "text-align:center;padding:30px;color:var(--muted)}"
@@ -3684,7 +3692,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             for (size_t i = 0; i < downloads.size(); ++i) {
                 const auto& item = downloads[i];
                 const std::string id = std::to_string(i);
-                const bool inProgress = !item.finished && !item.failed && !item.cancelled;
+                const bool inProgress = !item.finished && !item.failed && !item.cancelled && !item.paused;
                 const bool finished = item.finished && !item.failed && !item.cancelled;
                 const long long percent = item.totalBytes > 0
                     ? std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100) : 0;
@@ -3693,6 +3701,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 if (item.cancelled) status = "Cancelled";
                 else if (item.failed) status = "Download Failed";
                 else if (finished) status = "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten);
+                else if (item.pausePending) status = "Pausing...";
+                else if (item.resumePending) status = "Resuming...";
+                else if (item.paused && item.resumeUnavailable) status = "Paused - this download cannot be resumed";
+                else if (item.paused && item.totalBytes > 0)
+                    status = "Paused - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes);
+                else if (item.paused) status = "Paused - " + formatDownloadBytes(item.bytesWritten) + " received";
                 else if (item.bytesWritten > 0 && item.totalBytes > 0)
                     status = "Downloading - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes);
                 else if (item.bytesWritten > 0) status = "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received";
@@ -3725,8 +3739,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     + std::to_string(percent) + "%'></div></div></div><div class='actions'>"
                     "<a class='action' id='download-folder-" + id + "' href='aurora-download://folder?id=" + id
                     + "' style='display:" + std::string(finished ? "inline-flex" : "none") + "'>Show in Folder</a>"
+                    "<a class='action pause' id='download-pause-" + id + "' href='aurora-download://pause?id=" + id
+                    + "' style='display:" + std::string(inProgress && !item.pausePending && !item.resumePending ? "inline-flex" : "none") + "'>Pause</a>"
+                    "<a class='action resume' id='download-resume-" + id + "' href='aurora-download://resume?id=" + id
+                    + "' style='display:" + std::string(item.paused && !item.resumeData.empty() && !item.resumePending ? "inline-flex" : "none") + "'>Resume</a>"
                     "<a class='action cancel' id='download-cancel-" + id + "' href='aurora-download://cancel?id=" + id
-                    + "' style='display:" + std::string(inProgress ? "inline-flex" : "none") + "'>Cancel</a>"
+                    + "' style='display:" + std::string(!finished && !item.failed && !item.cancelled ? "inline-flex" : "none") + "'>Cancel</a>"
                     "</div></section>";
             }
         }
@@ -3779,7 +3797,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (int row = 0; row < visibleRows; ++row) {
             const size_t index = downloads.size() - 1 - static_cast<size_t>(row);
             const auto& download = downloads[index];
-            const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+            const bool inProgress = !download.finished && !download.failed && !download.cancelled && !download.paused;
             if (!redrawRows && !inProgress)
                 continue;
 
@@ -3803,7 +3821,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const size_t first = downloads.size() > 5 ? downloads.size() - 5 : 0;
         for (size_t i = first; i < downloads.size(); ++i) {
             auto& item = downloads[i];
-            const bool inProgress = !item.finished && !item.failed && !item.cancelled;
+            const bool inProgress = !item.finished && !item.failed && !item.cancelled && !item.paused;
             if (!inProgress)
                 continue;
 
@@ -3844,18 +3862,30 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 long long percent = 0;
                 if (item.totalBytes > 0)
                     percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
-                const bool inProgress = !item.finished && !item.failed && !item.cancelled;
+                const bool inProgress = !item.finished && !item.failed && !item.cancelled && !item.paused;
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
                     : item.finished ? "Downloaded - " + formatDownloadBytes(item.totalBytes > 0 ? item.totalBytes : item.bytesWritten)
-                    : (item.bytesWritten > 0 && item.totalBytes > 0
-                        ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes)
-                        : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
-                            : "Starting download"));
+                    : item.pausePending ? "Pausing..."
+                    : item.resumePending ? "Resuming..."
+                    : (item.paused && item.resumeUnavailable ? "Paused - this download cannot be resumed"
+                        : item.paused && item.totalBytes > 0
+                            ? "Paused - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes)
+                            : item.paused
+                                ? "Paused - " + formatDownloadBytes(item.bytesWritten) + " received"
+                                : (item.bytesWritten > 0 && item.totalBytes > 0
+                                    ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " of " + formatDownloadBytes(item.totalBytes)
+                                    : (item.bytesWritten > 0 ? "Downloading - " + formatDownloadBytes(item.bytesWritten) + " received"
+                                        : "Starting download")));
                 script += "var s=document.getElementById('download-meta-" + id + "');if(s)s.textContent='" + status + "';";
                 script += "var f=document.getElementById('download-fill-" + id + "');if(f)f.style.width='" + std::to_string(percent) + "%';";
                 script += "var b=document.getElementById('download-bar-" + id + "');if(b){b.style.display='" + std::string(inProgress ? "block" : "none") + "';b.classList.toggle('indeterminate'," + std::string(inProgress && item.totalBytes <= 0 ? "true" : "false") + ");}";
-                script += "var c=document.getElementById('download-cancel-" + id + "');if(c)c.style.display='" + std::string(inProgress ? "inline-flex" : "none") + "';";
+                const bool canPause = inProgress && !item.pausePending && !item.resumePending;
+                const bool canResume = item.paused && !item.resumeData.empty() && !item.resumePending && !item.cancelled && !item.failed;
+                const bool canCancel = !item.finished && !item.failed && !item.cancelled;
+                script += "var p=document.getElementById('download-pause-" + id + "');if(p)p.style.display='" + std::string(canPause ? "inline-flex" : "none") + "';";
+                script += "var r=document.getElementById('download-resume-" + id + "');if(r)r.style.display='" + std::string(canResume ? "inline-flex" : "none") + "';";
+                script += "var c=document.getElementById('download-cancel-" + id + "');if(c)c.style.display='" + std::string(canCancel ? "inline-flex" : "none") + "';";
                 script += "var d=document.getElementById('download-folder-" + id + "');if(d)d.style.display='" + std::string(item.finished && !item.failed && !item.cancelled ? "inline-flex" : "none") + "';";
             }
             script += "})();";
@@ -6117,6 +6147,64 @@ void discardDownloadResumeData(WKDataRef, const void*)
 {
 }
 
+struct DownloadOperationContext {
+    BrowserState* browser { nullptr };
+    WKDownloadRef download { nullptr };
+};
+
+void copyDownloadResumeData(DownloadEntry& entry, WKDataRef data)
+{
+    if (!data)
+        return;
+    const size_t size = WKDataGetSize(data);
+    const unsigned char* bytes = WKDataGetBytes(data);
+    if (size && bytes)
+        entry.resumeData.assign(bytes, bytes + size);
+}
+
+void pauseDownloadCompleted(WKDataRef data, const void* rawContext)
+{
+    std::unique_ptr<DownloadOperationContext> context(
+        const_cast<DownloadOperationContext*>(static_cast<const DownloadOperationContext*>(rawContext)));
+    if (!context || !context->browser)
+        return;
+
+    BrowserState* browser = context->browser;
+    auto found = std::find_if(browser->downloads.rbegin(), browser->downloads.rend(),
+        [&](const DownloadEntry& item) { return item.download == context->download; });
+    if (found == browser->downloads.rend())
+        return;
+
+    auto& entry = *found;
+    if (entry.cancelled) {
+        if (!entry.path.empty())
+            DeleteFileW(entry.path.c_str());
+        entry.pausePending = false;
+        entry.paused = false;
+        entry.resumeData.clear();
+        entry.resumeUnavailable = false;
+        browser->refreshDownloadsPresentation(true);
+        return;
+    }
+    if (entry.finished) {
+        entry.pausePending = false;
+        browser->refreshDownloadsPresentation(true);
+        return;
+    }
+
+    copyDownloadResumeData(entry, data);
+    WIN32_FILE_ATTRIBUTE_DATA fileInfo { };
+    if (GetFileAttributesExW(entry.path.c_str(), GetFileExInfoStandard, &fileInfo)) {
+        const ULONGLONG actualSize = (static_cast<ULONGLONG>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
+        entry.bytesWritten = static_cast<long long>(actualSize);
+    }
+    entry.pausePending = false;
+    entry.paused = true;
+    entry.resumeUnavailable = entry.resumeData.empty();
+    entry.failed = false;
+    browser->refreshDownloadsPresentation(true);
+}
+
 void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigationAction,
     WKFramePolicyListenerRef listener, WKTypeRef, const void* clientInfo)
 {
@@ -6179,9 +6267,55 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
                 if (!folder.empty())
                     ShellExecuteW(browser->window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             }
+        } else if (command == L"aurora-download://pause") {
+            if (!entry.finished && !entry.failed && !entry.cancelled
+                && !entry.paused && !entry.pausePending && !entry.resumePending && entry.download) {
+                entry.pausePending = true;
+                auto* context = new DownloadOperationContext { browser, entry.download };
+                WKDownloadCancel(entry.download, context, pauseDownloadCompleted);
+                browser->refreshDownloadsPresentation(true);
+            }
+        } else if (command == L"aurora-download://resume") {
+            if (entry.paused && !entry.resumeData.empty() && !entry.cancelled && !entry.resumePending) {
+                auto* activeTab = browser->active();
+                WKPageRef page = activeTab ? WKViewGetPage(activeTab->view.get()) : nullptr;
+                if (!page) {
+                    entry.resumeUnavailable = true;
+                    browser->refreshDownloadsPresentation(true);
+                    return;
+                }
+                auto data = adoptWK(WKDataCreate(entry.resumeData.data(), entry.resumeData.size()));
+                const std::string utf8Path = toUTF8(entry.path);
+                auto path = adoptWK(WKStringCreateWithUTF8CString(utf8Path.c_str()));
+                if (!data || !path) {
+                    entry.resumeUnavailable = true;
+                    browser->refreshDownloadsPresentation(true);
+                    return;
+                }
+                auto* context = new DownloadOperationContext { browser, entry.download };
+                entry.resumePending = true;
+                entry.paused = false;
+                entry.resumeUnavailable = false;
+                WKPageResumeDownloadFromResumeData(page, data.get(), path.get(), context, resumeDownloadDidStart);
+                browser->refreshDownloadsPresentation(true);
+            }
         } else if (command == L"aurora-download://cancel") {
-            if (!entry.finished && !entry.failed && !entry.cancelled && entry.download) {
+            if (entry.paused) {
                 entry.cancelled = true;
+                entry.paused = false;
+                entry.pausePending = false;
+                entry.resumePending = false;
+                entry.resumeData.clear();
+                entry.resumeUnavailable = false;
+                DeleteFileW(entry.path.c_str());
+                browser->refreshDownloadsPresentation(true);
+            } else if (entry.resumePending) {
+                entry.cancelled = true;
+                entry.resumeData.clear();
+                browser->refreshDownloadsPresentation(true);
+            } else if (!entry.finished && !entry.failed && !entry.cancelled && entry.download) {
+                entry.cancelled = true;
+                entry.resumeData.clear();
                 WKDownloadCancel(entry.download, nullptr, discardDownloadResumeData);
                 browser->refreshDownloadsPresentation(true);
             }
@@ -6559,6 +6693,11 @@ void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
             it->finished = true;
+            it->paused = false;
+            it->pausePending = false;
+            it->resumePending = false;
+            it->resumeUnavailable = false;
+            it->resumeData.clear();
             break;
         }
     }
@@ -6567,25 +6706,39 @@ void downloadDidFinish(WKDownloadRef download, const void* clientInfo)
 }
 
 
-void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRef, const void* clientInfo)
+void downloadDidFailWithError(WKDownloadRef download, WKErrorRef error, WKDataRef resumeData, const void* clientInfo)
 {
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
     if (!browser)
         return;
     std::wstring failedPath;
     bool cancelled = false;
+    bool pauseRelated = false;
     for (auto it = browser->downloads.rbegin(); it != browser->downloads.rend(); ++it) {
         if (it->download == download) {
             cancelled = it->cancelled;
-            if (!cancelled)
-                it->failed = true;
             failedPath = it->path;
+            if (cancelled) {
+                it->resumeData.clear();
+            } else if (it->pausePending || it->paused) {
+                copyDownloadResumeData(*it, resumeData);
+                it->pausePending = false;
+                it->paused = true;
+                it->resumeUnavailable = it->resumeData.empty();
+                pauseRelated = true;
+            } else {
+                it->failed = true;
+            }
             break;
         }
     }
     if (cancelled) {
         if (!failedPath.empty())
             DeleteFileW(failedPath.c_str());
+        browser->refreshDownloadsPresentation(true);
+        return;
+    }
+    if (pauseRelated) {
         browser->refreshDownloadsPresentation(true);
         return;
     }
@@ -6615,6 +6768,54 @@ void installDownloadClient(WKDownloadRef download, BrowserState* browser)
     client.didFinish = downloadDidFinish;
     client.didFailWithError = downloadDidFailWithError;
     WKDownloadSetClient(download, &client.base);
+}
+
+void resumeDownloadDidStart(WKDownloadRef resumedDownload, const void* rawContext)
+{
+    std::unique_ptr<DownloadOperationContext> context(
+        const_cast<DownloadOperationContext*>(static_cast<const DownloadOperationContext*>(rawContext)));
+    if (!context || !context->browser)
+        return;
+
+    BrowserState* browser = context->browser;
+    auto found = std::find_if(browser->downloads.rbegin(), browser->downloads.rend(),
+        [&](const DownloadEntry& item) { return item.download == context->download; });
+    if (found == browser->downloads.rend()) {
+        if (resumedDownload)
+            WKDownloadCancel(resumedDownload, nullptr, discardDownloadResumeData);
+        return;
+    }
+
+    auto& entry = *found;
+    if (entry.cancelled) {
+        DeleteFileW(entry.path.c_str());
+        if (resumedDownload) {
+            entry.download = resumedDownload;
+            installDownloadClient(resumedDownload, browser);
+            WKDownloadCancel(resumedDownload, nullptr, discardDownloadResumeData);
+        }
+        browser->refreshDownloadsPresentation(true);
+        return;
+    }
+
+    if (!resumedDownload) {
+        entry.resumePending = false;
+        entry.paused = true;
+        entry.resumeUnavailable = false;
+        browser->refreshDownloadsPresentation(true);
+        return;
+    }
+
+    entry.download = resumedDownload;
+    entry.resumePending = false;
+    entry.paused = false;
+    entry.pausePending = false;
+    entry.resumeUnavailable = false;
+    entry.finished = false;
+    entry.failed = false;
+    entry.resumeData.clear();
+    installDownloadClient(resumedDownload, browser);
+    browser->refreshDownloadsPresentation(true);
 }
 
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef download, const void* clientInfo)
@@ -7032,7 +7233,7 @@ void drawDownloadsPopover(HDC dc, HWND window, DownloadsPopoverWindowState* stat
             const auto& download = browser->downloads[index];
             const RECT rowRect = downloadsPopoverRowRect(state, row);
             const RECT actionRect = downloadsPopoverActionRect(state, row);
-            const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+            const bool inProgress = !download.finished && !download.failed && !download.cancelled && !download.paused;
             const bool finished = download.finished && !download.failed && !download.cancelled;
 
             if (row > 0) {
@@ -7286,7 +7487,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
             for (int row = 0; row < progressRows; ++row) {
                 const size_t index = browser->downloads.size() - 1 - static_cast<size_t>(row);
                 const auto& download = browser->downloads[index];
-                const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+                const bool inProgress = !download.finished && !download.failed && !download.cancelled && !download.paused;
                 if (inProgress && download.totalBytes <= 0) {
                     const RECT progressRow = downloadsPopoverRowRect(state, row);
                     InvalidateRect(window, &progressRow, FALSE);
@@ -7395,7 +7596,7 @@ LRESULT CALLBACK downloadsPopoverProcedure(HWND window, UINT message, WPARAM wPa
 
                 auto& download = browser->downloads[index];
                 const RECT actionRect = downloadsPopoverActionRect(state, row);
-                const bool inProgress = !download.finished && !download.failed && !download.cancelled;
+                const bool inProgress = !download.finished && !download.failed && !download.cancelled && !download.paused;
                 const bool finished = download.finished && !download.failed && !download.cancelled;
                 if (PtInRect(&actionRect, point)) {
                     if (inProgress && download.download) {
