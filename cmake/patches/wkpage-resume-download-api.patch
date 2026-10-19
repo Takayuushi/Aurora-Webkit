@@ -1,7 +1,7 @@
 diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/API/C/WKPage.cpp
 --- a/Source/WebKit/UIProcess/API/C/WKPage.cpp
 +++ b/Source/WebKit/UIProcess/API/C/WKPage.cpp
-@@
+@@ -240,8 +240,27 @@
  void WKPageLoadURLRequest(WKPageRef pageRef, WKURLRequestRef urlRequestRef)
  {
      CRASH_IF_SUSPENDED;
@@ -33,6 +33,3 @@ diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/
 +}
 +
  void WKPageLoadURLRequestWithUserData(WKPageRef pageRef, WKURLRequestRef urlRequestRef, WKTypeRef userDataRef)
- {
-     CRASH_IF_SUSPENDED;
-     auto resourceRequest = toImpl(urlRequestRef)->resourceRequest();
