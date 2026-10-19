@@ -6300,7 +6300,13 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
                 browser->refreshDownloadsPresentation(true);
             }
         } else if (command == L"aurora-download://cancel") {
-            if (entry.paused) {
+            if (entry.pausePending) {
+                // Pause already cancels the underlying WebKit transfer asynchronously.
+                // Mark the row cancelled and let its callback remove the partial file.
+                entry.cancelled = true;
+                entry.resumeData.clear();
+                browser->refreshDownloadsPresentation(true);
+            } else if (entry.paused) {
                 entry.cancelled = true;
                 entry.paused = false;
                 entry.pausePending = false;
