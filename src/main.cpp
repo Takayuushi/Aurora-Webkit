@@ -6411,7 +6411,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     }
 
     if (command == L"aurora-settings://navigate" && section.size() == 1
-        && section[0] >= L'0' && section[0] <= L'5')
+        && section[0] >= L'0' && section[0] <= L'6')
         tab->settingsSection = section[0] - L'0';
 
     if (theme == L"light") browser->themeMode = ThemeMode::Light;
