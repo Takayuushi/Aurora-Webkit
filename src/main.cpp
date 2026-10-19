@@ -1273,6 +1273,7 @@ struct BrowserState {
             else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
             else if (tab.internalPage == L"settings") loadSettingsPage(tab);
+            else if (tab.internalPage == L"about") loadAboutPage(tab);
         }
         if (!tabs.empty())
             activeTab = std::min(previousTab, tabs.size() - 1);
@@ -2905,6 +2906,113 @@ document.querySelectorAll('.tile[data-url]').forEach(tile=>{
         SetWindowTextW(window, windowTitle);
     }
 
+
+    void loadAboutPage(TabState& tab)
+    {
+        tab.internalPage = L"about";
+        tab.hasInternalThemeSnapshot = true;
+        tab.internalDarkTheme = darkTheme();
+        const bool dark = darkTheme();
+
+        std::string html = R"HTML(
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>About Aurora</title>
+<style>
+:root{color-scheme:)HTML" + std::string(dark ? "dark" : "light")
+            + R"HTML(;--page:)HTML" + (dark ? "#1c1c1e" : "#f5f5f7")
+            + R"HTML(;--surface:)HTML" + (dark ? "#2c2c2e" : "#ffffff")
+            + R"HTML(;--text:)HTML" + (dark ? "#f5f5f7" : "#1d1d1f")
+            + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#6e6e73")
+            + R"HTML(;--line:)HTML" + (dark ? "#48484a" : "#dedee3")
+            + R"HTML(;--soft:)HTML" + (dark ? "#343438" : "#ececf1")
+            + R"HTML(}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{background:var(--page);color:var(--text);-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.55}
+main{width:min(900px,100%);margin:0 auto;padding:58px 34px 42px}
+.hero{position:relative;overflow:hidden;padding:38px 40px 34px;border:1px solid var(--line);border-radius:25px;background:linear-gradient(135deg,var(--surface) 0%,var(--surface) 64%,var(--soft) 100%);box-shadow:0 8px 28px rgba(0,0,0,.035)}
+.hero:after{content:"";position:absolute;width:280px;height:280px;right:-120px;top:-155px;border-radius:50%;border:1px solid var(--line);box-shadow:0 0 0 24px rgba(128,128,140,.035),0 0 0 52px rgba(128,128,140,.025);pointer-events:none}
+.brand{display:flex;align-items:center;gap:22px;position:relative;z-index:1}
+.brand-mark{width:76px;height:76px;flex:0 0 76px;display:grid;place-items:center;border-radius:23px;background:linear-gradient(145deg,#8db9ff 0%,#5b79e6 42%,#6b4eb8 72%,#b9a1ff 100%);box-shadow:0 7px 18px rgba(83,101,201,.24)}
+.brand-mark svg{width:54px;height:54px}
+.eyebrow{margin:0 0 4px;color:var(--muted);font-size:10px;letter-spacing:1.9px;font-weight:700}
+h1{margin:0;font-size:39px;line-height:1.15;letter-spacing:-1.2px;font-weight:650}
+.tagline{margin:8px 0 0;color:var(--muted);font-size:15px}
+.description{position:relative;z-index:1;max-width:670px;margin:27px 0 0;font-size:14px;line-height:1.75;color:var(--text)}
+.source{position:relative;z-index:1;display:inline-flex;align-items:center;gap:7px;margin-top:22px;color:)HTML" + std::string(dark ? "#a9c7ff" : "#225fc7") + R"HTML(;font-weight:600;text-decoration:none}
+.source:hover{text-decoration:underline}
+.features{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}
+.feature{min-width:0;padding:21px 22px 20px;border:1px solid var(--line);border-radius:17px;background:var(--surface)}
+.kicker{color:var(--muted);font-size:10px;letter-spacing:1.45px;font-weight:700}
+h2{margin:9px 0 6px;font-size:16px;letter-spacing:-.2px;font-weight:620}
+.feature p{margin:0;color:var(--muted);font-size:12px;line-height:1.65}
+footer{margin-top:24px;text-align:center;color:var(--muted);font-size:11px}
+@media(max-width:620px){main{padding:28px 16px}.hero{padding:26px 22px}.brand{gap:15px}.brand-mark{width:60px;height:60px;flex-basis:60px;border-radius:18px}.brand-mark svg{width:44px;height:44px}h1{font-size:31px}.tagline{font-size:13px}.features{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="32" cy="32" r="25" stroke="rgba(255,255,255,.78)" stroke-width="1.5"/>
+        <circle cx="32" cy="32" r="18" stroke="rgba(255,255,255,.35)" stroke-width="1"/>
+        <path d="M38 15L29 34L45 27L38 15Z" fill="#ffffff"/>
+        <path d="M26 49L35 30L19 37L26 49Z" fill="rgba(255,255,255,.68)"/>
+        <circle cx="32" cy="32" r="2.5" fill="#ffffff"/>
+      </svg>
+    </div>
+    <div>
+      <p class="eyebrow">ABOUT AURORA</p>
+      <h1>Aurora</h1>
+      <p class="tagline">A native Windows browser powered by WebKit.</p>
+    </div>
+  </div>
+  <p class="description">Aurora brings a focused, modern browsing experience to Windows with its own identity and a clean, Safari-inspired interface. It uses WebKit—not Chromium—and pairs the browser engine with a native Windows shell.</p>
+  <a class="source" href="https://github.com/Takayuushi/Aurora-Webkit">View the project on GitHub <span aria-hidden="true">↗</span></a>
+</section>
+<section class="features" aria-label="Aurora features">
+  <article class="feature">
+    <span class="kicker">BROWSING</span>
+    <h2>Navigation and tabs</h2>
+    <p>Tabbed browsing, smart address and search, private windows, and page actions in a native Windows interface.</p>
+  </article>
+  <article class="feature">
+    <span class="kicker">YOUR LIBRARY</span>
+    <h2>Favorites and Reading List</h2>
+    <p>Keep Favorites, frequently visited pages, browsing history, and saved reading items close at hand.</p>
+  </article>
+  <article class="feature">
+    <span class="kicker">DOWNLOADS</span>
+    <h2>Download management</h2>
+    <p>Review recent downloads, track progress, and open completed files or reveal them in File Explorer.</p>
+  </article>
+  <article class="feature">
+    <span class="kicker">APPEARANCE & PRIVACY</span>
+    <h2>Your browser, your settings</h2>
+    <p>Choose Light, Dark, or Automatic appearance, manage website data, and adjust supported website preferences.</p>
+  </article>
+</section>
+<footer>Aurora for Windows &middot; Powered by WebKit &middot; Original Aurora branding</footer>
+</main>
+</body>
+</html>
+)HTML";
+
+        loadLocalHTML(tab, html);
+        tab.title = L"About Aurora";
+        tab.activeUrl = L"about:aurora";
+        tab.lastRecordedUrl.clear();
+        SetWindowTextW(addressBar, tab.activeUrl.c_str());
+        const std::wstring windowCaption = tab.title + L" — Aurora";
+        SetWindowTextW(window, windowCaption.c_str());
+    }
+
     void loadURL(TabState& tab, const std::wstring& value)
     {
         tab.internalPage.clear();
@@ -4151,11 +4259,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             InvalidateRect(window, nullptr, FALSE);
             break;
         case kCommandPrivacy:
-            showWebsiteSettingsMenu();
+            showWebsiteSettingsMenu()        case kMenuAbout:
+            if (addTab(true)) {
+                if (auto* tab = active())
+                    loadAboutPage(*tab);
+            }
             break;
-        case kCommandReader:
-            if (auto* tab = active()) {
-                auto js = adoptWK(WKStringCreateWithUTF8CString("(function(){const id=\'aurora-reader-mode\';const old=document.getElementById(id);if(old){old.remove();return;}const s=document.createElement(\'style\');s.id=id;s.textContent=\'body{background:#f7f3ea!important;color:#252525!important;font-family:Georgia,Times New Roman,serif!important;font-size:20px!important;line-height:1.75!important}main,article,[role=main]{max-width:760px!important;margin:40px auto!important;padding:0 24px!important}\';document.head.appendChild(s);})()"));
+\');s.id=id;s.textContent=\'body{background:#f7f3ea!important;color:#252525!important;font-family:Georgia,Times New Roman,serif!important;font-size:20px!important;line-height:1.75!important}main,article,[role=main]{max-width:760px!important;margin:40px auto!important;padding:0 24px!important}\';document.head.appendChild(s);})()"));
                 WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), js.get(), nullptr, nullptr);
             }
             break;
