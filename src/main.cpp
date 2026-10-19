@@ -119,11 +119,6 @@ std::string auroraLogoDataUrl()
     static const std::string value=imageDataUrl(L"aurora-logo.png","image/png");
     return value;
 }
-std::string auroraAboutCoverDataUrl()
-{
-    static const std::string value=imageDataUrl(L"aurora-about-cover.jpg","image/jpeg");
-    return value;
-}
 HICON createAuroraIcon()
 {
     const auto path=auroraResourcePath(L"aurora-logo.png");
@@ -1451,7 +1446,7 @@ struct BrowserState {
             else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
             else if (tab.internalPage == L"settings") loadSettingsPage(tab);
-            else if (tab.internalPage == L"about") loadAboutPage(tab);
+            else if (tab.internalPage == L"about") loadSettingsPage(tab, 0);
         }
         if (!tabs.empty())
             activeTab = std::min(previousTab, tabs.size() - 1);
@@ -2857,7 +2852,22 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 .action.primary{border-color:var(--blue);background:var(--blue);color:white;font-weight:600}
 .action.primary:hover{filter:brightness(1.04)}
 .status{color:var(--muted);font-size:12px;margin-left:5px}
-@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}}
+.about-card{margin-top:28px;border:1px solid var(--line);border-radius:15px;overflow:hidden;background:var(--panel)}
+.about-visual{position:relative;isolation:isolate;min-height:174px;display:flex;align-items:center;gap:20px;overflow:hidden;padding:24px 26px;color:#17272b;background:linear-gradient(120deg,#e5fbf1 0%,#dceeff 52%,#eee6ff 100%)}
+.about-waves{position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none}
+.about-mark{width:82px;height:82px;flex:0 0 82px;border-radius:23px;overflow:hidden;box-shadow:0 9px 22px rgba(21,104,127,.2)}
+.about-mark svg{display:block;width:100%;height:100%}
+.about-eyebrow{font-size:10px;line-height:1.3;font-weight:700;letter-spacing:2.2px;color:#326c72;margin-bottom:5px}
+.about-brand-title{font-size:34px;line-height:1.08;letter-spacing:-1.3px;font-weight:650}
+.about-tagline{margin-top:7px;font-size:12px;letter-spacing:2.4px;text-transform:uppercase;color:#467d83}
+.about-info{padding:19px 22px 17px}
+.about-info h2{font-size:16px;line-height:1.35;font-weight:600;letter-spacing:-.2px;margin:0 0 7px}
+.about-info p{font-size:13px;line-height:1.65;color:var(--muted);margin:0;max-width:680px}
+.about-meta{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+.about-pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:11px;color:var(--muted)}
+.about-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:16px;padding-top:13px;font-size:12px;color:var(--muted)}
+.about-bottom a{color:var(--blue);text-decoration:none}.about-bottom a:hover{text-decoration:underline}
+@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}.about-visual{padding:20px 18px;gap:14px;min-height:145px}.about-mark{width:64px;height:64px;flex-basis:64px;border-radius:18px}.about-brand-title{font-size:29px}.about-info{padding:16px}.about-bottom{align-items:flex-start;flex-direction:column}}
 </style></head><body>
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
@@ -2872,7 +2882,49 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="field"><label for="home">Homepage</label><input id="home" type="text" name="home" value="__HOME__"></div>
 <div class="field"><label for="downloads">Downloads location</label><input id="downloads" type="text" name="downloads" value="__DOWNLOADS__"></div>
 <p class="help">Enter a folder path that already exists on this PC. Leave the location blank to use the Windows Downloads folder.</p>
-</section>
+<section class="about-card" aria-label="About Aurora">
+  <div class="about-visual">
+   <svg class="about-waves" viewBox="0 0 1000 250" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs>
+     <linearGradient id="aboutWaveA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7de8b1" stop-opacity=".72"/><stop offset=".52" stop-color="#65bde8" stop-opacity=".54"/><stop offset="1" stop-color="#9181ef" stop-opacity=".58"/></linearGradient>
+     <linearGradient id="aboutWaveB" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#19a4a8" stop-opacity=".56"/><stop offset=".55" stop-color="#78d9da" stop-opacity=".30"/><stop offset="1" stop-color="#a99af4" stop-opacity=".58"/></linearGradient>
+    </defs>
+    <path d="M-80 177 C105 40 210 46 360 130 S625 224 795 112 S1030 26 1100 68" fill="none" stroke="url(#aboutWaveA)" stroke-width="82" stroke-linecap="round"/>
+    <path d="M-70 229 C105 122 238 104 384 169 S641 256 824 164 S1025 100 1100 130" fill="none" stroke="url(#aboutWaveB)" stroke-width="55" stroke-linecap="round"/>
+    <path d="M-40 84 C127 162 252 189 405 103 S675 24 826 94 S1040 197 1090 174" fill="none" stroke="#fff" stroke-opacity=".46" stroke-width="28" stroke-linecap="round"/>
+    <circle cx="865" cy="23" r="118" fill="#fff" fill-opacity=".16"/>
+   </svg>
+   <div class="about-mark" aria-hidden="true">
+    <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+     <defs>
+      <radialGradient id="aboutMarkBg" cx="35%" cy="30%" r="85%"><stop offset="0" stop-color="#78f0b1"/><stop offset=".36" stop-color="#45d5ae"/><stop offset=".72" stop-color="#20a9b8"/><stop offset="1" stop-color="#0b6a82"/></radialGradient>
+      <linearGradient id="aboutMarkRibbonA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d8899" stop-opacity=".72"/><stop offset=".55" stop-color="#7de7aa" stop-opacity=".65"/><stop offset="1" stop-color="#1a8a9d" stop-opacity=".4"/></linearGradient>
+      <linearGradient id="aboutMarkRibbonB" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b4f59b" stop-opacity=".82"/><stop offset=".55" stop-color="#3ec7a5" stop-opacity=".62"/><stop offset="1" stop-color="#0e7390" stop-opacity=".46"/></linearGradient>
+      <clipPath id="aboutMarkClip"><circle cx="256" cy="256" r="240"/></clipPath>
+     </defs>
+     <circle cx="256" cy="256" r="240" fill="url(#aboutMarkBg)"/>
+     <g clip-path="url(#aboutMarkClip)" fill="none" stroke-linecap="round">
+      <path d="M72 150 C155 83 233 74 327 111 C384 134 425 128 471 94" stroke="url(#aboutMarkRibbonA)" stroke-width="42"/>
+      <path d="M52 204 C142 145 225 141 309 170 C372 192 430 184 492 141" stroke="#70e4b3" stroke-opacity=".55" stroke-width="34"/>
+      <path d="M36 263 C127 203 211 205 300 232 C372 254 438 241 502 204" stroke="#1c9eb4" stroke-opacity=".44" stroke-width="28"/>
+      <path d="M30 319 C124 262 207 270 296 296 C369 317 433 302 494 264" stroke="url(#aboutMarkRibbonB)" stroke-width="34"/>
+      <path d="M53 376 C145 331 225 340 309 365 C374 384 425 369 472 339" stroke="#84e7a5" stroke-opacity=".5" stroke-width="28"/>
+     </g>
+     <circle cx="256" cy="256" r="240" fill="none" stroke="#0a607a" stroke-width="8" opacity=".48"/>
+     <path d="M177 184h48v151c0 24 15 39 37 39 30 0 51-22 51-55V184h48v140c0 62-39 104-98 104-53 0-86-33-86-91V184z" fill="#fff"/>
+     <circle cx="275" cy="220" r="24" fill="#7adfaf"/>
+    </svg>
+   </div>
+   <div><div class="about-eyebrow">ABOUT AURORA</div><div class="about-brand-title">Aurora</div><div class="about-tagline">Browse beyond</div></div>
+  </div>
+  <div class="about-info">
+   <h2>About Aurora</h2>
+   <p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p>
+   <div class="about-meta"><span class="about-pill">Windows</span><span class="about-pill">WebKit engine</span><span class="about-pill">Experimental project</span></div>
+   <div class="about-bottom"><span>Version 1.0.0 · Powered by WebKit</span><a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub ↗</a></div>
+  </div>
+ </section>
+ </section>
 <section class="panel__ACTIVE_SECTION_TABS__" data-section="appearance"><h1>Appearance</h1><p class="sub">Choose how Aurora looks, including the Start Page wallpaper.</p>
 <div class="field"><label for="theme">Browser appearance</label><select id="theme" name="theme"><option value="system"__THEME_SYSTEM__>Automatic (follow Windows)</option><option value="light"__THEME_LIGHT__>Light</option><option value="dark"__THEME_DARK__>Dark</option></select></div>
 <div class="field"><div class="fieldname">Start Page background</div><div class="image-actions"><span class="image-path">__START_PAGE_BACKGROUND__</span><a class="action" href="aurora-settings://browse-background">Choose Image…</a><a class="action" href="aurora-settings://clear-background">Use Default</a></div></div>
@@ -2917,43 +2969,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             }
         }
         loadLocalHTML(tab, html);
-    }
-
-
-
-    void loadAboutPage(TabState& tab)
-    {
-        tab.internalPage=L"about"; tab.hasInternalThemeSnapshot=true; tab.internalDarkTheme=darkTheme();
-        tab.title=L"About Aurora"; tab.activeUrl=L"about:aurora"; tab.lastRecordedUrl.clear();
-        const bool dark=darkTheme();
-        std::string html=R"HTML(
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>About Aurora</title><style>
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
-body{background:var(--bg);color:var(--text);padding:28px 20px 40px}main{width:min(900px,100%);margin:0 auto}
-.cover{display:block;width:100%;height:auto;max-height:520px;object-fit:contain;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.12)}
-.details{margin:20px auto 0;max-width:760px;padding:20px 24px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
-.details h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.35px;margin:0 0 8px}.details p{font-size:14px;line-height:1.65;color:var(--muted);margin:0}
-.meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:18px}.pill{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:6px 10px;border-radius:999px}
-a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}footer{font-size:12px;color:var(--muted);text-align:center;margin:18px 0 0}
-@media(max-width:600px){body{padding:16px 12px 28px}.details{padding:16px}.cover{border-radius:12px}}
-</style></head><body><main><img class="cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
-<section class="details"><h1>About Aurora</h1><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p>
-<div class="meta"><span class="pill">Windows</span><span class="pill">WebKit engine</span><span class="pill">Experimental project</span></div></section>
-<footer>Version 1.0.0 · <a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub</a></footer></main></body></html>
-)HTML";
-        const std::string palette=dark
-            ? ":root{color-scheme:dark;--bg:#1c1c1e;--panel:#2c2c2e;--line:#48484a;--text:#f5f5f7;--muted:#a1a1a6;--blue:#0a84ff}"
-            : ":root{color-scheme:light;--bg:#f5f6f8;--panel:#fff;--line:#dfe2e7;--text:#202124;--muted:#656b73;--blue:#0675e8}";
-        const size_t style=html.find("<style>");
-        if(style!=std::string::npos) html.insert(style+sizeof("<style>")-1,palette);
-        const std::string token="__AURORA_ABOUT_COVER__"; const size_t at=html.find(token);
-        if(at!=std::string::npos) { const auto image=auroraAboutCoverDataUrl(); html.replace(at,token.size(),image); }
-        loadLocalHTML(tab,html);
+        tab.activeUrl = L"about:settings";
+        tab.title = L"Settings";
+        tab.lastRecordedUrl.clear();
         SetWindowTextW(addressBar, tab.activeUrl.c_str());
         const std::wstring caption = tab.title + L" — Aurora";
         SetWindowTextW(window, caption.c_str());
     }
+
+
 
     void loadStartPage(TabState& tab)
     {
@@ -4565,8 +4589,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openBrowserSettings(this);
             break;
         case kMenuAbout:
-            if (auto* tab = active())
-                loadAboutPage(*tab);
+            openBrowserSettings(this, 0);
             break;
         case 5997: {
             std::wstring folder = downloadsDirectory();
@@ -6220,7 +6243,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     BrowserState* browser = tab->browser;
     if (url == L"about:aurora") {
         WKFramePolicyListenerIgnore(listener);
-        browser->loadAboutPage(*tab);
+        openBrowserSettings(browser, 0);
         return;
     }
     if (url.rfind(L"aurora-download:", 0) == 0) {
