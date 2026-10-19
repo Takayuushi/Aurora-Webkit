@@ -2994,13 +2994,15 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 .name{font-size:12px;line-height:1.35;font-weight:500;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
 .host{display:none}
 .footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
+.footer a{color:rgba(245,248,255,.82);text-decoration:none;margin-left:8px}
+.footer a:hover{color:#fff;text-decoration:underline}
 @media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}</style>
 </head>
 <body>
 <div class="wallpaper" id="wallpaper" style="__AURORA_BACKGROUND_IMAGE__"></div>
 <div class="page">
 <div class="branding">
-<div class="brand-mark"><img src="__AURORA_LOGO_IMAGE__" alt="Aurora logo"></div></svg></div>
+<div class="brand-mark"><img src="__AURORA_LOGO_IMAGE__" alt="Aurora logo"></div>
 <h1>Aurora</h1><p>BROWSE BEYOND</p>
 </div>
 <div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>
@@ -3118,7 +3120,7 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
             html += "</div>";
         }
         html += R"HTML(
-<div class="footer">Favorites and frequently visited websites are stored locally</div>
+<div class="footer">Favorites and frequently visited websites are stored locally <a href="about:aurora">About Aurora</a></div>
 </div>
 <script>
 const search=document.getElementById('search');
@@ -6097,6 +6099,11 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     auto urlRef = adoptWK(WKURLRequestCopyURL(request.get()));
     const std::wstring url = createString(urlRef.get());
     BrowserState* browser = tab->browser;
+    if (url == L"about:aurora") {
+        WKFramePolicyListenerIgnore(listener);
+        browser->loadAboutPage(*tab);
+        return;
+    }
     if (url.rfind(L"aurora-download:", 0) == 0) {
         WKFramePolicyListenerIgnore(listener);
         const size_t queryStart = url.find(L'?');
