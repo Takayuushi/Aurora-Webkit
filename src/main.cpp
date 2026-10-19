@@ -2853,19 +2853,23 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 .action.primary{border-color:var(--blue);background:var(--blue);color:white;font-weight:600}
 .action.primary:hover{filter:brightness(1.04)}
 .status{color:var(--muted);font-size:12px;margin-left:5px}
-.about-layout{display:flex;align-items:center;gap:20px;padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
-.about-emblem{width:76px;height:76px;flex:0 0 76px;object-fit:contain}
-.about-copy h2{margin:0 0 8px;font-size:18px;font-weight:600;letter-spacing:-.3px}
-.about-copy p{margin:0;color:var(--muted);font-size:13px;line-height:1.7;max-width:620px}
-.about-badges{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0}
+.about-cover{display:block;width:100%;aspect-ratio:3.15/1;max-height:270px;min-height:170px;object-fit:cover;object-position:center 46%;border:1px solid var(--line);border-radius:14px;background:var(--bar);margin:0 0 25px}
+.about-copy h2{margin:0 0 8px;font-size:22px;line-height:1.3;font-weight:600;letter-spacing:-.4px}
+.about-copy p{margin:0;color:var(--muted);font-size:13px;line-height:1.7;max-width:720px}
+.about-badges{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 22px}
 .about-badge{padding:6px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px}
-.about-links{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.about-version{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+.about-version-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.about-version-row:last-child{border-bottom:0}
+.about-version-row span{color:var(--muted)}
+.about-version-row strong{font-weight:500;text-align:right}
+.about-links{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:16px;margin-top:18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .about-links a{color:var(--blue);text-decoration:none}.about-links a:hover{text-decoration:underline}
-@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}.about-layout{align-items:flex-start;padding:18px;gap:14px}.about-emblem{width:56px;height:56px;flex-basis:56px}.about-links{align-items:flex-start;flex-direction:column}}
+@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}.about-cover{aspect-ratio:2.2/1;min-height:140px}.about-links{align-items:flex-start;flex-direction:column}.about-version-row{padding:11px}}
 </style></head><body>
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
-<button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L8 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H6.7v-2.4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L8 8.6l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.7 1.7-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.4 1z"/></svg><span>General</span></button>
+<button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.2"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5"/></svg><span>General</span></button>
 <button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Appearance</span></button>
 <button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
 <button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
@@ -2879,12 +2883,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <p class="help">Enter a folder path that already exists on this PC. Leave the location blank to use the Windows Downloads folder.</p>
 </section>
 <section class="panel__ACTIVE_SECTION_ABOUT__" data-section="about">
- <div class="about-layout">
-  <img class="about-emblem" src="__AURORA_ABOUT_EMBLEM__" alt="Aurora emblem">
-  <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
- </div>
+ <img class="about-cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
+ <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
  <div class="about-badges"><span class="about-badge">Windows</span><span class="about-badge">WebKit engine</span><span class="about-badge">Experimental project</span></div>
- <div class="about-links"><span>Version 1.0.0 · Powered by WebKit</span><a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub ↗</a></div>
+ <div class="about-version" aria-label="Aurora version information">
+  <div class="about-version-row"><span>Version</span><strong>1.0.0</strong></div>
+  <div class="about-version-row"><span>Browser engine</span><strong>WebKit</strong></div>
+  <div class="about-version-row"><span>Platform</span><strong>Windows</strong></div>
+ </div>
+ <div class="about-links"><span>Powered by WebKit</span><a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub ↗</a></div>
 </section>
 <section class="panel__ACTIVE_SECTION_TABS__" data-section="appearance"><h1>Appearance</h1><p class="sub">Choose how Aurora looks, including the Start Page wallpaper.</p>
 <div class="field"><label for="theme">Browser appearance</label><select id="theme" name="theme"><option value="system"__THEME_SYSTEM__>Automatic (follow Windows)</option><option value="light"__THEME_LIGHT__>Light</option><option value="dark"__THEME_DARK__>Dark</option></select></div>
@@ -2922,7 +2929,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             { "__ACTIVE_SECTION_SEARCH__", activeSearch }, { "__ACTIVE_SECTION_WEBSITES__", activeWebsites },
             { "__ACTIVE_SECTION_PRIVACY__", activePrivacy }, { "__ACTIVE_SECTION_ADVANCED__", activeAdvanced },
             { "__ACTIVE_ABOUT__", activeAbout }, { "__ACTIVE_SECTION_ABOUT__", activeAbout },
-            { "__AURORA_ABOUT_EMBLEM__", auroraLogoDataUrl() }
+            { "__AURORA_ABOUT_COVER__", imageDataUrl(L"aurora-about-cover.jpg", "image/jpeg") }
         };
         for (const auto& replacement : replacements) {
             size_t offset = 0;
