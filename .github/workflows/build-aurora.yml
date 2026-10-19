@@ -146,30 +146,57 @@ jobs:
             throw "WebKit checkout SHA mismatch. Expected $expectedSha, got $actualSha."
           }
 
-      - name: Patch WebKit with resumable download C API
+      - name: Add resumable download C API to cached WebKit source
         shell: powershell
         run: |
           $source = Join-Path $env:WEBKIT_DIR "Source\WebKit\UIProcess\API\C\WKPage.cpp"
-          $patch = Join-Path $env:GITHUB_WORKSPACE "cmake\patches\wkpage-resume-download-api.patch"
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "WebKit WKPage.cpp not found at $source"
           }
-          if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
-            throw "Aurora's resume-download API patch was not found at $patch"
-          }
 
-          $sourceText = Get-Content -Raw -Path $source
+          $sourceText = [System.IO.File]::ReadAllText($source)
           if ($sourceText.Contains("WKPageResumeDownloadFromResumeData")) {
             Write-Host "WebKit already contains Aurora's resume-download wrapper."
           } else {
-            git -C $env:WEBKIT_DIR apply --check $patch
-            if ($LASTEXITCODE -ne 0) {
-              throw "The WebKit resume-download patch does not match the pinned source. Do not build with a mismatched API."
+            # Insert before a stable function-name anchor instead of using a line-numbered
+            # git patch. The cached WebKit file can have different line endings or offsets.
+            $anchor = "void WKPageLoadURLRequestWithUserData("
+            $anchorIndex = $sourceText.IndexOf($anchor, [System.StringComparison]::Ordinal)
+            if ($anchorIndex -lt 0) {
+              throw "Could not find the WKPageLoadURLRequestWithUserData insertion point in WKPage.cpp."
             }
-            git -C $env:WEBKIT_DIR apply $patch
-            if ($LASTEXITCODE -ne 0) {
-              throw "Could not apply Aurora's resume-download API patch."
-            }
+
+            $wrapper = @'
+using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
+
+extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
+    WKPageRef pageRef,
+    WKDataRef resumeDataRef,
+    WKStringRef pathRef,
+    const void* functionContext,
+    AuroraWKPageResumeDownloadCallback callback)
+{
+    if (!callback)
+        return;
+
+    if (!pageRef || !resumeDataRef || !pathRef) {
+        callback(nullptr, functionContext);
+        return;
+    }
+
+    protect(toImpl(pageRef))->resumeDownload(*toImpl(resumeDataRef), toWTFString(pathRef),
+        [functionContext, callback](auto* download) {
+            callback(download ? toAPI(download) : nullptr, functionContext);
+        });
+}
+'@
+            $sourceText = $sourceText.Insert($anchorIndex, $wrapper + [Environment]::NewLine + [Environment]::NewLine)
+            [System.IO.File]::WriteAllText($source, $sourceText, [System.Text.UTF8Encoding]::new($false))
+          }
+
+          $updatedSource = [System.IO.File]::ReadAllText($source)
+          if (-not $updatedSource.Contains("WKPageResumeDownloadFromResumeData")) {
+            throw "The resumable download wrapper was not written to WKPage.cpp."
           }
 
       - name: Patch rewrite-compile-commands (Windows guard)
