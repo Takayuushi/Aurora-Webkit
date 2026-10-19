@@ -167,29 +167,29 @@ jobs:
             }
 
             $wrapper = @'
-using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
+          using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
 
-extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
-    WKPageRef pageRef,
-    WKDataRef resumeDataRef,
-    WKStringRef pathRef,
-    const void* functionContext,
-    AuroraWKPageResumeDownloadCallback callback)
-{
-    if (!callback)
-        return;
+          extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
+              WKPageRef pageRef,
+              WKDataRef resumeDataRef,
+              WKStringRef pathRef,
+              const void* functionContext,
+              AuroraWKPageResumeDownloadCallback callback)
+          {
+              if (!callback)
+                  return;
 
-    if (!pageRef || !resumeDataRef || !pathRef) {
-        callback(nullptr, functionContext);
-        return;
-    }
+              if (!pageRef || !resumeDataRef || !pathRef) {
+                  callback(nullptr, functionContext);
+                  return;
+              }
 
-    protect(toImpl(pageRef))->resumeDownload(*toImpl(resumeDataRef), toWTFString(pathRef),
-        [functionContext, callback](auto* download) {
-            callback(download ? toAPI(download) : nullptr, functionContext);
-        });
-}
-'@
+              protect(toImpl(pageRef))->resumeDownload(*toImpl(resumeDataRef), toWTFString(pathRef),
+                  [functionContext, callback](auto* download) {
+                      callback(download ? toAPI(download) : nullptr, functionContext);
+                  });
+          }
+          '@
             $sourceText = $sourceText.Insert($anchorIndex, $wrapper + [Environment]::NewLine + [Environment]::NewLine)
             [System.IO.File]::WriteAllText($source, $sourceText, [System.Text.UTF8Encoding]::new($false))
           }
