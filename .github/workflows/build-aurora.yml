@@ -207,82 +207,29 @@ jobs:
           Write-Host "WebKit compiler fingerprint: $fingerprint (MSVC $($msvc.Name), clang $clangVersion, SDK $($sdk.Name))"
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)msvc_toolset=$($msvc.Name)$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
-      # One cache contains the matching WebKit source, compiled output, and libraries.
-      # Keeping one snapshot avoids duplicate large caches evicting each other.
+      # One snapshot contains WebKit source, compiled objects, runtime and vcpkg archives.
+      # The key changes when the compiler or Aurora's CMake graph changes.
       - name: Restore saved WebKit build
         id: cache-webkit-src
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.WEBKIT_DIR }}
-          key: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          key: webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
+          restore-keys: |
+            webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-
+            webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-
+            webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-
+            webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+
+      - name: Report restored WebKit cache
+        if: steps.cache-webkit-src.outputs.cache-matched-key != ''
+        shell: powershell
+        env:
+          CACHE_MATCHED_KEY: ${{ steps.cache-webkit-src.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.cache-webkit-src.outputs.cache-hit }}
+        run: |
+          Write-Host "Exact cache hit: $env:CACHE_EXACT_HIT"
+          Write-Host "Restored cache key: $env:CACHE_MATCHED_KEY"
 
       - name: Require saved WebKit build for normal browser builds
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_webkit != true)
-        shell: powershell
-        run: |
-          throw "No saved WebKit build was found for the pinned SHA. This browser build will not rebuild WebKit automatically. Re-run this workflow manually and enable 'Rebuild WebKit' only when an intentional WebKit rebuild is needed."
-
-      - name: Clone WebKit for an explicitly requested rebuild
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
-        env:
-          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
-        shell: powershell
-        run: |
-          New-Item -ItemType Directory -Force -Path $env:WEBKIT_DIR | Out-Null
-          if (-not (Test-Path (Join-Path $env:WEBKIT_DIR ".git"))) {
-            git -C $env:WEBKIT_DIR init
-            git -C $env:WEBKIT_DIR remote add origin https://github.com/WebKit/WebKit.git
-          }
-          git -C $env:WEBKIT_DIR fetch --depth 1 origin $env:WEBKIT_SHA
-          if ($LASTEXITCODE -ne 0) { throw "Could not fetch requested WebKit revision $env:WEBKIT_SHA" }
-          git -C $env:WEBKIT_DIR checkout --force --detach $env:WEBKIT_SHA
-          if ($LASTEXITCODE -ne 0) { throw "Could not check out requested WebKit revision $env:WEBKIT_SHA" }
-
-      - name: Verify WebKit checkout
-        if: steps.cache-webkit-src.outputs.cache-hit == 'true' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true)
-        env:
-          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
-        shell: powershell
-        run: |
-          $script = Join-Path $env:WEBKIT_DIR "Tools\Scripts\build-webkit"
-          if (-not (Test-Path $script)) {
-            throw "WebKit checkout missing build-webkit. Clone may be incomplete."
-          }
-          $actualSha = (git -C $env:WEBKIT_DIR rev-parse HEAD).Trim()
-          $expectedSha = $env:WEBKIT_SHA
-          if ($actualSha -ne $expectedSha) {
-            throw "WebKit checkout SHA mismatch. Expected $expectedSha, got $actualSha."
-          }
-
-      - name: Add resumable download C API to cached WebKit source
-        shell: powershell
-        run: |
-          $source = Join-Path $env:WEBKIT_DIR "Source\WebKit\UIProcess\API\C\WKPage.cpp"
-          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "WebKit WKPage.cpp not found at $source"
-          }
-
-          $sourceText = [System.IO.File]::ReadAllText($source)
-          if ($sourceText.Contains("WKPageResumeDownloadFromResumeData")) {
-            Write-Host "WebKit already contains Aurora's resume-download wrapper."
-          } else {
-            # Insert before a stable function-name anchor instead of using a line-numbered
-            # git patch. The cached WebKit file can have different line endings or offsets.
-            $anchor = "void WKPageLoadURLRequestWithUserData("
-            $anchorIndex = $sourceText.IndexOf($anchor, [System.StringComparison]::Ordinal)
-            if ($anchorIndex -lt 0) {
-              throw "Could not find the WKPageLoadURLRequestWithUserData insertion point in WKPage.cpp."
-            }
-
-            $wrapper = @'
-          using AuroraWKPageResumeDownloadCallback = void (*)(WKDownloadRef, const void*);
-
-          extern "C" WK_EXPORT void WKPageResumeDownloadFromResumeData(
-              WKPageRef pageRef,
-              WKDataRef resumeDataRef,
-              WKStringRef pathRef,
-              const void* functionContext,
-              AuroraWKPageResumeDownloadCallback callback)
-          {
-              if (!callback)
-                  return;
+        if: steps.cache-webkit-src.outputs.cache-matched-key == '' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_webkit != true)
