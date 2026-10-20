@@ -1508,6 +1508,14 @@ struct BrowserState {
         if (webFullscreen || !window)
             return;
 
+        if (sidebarAnimating) {
+            sidebarAnimating = false;
+            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
+            sidebarOpen = sidebarAnimationTargetWidth > 0;
+        }
+        if (contentTransitionMode != ContentTransitionMode::None)
+            finishContentTransition();
+
         GetWindowRect(window, &fullscreenRestoreWindowRect);
         fullscreenRestoreWasMaximized = customMaximized;
         webFullscreen = true;
@@ -5090,6 +5098,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             positionFindBar();
         if (invalidateWholeWindow)
             InvalidateRect(window, nullptr, FALSE);
+        if (contentTransitionMode != ContentTransitionMode::None)
+            updateContentTransitionWindow();
     }
 
     void toggleMaximizeWindow()
