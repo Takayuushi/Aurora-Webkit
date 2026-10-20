@@ -1899,6 +1899,12 @@ struct BrowserState {
             return;
         }
 
+        int snapshotWidth = 0;
+        int snapshotHeight = 0;
+        HBITMAP snapshot = nullptr;
+        if (auto* tab = active())
+            snapshot = captureViewFrame(*tab, snapshotWidth, snapshotHeight);
+
         sidebarOpen = open || currentWidth > 0;
         sidebarAnimationStartWidth = currentWidth;
         sidebarAnimationTargetWidth = targetWidth;
@@ -1908,15 +1914,23 @@ struct BrowserState {
         if (!sidebarAnimating) {
             sidebarOpen = open;
             sidebarAnimatedWidth = targetWidth;
-        } else {
-            startChromeAnimationTimer();
+            if (snapshot)
+                DeleteObject(snapshot);
+            resize();
+            return;
         }
 
-        resize(false, false);
-        RECT client { };
-        GetClientRect(window, &client);
-        RECT repaint { 0, contentTop(), fullWidth, client.bottom };
-        InvalidateRect(window, &repaint, FALSE);
+        // Keep the live WebKit surface untouched during the slide. The snapshot
+        // overlay carries the visual transition; WebKit is resized once at the end.
+        if (!beginContentTransition(snapshot, snapshotWidth, snapshotHeight, ContentTransitionMode::Sidebar)) {
+            sidebarAnimating = false;
+            sidebarAnimatedWidth = targetWidth;
+            sidebarOpen = open;
+            resize();
+            return;
+        }
+        updateContentTransitionWindow();
+        startChromeAnimationTimer();
     }
 
     void animateChrome()
@@ -1976,14 +1990,13 @@ struct BrowserState {
                 sidebarAnimationStartWidth
                 + (sidebarAnimationTargetWidth - sidebarAnimationStartWidth) * eased));
 
-            // Move WebKit views without forcing synchronous invalidation every frame.
-            // This avoids repeatedly clearing the accelerated surface during the slide.
-            resize(false, false);
-            RECT client { };
-            GetClientRect(window, &client);
-            RECT repaint { 0, contentTop(), scaleForDpi(window, 300), client.bottom };
-            if (previousWidth != sidebarAnimatedWidth)
-                InvalidateRect(window, &repaint, FALSE);
+            // Only the lightweight snapshot overlay and sidebar are animated.
+            // Never resize/repaint WebKit on every animation tick.
+            if (previousWidth != sidebarAnimatedWidth) {
+                updateContentTransitionWindow();
+                if (contentTransitionWindow)
+                    InvalidateRect(contentTransitionWindow, nullptr, FALSE);
+            }
 
             if (elapsed < 240) {
                 continueAnimation = true;
@@ -1991,8 +2004,38 @@ struct BrowserState {
                 sidebarAnimating = false;
                 sidebarAnimatedWidth = sidebarAnimationTargetWidth;
                 sidebarOpen = sidebarAnimationTargetWidth > 0;
-                // Repaint the active WebKit view once at the final size, not on every frame.
-                resize(true, true);
+                resize(true, false);
+                updateContentTransitionWindow();
+                contentTransitionFading = true;
+                contentTransitionFadeStart = GetTickCount64();
+            }
+        }
+
+        if (contentTransitionMode == ContentTransitionMode::TabSwitch && !contentTransitionFading) {
+            const ULONGLONG elapsed = GetTickCount64() - contentTransitionStart;
+            updateContentTransitionWindow();
+            if (contentTransitionWindow)
+                InvalidateRect(contentTransitionWindow, nullptr, FALSE);
+            if (elapsed >= 180) {
+                contentTransitionFading = true;
+                contentTransitionFadeStart = GetTickCount64();
+            } else {
+                continueAnimation = true;
+            }
+        }
+
+        if (contentTransitionFading) {
+            const ULONGLONG elapsed = GetTickCount64() - contentTransitionFadeStart;
+            const float t = std::clamp(static_cast<float>(elapsed) / 110.0f, 0.0f, 1.0f);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            const BYTE alpha = static_cast<BYTE>(std::lround(255.0f * (1.0f - eased)));
+            if (contentTransitionWindow)
+                SetLayeredWindowAttributes(contentTransitionWindow, 0, alpha, LWA_ALPHA);
+            if (elapsed < 110) {
+                continueAnimation = true;
+            } else {
+                finishContentTransition();
+                InvalidateRect(window, nullptr, FALSE);
             }
         }
 
@@ -5979,6 +6022,37 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             drawTabOverviewPage(dc);
     }
 };
+
+LRESULT CALLBACK contentTransitionProcedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        browser = static_cast<BrowserState*>(create ? create->lpCreateParams : nullptr);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(browser));
+    }
+
+    switch (message) {
+    case WM_PAINT: {
+        PAINTSTRUCT paint { };
+        HDC dc = BeginPaint(hwnd, &paint);
+        if (browser)
+            browser->paintContentTransition(dc);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
 
 void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef listener, const void* clientInfo)
 {
