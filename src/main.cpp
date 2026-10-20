@@ -1168,6 +1168,10 @@ struct BrowserState {
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
+    bool sidebarAnimating { false };
+    float sidebarAnimationFrom { 0.0f };
+    float sidebarAnimationTarget { 0.0f };
+    ULONGLONG sidebarAnimationStart { 0 };
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
@@ -1675,6 +1679,56 @@ struct BrowserState {
             chromeAnimationTimerActive = true;
     }
 
+    float sidebarProgress() const
+    {
+        if (!sidebarAnimating)
+            return sidebarOpen ? 1.0f : 0.0f;
+        const ULONGLONG elapsed = GetTickCount64() - sidebarAnimationStart;
+        const float t = std::clamp(static_cast<float>(elapsed) / 260.0f, 0.0f, 1.0f);
+        const float eased = t * t * (3.0f - 2.0f * t);
+        return sidebarAnimationFrom + (sidebarAnimationTarget - sidebarAnimationFrom) * eased;
+    }
+
+    int sidebarOffset() const
+    {
+        return static_cast<int>(std::lround(
+            static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
+    }
+
+    void toggleSidebar()
+    {
+        if (!window)
+            return;
+
+        hoveredSidebarRow = -1;
+        hoveredSidebarSettings = false;
+
+        // Overview owns the content canvas, so keep its sidebar layout change
+        // immediate rather than moving a hidden WebKit surface through the cards.
+        if (tabOverviewVisible) {
+            sidebarOpen = !sidebarOpen;
+            sidebarAnimating = false;
+            sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
+            sidebarAnimationTarget = sidebarAnimationFrom;
+            resize();
+            RedrawWindow(window, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            return;
+        }
+
+        const float from = sidebarProgress();
+        sidebarOpen = !sidebarOpen;
+        sidebarAnimationFrom = from;
+        sidebarAnimationTarget = sidebarOpen ? 1.0f : 0.0f;
+        sidebarAnimationStart = GetTickCount64();
+        sidebarAnimating = std::abs(sidebarAnimationTarget - sidebarAnimationFrom) > 0.001f;
+        if (sidebarAnimating)
+            startChromeAnimationTimer();
+
+        resize();
+        redrawAfterLayoutChange();
+    }
+
     void updateToolbarHover(POINT point)
     {
         int nextHovered = -1;
@@ -1756,6 +1810,8 @@ struct BrowserState {
                     nextSidebarRow = row;
             }
         }
+        if (sidebarAnimating)
+            nextSidebarRow = -1;
         if (nextSidebarRow != hoveredSidebarRow) {
             const int previous = hoveredSidebarRow;
             hoveredSidebarRow = nextSidebarRow;
@@ -1770,7 +1826,7 @@ struct BrowserState {
         }
 
         const RECT sidebarSettings = sidebarSettingsRect();
-        const bool nextSidebarSettings = sidebarOpen && PtInRect(&sidebarSettings, point);
+        const bool nextSidebarSettings = sidebarOpen && !sidebarAnimating && PtInRect(&sidebarSettings, point);
         if (nextSidebarSettings != hoveredSidebarSettings) {
             hoveredSidebarSettings = nextSidebarSettings;
             InvalidateRect(window, &sidebarSettings, FALSE);
@@ -1902,6 +1958,32 @@ struct BrowserState {
                 continueAnimation = true;
             else
                 tabOverviewAnimating = false;
+        }
+
+        if (sidebarAnimating) {
+            const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 260;
+            if (!tabOverviewVisible) {
+                if (auto* selected = active()) {
+                    if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
+                        // Move only; the WKView keeps a constant frame size during
+                        // the animation so WebKit does not relayout on every tick.
+                        SetWindowPos(viewWindow, HWND_TOP, sidebarOffset(), contentTop(), 0, 0,
+                            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+                    }
+                }
+            }
+            RECT client { };
+            if (GetClientRect(window, &client)) {
+                RECT contentArea { 0, contentTop(), client.right, client.bottom };
+                InvalidateRect(window, &contentArea, FALSE);
+            }
+            if (transitionStillActive) {
+                continueAnimation = true;
+            } else {
+                sidebarAnimating = false;
+                resize();
+                redrawAfterLayoutChange();
+            }
         }
 
         // Do not invalidate the whole chrome band here: it includes Smart Search,
@@ -4628,7 +4710,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         );
 
         int contentTop = this->contentTop();
-        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
+        int contentLeft = webFullscreen ? 0 : sidebarOffset();
         const int offscreenX = static_cast<int>(client.right) + scaleForDpi(window, 24);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
@@ -4647,11 +4729,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 continue;
             }
 
+            const int viewWidth = sidebarAnimating && !webFullscreen
+                ? static_cast<int>(client.right)
+                : static_cast<int>(client.right - contentLeft);
             MoveWindow(
                 viewWindow,
                 contentLeft,
                 contentTop,
-                std::max<int>(0, static_cast<int>(client.right - contentLeft)),
+                std::max<int>(0, viewWidth),
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 FALSE
             );
@@ -4736,9 +4821,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             reloadOrStop();
             break;
         case kCommandSidebar:
-            sidebarOpen = !sidebarOpen;
-            resize();
-            redrawAfterLayoutChange();
+            toggleSidebar();
             break;
         case kCommandPrivacy:
             showWebsiteSettingsMenu();
@@ -5161,7 +5244,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void drawSidebarPanel(HDC dc)
     {
-        if (!sidebarOpen)
+        if (!sidebarOpen && !sidebarAnimating)
+            return;
+
+        const int savedDC = SaveDC(dc);
+        if (!savedDC)
             return;
 
         const bool dark = chromeDarkTheme();
@@ -5169,6 +5256,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
+        // Translate the complete sidebar as one surface: at progress 0 it is
+        // entirely left of the client, and at progress 1 it sits at x=0.
+        SetViewportOrgEx(dc, sidebarOffset() - width, 0, nullptr);
 
         RECT panel { 0, top, width, client.bottom };
         HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
@@ -5334,10 +5424,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (secondaryFont) DeleteObject(secondaryFont);
         if (headingFont) DeleteObject(headingFont);
         DeleteObject(font);
+        RestoreDC(dc, savedDC);
     }
 
     bool handleSidebarHit(POINT point)
     {
+        if (sidebarAnimating) {
+            const int visibleWidth = sidebarOffset();
+            return point.x >= 0 && point.x < visibleWidth && point.y >= contentTop();
+        }
         if (!sidebarOpen)
             return false;
 
@@ -5349,9 +5444,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT closeRect { width - scaleForDpi(window, 52), top + scaleForDpi(window, 8),
             width - scaleForDpi(window, 6), top + scaleForDpi(window, 48) };
         if (PtInRect(&closeRect, point)) {
-            sidebarOpen = false;
-            resize();
-            InvalidateRect(window, nullptr, FALSE);
+            toggleSidebar();
             return true;
         }
 
