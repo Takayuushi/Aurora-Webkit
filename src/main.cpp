@@ -2007,7 +2007,9 @@ struct BrowserState {
                 resize(true, false);
                 updateContentTransitionWindow();
                 contentTransitionFading = true;
-                contentTransitionFadeStart = GetTickCount64();
+                // Give the single final WebKit resize a short head start to paint
+                // underneath the opaque snapshot before fading it away.
+                contentTransitionFadeStart = GetTickCount64() + 75;
             }
         }
 
@@ -2025,17 +2027,22 @@ struct BrowserState {
         }
 
         if (contentTransitionFading) {
-            const ULONGLONG elapsed = GetTickCount64() - contentTransitionFadeStart;
-            const float t = std::clamp(static_cast<float>(elapsed) / 110.0f, 0.0f, 1.0f);
-            const float eased = t * t * (3.0f - 2.0f * t);
-            const BYTE alpha = static_cast<BYTE>(std::lround(255.0f * (1.0f - eased)));
-            if (contentTransitionWindow)
-                SetLayeredWindowAttributes(contentTransitionWindow, 0, alpha, LWA_ALPHA);
-            if (elapsed < 110) {
+            const ULONGLONG now = GetTickCount64();
+            if (now < contentTransitionFadeStart) {
                 continueAnimation = true;
             } else {
-                finishContentTransition();
-                InvalidateRect(window, nullptr, FALSE);
+                const ULONGLONG elapsed = now - contentTransitionFadeStart;
+                const float t = std::clamp(static_cast<float>(elapsed) / 110.0f, 0.0f, 1.0f);
+                const float eased = t * t * (3.0f - 2.0f * t);
+                const BYTE alpha = static_cast<BYTE>(std::lround(255.0f * (1.0f - eased)));
+                if (contentTransitionWindow)
+                    SetLayeredWindowAttributes(contentTransitionWindow, 0, alpha, LWA_ALPHA);
+                if (elapsed < 110) {
+                    continueAnimation = true;
+                } else {
+                    finishContentTransition();
+                    InvalidateRect(window, nullptr, FALSE);
+                }
             }
         }
 
