@@ -308,8 +308,10 @@ jobs:
 
           $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
           if (-not (Test-Path (Join-Path $buildDir "CMakeCache.txt"))) { throw "WebKit CMake build directory not found at $buildDir" }
-          # Refresh the cached graph; the new resume API invalidates one WebKit C API translation unit, so it is rebuilt and relinked incrementally.
-          cmd /c "call `"$vcvars`" && cmake -S `"$env:WEBKIT_DIR`" -B `"$buildDir`" && cmake --build `"$buildDir`" --target Aurora --config Release"
+          # The cached graph already contains Aurora. Avoid an unconditional configure:
+          # it reruns vcpkg and can invalidate thousands of reusable WebKit objects.
+          # CMake/Ninja still regenerates automatically when tracked configure inputs change.
+          cmd /c "call `"$vcvars`" && cmake --build `"$buildDir`" --target Aurora --config Release"
           if ($LASTEXITCODE -ne 0) { throw "Building the Aurora target failed with exit code $LASTEXITCODE" }
 
       - name: Package Aurora with matching WebKit runtime files
