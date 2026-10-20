@@ -1723,7 +1723,7 @@ struct BrowserState {
         return ensure(sidebarOverlayWindow) && ensure(tabOverviewWindow);
     }
 
-    void positionOverlayWindows()
+    void positionOverlayWindows(bool forceTop = false)
     {
         if (!window || IsIconic(window))
             return;
@@ -1743,11 +1743,12 @@ struct BrowserState {
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
-                if (alreadyVisible)
+                if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
-                else
+                else if (!alreadyVisible)
                     flags |= SWP_SHOWWINDOW;
-                SetWindowPos(sidebarOverlayWindow, alreadyVisible ? nullptr : HWND_TOP,
+                SetWindowPos(sidebarOverlayWindow,
+                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
                     left, top, width, height, flags);
                 InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
             }
@@ -1761,11 +1762,12 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
-                if (alreadyVisible)
+                if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
-                else
+                else if (!alreadyVisible)
                     flags |= SWP_SHOWWINDOW;
-                SetWindowPos(tabOverviewWindow, alreadyVisible ? nullptr : HWND_TOP, left, top,
+                SetWindowPos(tabOverviewWindow,
+                    alreadyVisible && !forceTop ? nullptr : HWND_TOP, left, top,
                     std::max(0, static_cast<int>(client.right) - left), height, flags);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
@@ -3883,6 +3885,9 @@ search.addEventListener('keydown',e=>{
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
             SetFocus(selectedView);
         }
+        // activateTab raises the selected WKView last; restore overlay z-order after
+        // that so an open sidebar remains above it without touching the renderer.
+        positionOverlayWindows(true);
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -4817,7 +4822,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         if (findBarVisible)
             positionFindBar();
-        positionOverlayWindows();
+        positionOverlayWindows(true);
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -5316,8 +5321,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void drawSidebarPanel(HDC dc, bool overlaySurface = false)
     {
-        if (sidebarAnimating ? !overlaySurface : !sidebarOpen)
+        if (overlaySurface) {
+            if (!sidebarOpen && !sidebarAnimating)
+                return;
+        } else if (sidebarOpen || sidebarAnimating) {
+            // The dedicated overlay HWND owns the visible sidebar surface.
             return;
+        }
 
         const int savedDC = SaveDC(dc);
         if (!savedDC)
