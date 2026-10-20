@@ -1162,6 +1162,7 @@ struct BrowserState {
     bool sidebarOverlayAnimationFrameReady { false };
     HBITMAP tabOverviewBitmap { nullptr };
     SIZE tabOverviewBitmapSize { 0, 0 };
+    bool tabOverviewAnimationFrameReady { false };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
@@ -3888,6 +3889,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
             tabOverviewClosing = true;
+            tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
             
             startChromeAnimationTimer();
@@ -3974,6 +3976,7 @@ search.addEventListener('keydown',e=>{
             // overlay has become transparent, avoiding a black intermediate frame.
             tabOverviewVisible = false;
             tabOverviewClosing = true;
+            tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewAnimating = false;
             
@@ -4728,6 +4731,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // Use its last preview (or the lightweight placeholder) during the animation;
         // thumbnail capture on the UI thread caused a noticeable pause on entry.
         tabOverviewClosing = false;
+        tabOverviewAnimationFrameReady = false;
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -9220,16 +9224,22 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             recreatedBitmap = true;
             if (overlay == state->sidebarOverlayWindow)
                 state->sidebarOverlayAnimationFrameReady = false;
+            else if (overlay == state->tabOverviewWindow)
+                state->tabOverviewAnimationFrameReady = false;
         }
 
         HDC bufferDC = CreateCompatibleDC(dc);
         const bool reuseSidebarFrame = overlay == state->sidebarOverlayWindow
             && state->sidebarAnimating && state->sidebarOverlayAnimationFrameReady
             && !recreatedBitmap && cachedBitmap;
+        const bool reuseOverviewFrame = overlay == state->tabOverviewWindow
+            && (state->tabOverviewAnimating || state->tabOverviewClosing)
+            && state->tabOverviewAnimationFrameReady && !recreatedBitmap && cachedBitmap;
+        const bool reuseOverlayFrame = reuseSidebarFrame || reuseOverviewFrame;
 
         if (bufferDC && cachedBitmap) {
             HGDIOBJ oldBitmap = SelectObject(bufferDC, cachedBitmap);
-            if (!reuseSidebarFrame) {
+            if (!reuseOverlayFrame) {
                 RECT bufferRect { 0, 0, width, height };
                 HBRUSH background = CreateSolidBrush(state->chromeDarkTheme()
                     ? RGB(30, 30, 32) : RGB(240, 241, 244));
@@ -9250,6 +9260,9 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 }
                 if (overlay == state->sidebarOverlayWindow && state->sidebarAnimating)
                     state->sidebarOverlayAnimationFrameReady = true;
+                else if (overlay == state->tabOverviewWindow
+                    && (state->tabOverviewAnimating || state->tabOverviewClosing))
+                    state->tabOverviewAnimationFrameReady = true;
             }
 
             BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
@@ -9260,6 +9273,8 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 DeleteDC(bufferDC);
             if (overlay == state->sidebarOverlayWindow)
                 state->sidebarOverlayAnimationFrameReady = false;
+            else if (overlay == state->tabOverviewWindow)
+                state->tabOverviewAnimationFrameReady = false;
             const int saved = SaveDC(dc);
             if (saved) {
                 if (overlay == state->sidebarOverlayWindow) {
