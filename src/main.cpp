@@ -2046,6 +2046,171 @@ struct BrowserState {
         ReleaseDC(viewWindow, sourceDC);
     }
 
+    void drawStartPageThumbnail(HDC dc, const RECT& preview) const
+    {
+        const int width = static_cast<int>(preview.right - preview.left);
+        const int height = static_cast<int>(preview.bottom - preview.top);
+        if (width <= 0 || height <= 0)
+            return;
+        const int savedState = SaveDC(dc);
+        IntersectClipRect(dc, preview.left, preview.top, preview.right, preview.bottom);
+
+        HBRUSH background = CreateSolidBrush(RGB(11, 31, 52));
+        FillRect(dc, &preview, background);
+        DeleteObject(background);
+
+        HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+        const RECT tealOuter { preview.left - width / 7, preview.top - height / 2,
+            preview.left + width * 3 / 5, preview.top + height * 5 / 4 };
+        HBRUSH tealBrush = CreateSolidBrush(RGB(17, 67, 76));
+        HGDIOBJ oldBrush = SelectObject(dc, tealBrush);
+        Ellipse(dc, tealOuter.left, tealOuter.top, tealOuter.right, tealOuter.bottom);
+        SelectObject(dc, oldBrush);
+        DeleteObject(tealBrush);
+
+        const RECT tealInner { preview.left + width / 12, preview.top - height / 5,
+            preview.left + width / 2, preview.top + height * 4 / 5 };
+        HBRUSH tealInnerBrush = CreateSolidBrush(RGB(18, 89, 88));
+        oldBrush = SelectObject(dc, tealInnerBrush);
+        Ellipse(dc, tealInner.left, tealInner.top, tealInner.right, tealInner.bottom);
+        SelectObject(dc, oldBrush);
+        DeleteObject(tealInnerBrush);
+
+        const RECT violetOuter { preview.left + width * 3 / 5, preview.top - height / 2,
+            preview.right + width / 4, preview.top + height * 6 / 5 };
+        HBRUSH violetBrush = CreateSolidBrush(RGB(42, 45, 91));
+        oldBrush = SelectObject(dc, violetBrush);
+        Ellipse(dc, violetOuter.left, violetOuter.top, violetOuter.right, violetOuter.bottom);
+        SelectObject(dc, oldBrush);
+        DeleteObject(violetBrush);
+        SelectObject(dc, oldPen);
+
+        RECT bottomShade { preview.left, preview.top + height * 3 / 4, preview.right, preview.bottom };
+        HBRUSH bottomBrush = CreateSolidBrush(RGB(8, 24, 43));
+        FillRect(dc, &bottomShade, bottomBrush);
+        DeleteObject(bottomBrush);
+
+        const int logoSize = std::max(scaleForDpi(window, 14), height / 8);
+        RECT logoRect { preview.left + width / 2 - logoSize / 2,
+            preview.top + height / 12, preview.left + width / 2 + logoSize / 2,
+            preview.top + height / 12 + logoSize };
+        drawCompass(dc, logoRect);
+
+        HFONT titleFont = CreateFontW(-std::max(scaleForDpi(window, 11), height / 10),
+            0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
+        HGDIOBJ oldFont = SelectObject(dc, titleFont);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(246, 249, 255));
+        RECT titleRect { preview.left + width / 4, logoRect.bottom + height / 80,
+            preview.right - width / 4, logoRect.bottom + height / 6 };
+        DrawTextW(dc, L"Aurora", -1, &titleRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+        const int searchHeight = std::max(scaleForDpi(window, 10), height / 9);
+        RECT searchRect { preview.left + width / 5, preview.top + height * 48 / 100,
+            preview.right - width / 5, preview.top + height * 48 / 100 + searchHeight };
+        drawRoundedControl(dc, searchRect, RGB(75, 103, 128), RGB(113, 143, 166),
+            static_cast<float>(searchHeight) / 2.0f);
+
+        const int tileSize = std::max(scaleForDpi(window, 8), height / 10);
+        const int tileGap = std::max(scaleForDpi(window, 4), width / 70);
+        constexpr int tileCount = 7;
+        const int totalWidth = tileCount * tileSize + (tileCount - 1) * tileGap;
+        const int startX = preview.left + (width - totalWidth) / 2;
+        const int tileY = preview.top + height * 69 / 100;
+        const COLORREF accents[tileCount] {
+            RGB(40, 166, 169), RGB(231, 238, 249), RGB(32, 159, 185),
+            RGB(223, 51, 67), RGB(63, 64, 70), RGB(227, 94, 43), RGB(234, 239, 246)
+        };
+        for (int i = 0; i < tileCount; ++i) {
+            RECT tile { startX + i * (tileSize + tileGap), tileY,
+                startX + i * (tileSize + tileGap) + tileSize, tileY + tileSize };
+            drawRoundedControl(dc, tile, accents[i], accents[i],
+                static_cast<float>(tileSize) * .22f);
+        }
+        if (titleFont) {
+            SelectObject(dc, oldFont);
+            DeleteObject(titleFont);
+        }
+        if (savedState)
+            RestoreDC(dc, savedState);
+    }
+
+    void drawSettingsTabThumbnail(HDC dc, const RECT& preview, bool dark) const
+    {
+        const int width = static_cast<int>(preview.right - preview.left);
+        const int height = static_cast<int>(preview.bottom - preview.top);
+        if (width <= 0 || height <= 0)
+            return;
+        const int savedState = SaveDC(dc);
+        IntersectClipRect(dc, preview.left, preview.top, preview.right, preview.bottom);
+
+        const COLORREF base = dark ? RGB(37, 37, 40) : RGB(246, 247, 249);
+        const COLORREF header = dark ? RGB(46, 46, 49) : RGB(252, 252, 253);
+        const COLORREF surface = dark ? RGB(48, 48, 52) : RGB(255, 255, 255);
+        const COLORREF line = dark ? RGB(69, 69, 73) : RGB(220, 223, 227);
+        const COLORREF foreground = dark ? RGB(236, 236, 239) : RGB(42, 45, 49);
+        const COLORREF muted = dark ? RGB(143, 143, 149) : RGB(131, 136, 143);
+
+        HBRUSH background = CreateSolidBrush(base);
+        FillRect(dc, &preview, background);
+        DeleteObject(background);
+        RECT headerRect { preview.left, preview.top, preview.right, preview.top + height / 5 };
+        HBRUSH headerBrush = CreateSolidBrush(header);
+        FillRect(dc, &headerRect, headerBrush);
+        DeleteObject(headerBrush);
+
+        HFONT titleFont = CreateFontW(-std::max(scaleForDpi(window, 10), height / 11),
+            0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
+        HGDIOBJ oldFont = SelectObject(dc, titleFont);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, foreground);
+        RECT brandRect { preview.left + width / 24, preview.top + height / 30,
+            preview.right - width / 24, preview.top + height / 7 };
+        DrawTextW(dc, L"Aurora Settings", -1, &brandRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        const int categoryY = preview.top + height / 5 + height / 14;
+        const int categoryH = std::max(7, height / 12);
+        const int categoryGap = std::max(3, width / 100);
+        const int categoryW = (width - 2 * (width / 24) - 6 * categoryGap) / 7;
+        for (int i = 0; i < 7; ++i) {
+            RECT category { preview.left + width / 24 + i * (categoryW + categoryGap),
+                categoryY, preview.left + width / 24 + i * (categoryW + categoryGap) + categoryW,
+                categoryY + categoryH };
+            const COLORREF fill = i == 0 ? (dark ? RGB(73, 73, 78) : RGB(224, 227, 232)) : header;
+            drawRoundedControl(dc, category, fill, line, static_cast<float>(categoryH) / 3.0f);
+        }
+
+        const int bodyTop = categoryY + categoryH + height / 12;
+        SetTextColor(dc, foreground);
+        RECT sectionTitle { preview.left + width / 18, bodyTop, preview.right - width / 18,
+            bodyTop + height / 9 };
+        DrawTextW(dc, L"General", -1, &sectionTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        const int fieldLeft = preview.left + width / 18;
+        const int fieldRight = preview.right - width / 18;
+        const int fieldHeight = std::max(8, height / 12);
+        const int fieldGap = std::max(6, height / 18);
+        for (int i = 0; i < 2; ++i) {
+            const int y = bodyTop + height / 6 + i * (fieldHeight + fieldGap);
+            RECT fieldLabel { fieldLeft, y, fieldLeft + width / 4, y + fieldHeight };
+            RECT fieldValue { fieldLeft + width / 3, y - 2, fieldRight, y + fieldHeight + 2 };
+            SetTextColor(dc, muted);
+            DrawTextW(dc, i == 0 ? L"Homepage" : L"Downloads", -1, &fieldLabel,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            drawRoundedControl(dc, fieldValue, surface, line, static_cast<float>(fieldHeight) / 3.0f);
+        }
+        if (titleFont) {
+            SelectObject(dc, oldFont);
+            DeleteObject(titleFont);
+        }
+        if (savedState)
+            RestoreDC(dc, savedState);
+    }
+
     bool handleTabOverviewHit(POINT point)
     {
         if (!tabOverviewVisible)
@@ -2175,10 +2340,16 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
+            } else if (tabs[i]->internalPage == L"start") {
+                drawStartPageThumbnail(dc, preview);
+            } else if (tabs[i]->internalPage == L"settings") {
+                const bool tabDark = tabs[i]->hasInternalThemeSnapshot
+                    ? tabs[i]->internalDarkTheme : dark;
+                drawSettingsTabThumbnail(dc, preview, tabDark);
             } else {
                 RECT fakeBar { preview.left, preview.top, preview.right, preview.top + scaleForDpi(window, 18) };
                 HBRUSH fakeBarBrush = CreateSolidBrush(dark ? RGB(48, 48, 51) : RGB(236, 238, 241));
-                FillRect(dc, &fakeBar, fakeBarBrush);
+                FillRect(dc, &preview, fakeBarBrush);
                 DeleteObject(fakeBarBrush);
                 if (tabs[i]->favicon) {
                     const int iconSize = scaleForDpi(window, 20);
