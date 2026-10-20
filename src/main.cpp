@@ -1852,7 +1852,7 @@ struct BrowserState {
         if (!tabOverviewAnimating)
             return 1.0f;
         const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 220.0f, 0.0f, 1.0f);
+        const float t = std::clamp(static_cast<float>(elapsed) / 280.0f, 0.0f, 1.0f);
         return t * t * (3.0f - 2.0f * t);
     }
 
@@ -1895,7 +1895,7 @@ struct BrowserState {
         }
 
         if (tabOverviewAnimating) {
-            const bool transitionStillActive = GetTickCount64() - tabOverviewAnimationStart < 220;
+            const bool transitionStillActive = GetTickCount64() - tabOverviewAnimationStart < 280;
             const RECT overviewArea = tabOverviewAreaRect();
             InvalidateRect(window, &overviewArea, FALSE);
             if (transitionStillActive)
@@ -1958,12 +1958,23 @@ struct BrowserState {
         const int column = static_cast<int>(index % static_cast<size_t>(columns));
         const int row = static_cast<int>(index / static_cast<size_t>(columns));
         const int left = groupLeft + column * (cardWidth + gap);
-        int top = area.top + headerHeight + row * (cardHeight + gap);
+        const int top = area.top + headerHeight + row * (cardHeight + gap);
+        int drawLeft = left;
+        int drawTop = top;
+        int drawWidth = cardWidth;
+        int drawHeight = cardHeight;
         if (tabOverviewAnimating) {
-            const int offset = static_cast<int>((1.0f - tabOverviewEase()) * scaleForDpi(window, 13));
-            top += offset;
+            const float progress = tabOverviewEase();
+            // A deliberate, eased lift-and-scale gives overview entry a visible
+            // Safari-like spatial transition instead of the previous 13px nudge.
+            const int inset = static_cast<int>((1.0f - progress) * scaleForDpi(window, 14));
+            const int travel = static_cast<int>((1.0f - progress) * scaleForDpi(window, 34));
+            drawLeft += inset;
+            drawTop += travel + inset;
+            drawWidth = std::max(scaleForDpi(window, 100), drawWidth - inset * 2);
+            drawHeight = std::max(scaleForDpi(window, 80), drawHeight - inset * 2);
         }
-        return { left, top, left + cardWidth, top + cardHeight };
+        return { drawLeft, drawTop, drawLeft + drawWidth, drawTop + drawHeight };
     }
 
     RECT tabOverviewCloseRect(size_t index) const
@@ -3724,7 +3735,7 @@ search.addEventListener('keydown',e=>{
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             RedrawWindow(selectedView, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
             SetFocus(selectedView);
         }
         invalidateTabChrome(tab);
@@ -3767,10 +3778,6 @@ search.addEventListener('keydown',e=>{
 
         if (keepOverviewOpen) {
             tabSwitchAnimating = false;
-            for (const auto& tab : tabs) {
-                if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
-                    ShowWindow(viewWindow, SW_HIDE);
-            }
             if (auto* tab = active()) {
                 const std::wstring text = tab->activeUrl == L"about:blank" ? L"" : tab->activeUrl;
                 SetWindowTextW(addressBar, text.c_str());
@@ -4471,12 +4478,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         startChromeAnimationTimer();
-        for (const auto& tab : tabs) {
-            if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
-                ShowWindow(viewWindow, SW_HIDE);
-        }
+        // Move live WKViews offscreen while preserving their visibility/state;
+        // this leaves the parent HWND free to draw the animated overview.
+        resize();
         SetFocus(window);
-        InvalidateRect(window, nullptr, FALSE);
+        RedrawWindow(window, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
     }
 
     void showSidebarSelectionMenu()
@@ -4573,9 +4580,37 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
+    void redrawActiveWebView(bool immediate = false)
+    {
+        if (!window || IsIconic(window) || tabOverviewVisible)
+            return;
+        auto* selected = active();
+        if (!selected)
+            return;
+        HWND viewWindow = WKViewGetWindow(selected->view.get());
+        if (!viewWindow || !IsWindowVisible(viewWindow))
+            return;
+
+        UINT flags = RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE;
+        if (immediate)
+            flags |= RDW_UPDATENOW;
+        RedrawWindow(viewWindow, nullptr, nullptr, flags);
+    }
+
+    void redrawAfterLayoutChange()
+    {
+        if (!window || IsIconic(window))
+            return;
+        redrawActiveWebView(true);
+        RedrawWindow(window, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+    }
+
     void resize()
     {
-        if (!window)
+        // A minimized HWND reports a 0x0 client size. Do not propagate that size
+        // into WKView child HWNDs: some WebKit GPU surfaces never recover cleanly.
+        if (!window || IsIconic(window))
             return;
 
         RECT client { };
@@ -4594,14 +4629,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         int contentTop = this->contentTop();
         int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
+        const int offscreenX = static_cast<int>(client.right) + scaleForDpi(window, 24);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
 
-            // Repaint the WebKit child after changing the sidebar offset. Without
-            // repainting here, the old viewport can remain visible over the sidebar
-            // until another WebKit paint or window event occurs.
+            // Never stack inactive WebKit HWNDs over the selected page. During
+            // Tab Overview, move every live surface outside the clipped client
+            // area so the parent can paint the overview without hiding WebKit
+            // (WM_SHOWWINDOW can invalidate video/GPU renderer state on this port).
+            // Keep the existing size and visibility; only the active surface gets
+            // resized to the current viewport.
+            if (tabOverviewVisible || tab.get() != active()) {
+                SetWindowPos(viewWindow, HWND_BOTTOM, offscreenX, contentTop, 0, 0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+                continue;
+            }
+
             MoveWindow(
                 viewWindow,
                 contentLeft,
@@ -4610,7 +4655,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 FALSE
             );
-            if (tab.get() == active() && IsWindowVisible(viewWindow))
+            if (IsWindowVisible(viewWindow))
                 InvalidateRect(viewWindow, nullptr, FALSE);
         }
 
@@ -4653,6 +4698,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         resize();
+        disableNativeWindowBorder(window);
+        redrawAfterLayoutChange();
     }
 
     void handleCommand(UINT command)
@@ -4691,7 +4738,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kCommandSidebar:
             sidebarOpen = !sidebarOpen;
             resize();
-            InvalidateRect(window, nullptr, FALSE);
+            redrawAfterLayoutChange();
             break;
         case kCommandPrivacy:
             showWebsiteSettingsMenu();
@@ -8770,18 +8817,19 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_SIZE:
         if (state) {
-            const bool restoredFromMinimized = state->wasMinimized && wParam != SIZE_MINIMIZED;
-            state->wasMinimized = wParam == SIZE_MINIMIZED;
+            const bool minimizing = wParam == SIZE_MINIMIZED;
+            const bool restoredFromMinimized = state->wasMinimized && !minimizing;
+            state->wasMinimized = minimizing;
+
+            // Preserve the last valid WKView dimensions while minimized; never
+            // resize live WebKit child windows to the minimized 0x0 client rect.
+            if (minimizing)
+                return 0;
+
             state->resize();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
                 disableNativeWindowBorder(window);
-                if (auto* selected = state->active()) {
-                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                    if (viewWindow)
-                        RedrawWindow(viewWindow, nullptr, nullptr,
-                            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
-                }
-                RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                state->redrawAfterLayoutChange();
             }
         }
         return 0;
