@@ -1082,9 +1082,6 @@ void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
-LRESULT CALLBACK contentTransitionProcedure(HWND, UINT, WPARAM, LPARAM);
-
-enum class ContentTransitionMode { None, Sidebar, TabSwitch };
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -1171,19 +1168,6 @@ struct BrowserState {
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
-    bool sidebarAnimating { false };
-    int sidebarAnimatedWidth { 0 };
-    int sidebarAnimationStartWidth { 0 };
-    int sidebarAnimationTargetWidth { 0 };
-    ULONGLONG sidebarAnimationStart { 0 };
-    HWND contentTransitionWindow { nullptr };
-    HBITMAP contentTransitionBitmap { nullptr };
-    int contentTransitionBitmapWidth { 0 };
-    int contentTransitionBitmapHeight { 0 };
-    ContentTransitionMode contentTransitionMode { ContentTransitionMode::None };
-    ULONGLONG contentTransitionStart { 0 };
-    ULONGLONG contentTransitionFadeStart { 0 };
-    bool contentTransitionFading { false };
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
@@ -1508,14 +1492,6 @@ struct BrowserState {
         if (webFullscreen || !window)
             return;
 
-        if (sidebarAnimating) {
-            sidebarAnimating = false;
-            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
-            sidebarOpen = sidebarAnimationTargetWidth > 0;
-        }
-        if (contentTransitionMode != ContentTransitionMode::None)
-            finishContentTransition();
-
         GetWindowRect(window, &fullscreenRestoreWindowRect);
         fullscreenRestoreWasMaximized = customMaximized;
         webFullscreen = true;
@@ -1764,7 +1740,7 @@ struct BrowserState {
         }
 
         int nextSidebarRow = -1;
-        if (sidebarOpen && !sidebarAnimating) {
+        if (sidebarOpen) {
             const int sidebarWidth = scaleForDpi(window, 300);
             const int rowTop = contentTop() + scaleForDpi(window, 88);
             const int rowHeight = scaleForDpi(window, 46);
@@ -1880,67 +1856,6 @@ struct BrowserState {
         return t * t * (3.0f - 2.0f * t);
     }
 
-    int sidebarWidth() const
-    {
-        if (webFullscreen || !window)
-            return 0;
-        if (sidebarAnimating)
-            return std::clamp(sidebarAnimatedWidth, 0, scaleForDpi(window, 300));
-        return sidebarOpen ? scaleForDpi(window, 300) : 0;
-    }
-
-    void setSidebarOpenAnimated(bool open)
-    {
-        if (!window || webFullscreen) {
-            sidebarOpen = open;
-            sidebarAnimating = false;
-            sidebarAnimatedWidth = open && window ? scaleForDpi(window, 300) : 0;
-            resize();
-            return;
-        }
-
-        const int fullWidth = scaleForDpi(window, 300);
-        const int currentWidth = sidebarWidth();
-        const int targetWidth = open ? fullWidth : 0;
-        if (!sidebarAnimating && currentWidth == targetWidth) {
-            sidebarOpen = open;
-            return;
-        }
-
-        int snapshotWidth = 0;
-        int snapshotHeight = 0;
-        HBITMAP snapshot = nullptr;
-        if (auto* tab = active())
-            snapshot = captureViewFrame(*tab, snapshotWidth, snapshotHeight);
-
-        sidebarOpen = open || currentWidth > 0;
-        sidebarAnimationStartWidth = currentWidth;
-        sidebarAnimationTargetWidth = targetWidth;
-        sidebarAnimatedWidth = currentWidth;
-        sidebarAnimationStart = GetTickCount64();
-        sidebarAnimating = currentWidth != targetWidth;
-        if (!sidebarAnimating) {
-            sidebarOpen = open;
-            sidebarAnimatedWidth = targetWidth;
-            if (snapshot)
-                DeleteObject(snapshot);
-            resize();
-            return;
-        }
-
-        // Keep the live WebKit surface untouched during the slide. The snapshot
-        // overlay carries the visual transition; WebKit is resized once at the end.
-        if (!beginContentTransition(snapshot, snapshotWidth, snapshotHeight, ContentTransitionMode::Sidebar)) {
-            sidebarAnimating = false;
-            sidebarAnimatedWidth = targetWidth;
-            sidebarOpen = open;
-            resize();
-            return;
-        }
-        updateContentTransitionWindow();
-        startChromeAnimationTimer();
-    }
-
     void animateChrome()
     {
         if (!window)
@@ -1989,71 +1904,6 @@ struct BrowserState {
                 tabOverviewAnimating = false;
         }
 
-        if (sidebarAnimating) {
-            const ULONGLONG elapsed = GetTickCount64() - sidebarAnimationStart;
-            const float t = std::clamp(static_cast<float>(elapsed) / 240.0f, 0.0f, 1.0f);
-            const float eased = t * t * (3.0f - 2.0f * t);
-            const int previousWidth = sidebarAnimatedWidth;
-            sidebarAnimatedWidth = static_cast<int>(std::lround(
-                sidebarAnimationStartWidth
-                + (sidebarAnimationTargetWidth - sidebarAnimationStartWidth) * eased));
-
-            // Only the lightweight snapshot overlay and sidebar are animated.
-            // Never resize/repaint WebKit on every animation tick.
-            if (previousWidth != sidebarAnimatedWidth) {
-                updateContentTransitionWindow();
-                if (contentTransitionWindow)
-                    InvalidateRect(contentTransitionWindow, nullptr, FALSE);
-            }
-
-            if (elapsed < 240) {
-                continueAnimation = true;
-            } else {
-                sidebarAnimating = false;
-                sidebarAnimatedWidth = sidebarAnimationTargetWidth;
-                sidebarOpen = sidebarAnimationTargetWidth > 0;
-                resize(true, false);
-                updateContentTransitionWindow();
-                contentTransitionFading = true;
-                // Give the single final WebKit resize a short head start to paint
-                // underneath the opaque snapshot before fading it away.
-                contentTransitionFadeStart = GetTickCount64() + 75;
-            }
-        }
-
-        if (contentTransitionMode == ContentTransitionMode::TabSwitch && !contentTransitionFading) {
-            const ULONGLONG elapsed = GetTickCount64() - contentTransitionStart;
-            updateContentTransitionWindow();
-            if (contentTransitionWindow)
-                InvalidateRect(contentTransitionWindow, nullptr, FALSE);
-            if (elapsed >= 180) {
-                contentTransitionFading = true;
-                contentTransitionFadeStart = GetTickCount64();
-            } else {
-                continueAnimation = true;
-            }
-        }
-
-        if (contentTransitionFading) {
-            const ULONGLONG now = GetTickCount64();
-            if (now < contentTransitionFadeStart) {
-                continueAnimation = true;
-            } else {
-                const ULONGLONG elapsed = now - contentTransitionFadeStart;
-                const float t = std::clamp(static_cast<float>(elapsed) / 110.0f, 0.0f, 1.0f);
-                const float eased = t * t * (3.0f - 2.0f * t);
-                const BYTE alpha = static_cast<BYTE>(std::lround(255.0f * (1.0f - eased)));
-                if (contentTransitionWindow)
-                    SetLayeredWindowAttributes(contentTransitionWindow, 0, alpha, LWA_ALPHA);
-                if (elapsed < 110) {
-                    continueAnimation = true;
-                } else {
-                    finishContentTransition();
-                    InvalidateRect(window, nullptr, FALSE);
-                }
-            }
-        }
-
         // Do not invalidate the whole chrome band here: it includes Smart Search,
         // whose surface was visibly flashing during unrelated hover transitions.
         if (!continueAnimation) {
@@ -2066,7 +1916,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarWidth();
+        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
         return { left, contentTop(), client.right, client.bottom };
     }
 
@@ -2123,292 +1973,6 @@ struct BrowserState {
         const int inset = scaleForDpi(window, 8);
         return { card.right - inset - size, card.top + inset,
             card.right - inset, card.top + inset + size };
-    }
-
-    HBITMAP copyTabPreviewFrame(TabState& tab, int& outWidth, int& outHeight)
-    {
-        outWidth = 0;
-        outHeight = 0;
-        if (!tab.previewBitmap || tab.previewWidth <= 0 || tab.previewHeight <= 0)
-            return nullptr;
-
-        HDC referenceDC = GetDC(window);
-        if (!referenceDC)
-            return nullptr;
-        HDC sourceDC = CreateCompatibleDC(referenceDC);
-        HDC targetDC = CreateCompatibleDC(referenceDC);
-        HBITMAP copy = CreateCompatibleBitmap(referenceDC, tab.previewWidth, tab.previewHeight);
-        if (!sourceDC || !targetDC || !copy) {
-            if (copy) DeleteObject(copy);
-            if (sourceDC) DeleteDC(sourceDC);
-            if (targetDC) DeleteDC(targetDC);
-            ReleaseDC(window, referenceDC);
-            return nullptr;
-        }
-
-        HGDIOBJ oldSource = SelectObject(sourceDC, tab.previewBitmap);
-        HGDIOBJ oldTarget = SelectObject(targetDC, copy);
-        const BOOL copied = BitBlt(targetDC, 0, 0, tab.previewWidth, tab.previewHeight,
-            sourceDC, 0, 0, SRCCOPY);
-        SelectObject(targetDC, oldTarget);
-        SelectObject(sourceDC, oldSource);
-        DeleteDC(targetDC);
-        DeleteDC(sourceDC);
-        ReleaseDC(window, referenceDC);
-        if (!copied) {
-            DeleteObject(copy);
-            return nullptr;
-        }
-
-        outWidth = tab.previewWidth;
-        outHeight = tab.previewHeight;
-        return copy;
-    }
-
-    HBITMAP captureViewFrame(TabState& tab, int& outWidth, int& outHeight)
-    {
-        outWidth = 0;
-        outHeight = 0;
-        HWND viewWindow = WKViewGetWindow(tab.view.get());
-        if (!viewWindow)
-            return nullptr;
-
-        RECT client { };
-        if (!GetClientRect(viewWindow, &client))
-            return nullptr;
-        const int width = static_cast<int>(client.right - client.left);
-        const int height = static_cast<int>(client.bottom - client.top);
-        if (width < 80 || height < 60)
-            return nullptr;
-
-        HDC sourceDC = GetDC(viewWindow);
-        if (!sourceDC)
-            return nullptr;
-        HDC captureDC = CreateCompatibleDC(sourceDC);
-        HBITMAP frame = CreateCompatibleBitmap(sourceDC, width, height);
-        if (!captureDC || !frame) {
-            if (frame) DeleteObject(frame);
-            if (captureDC) DeleteDC(captureDC);
-            ReleaseDC(viewWindow, sourceDC);
-            return nullptr;
-        }
-
-        HGDIOBJ oldBitmap = SelectObject(captureDC, frame);
-        RECT full { 0, 0, width, height };
-        HBRUSH fill = CreateSolidBrush(chromeDarkTheme() ? RGB(25, 25, 28) : RGB(246, 247, 249));
-        FillRect(captureDC, &full, fill);
-        DeleteObject(fill);
-
-        BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
-        if (!captured)
-            captured = BitBlt(captureDC, 0, 0, width, height, sourceDC, 0, 0, SRCCOPY);
-
-        bool looksBlank = false;
-        if (captured) {
-            int sampled = 0;
-            int nearBlack = 0;
-            int minLuminance = 255;
-            int maxLuminance = 0;
-            for (int sy = 1; sy <= 5; ++sy) {
-                for (int sx = 1; sx <= 7; ++sx) {
-                    const int x = width * sx / 8;
-                    const int y = height * sy / 6;
-                    const COLORREF pixel = GetPixel(captureDC, x, y);
-                    if (pixel == CLR_INVALID)
-                        continue;
-                    const int luminance = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
-                        + GetBValue(pixel) * 11) / 100;
-                    ++sampled;
-                    minLuminance = std::min(minLuminance, luminance);
-                    maxLuminance = std::max(maxLuminance, luminance);
-                    if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
-                        ++nearBlack;
-                }
-            }
-            looksBlank = sampled >= 20 && nearBlack * 100 >= sampled * 94
-                && maxLuminance - minLuminance <= 9;
-        }
-
-        if (!captured || looksBlank) {
-            if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0) {
-                HDC previewDC = CreateCompatibleDC(sourceDC);
-                if (previewDC) {
-                    HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
-                    SetStretchBltMode(captureDC, HALFTONE);
-                    captured = StretchBlt(captureDC, 0, 0, width, height,
-                        previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
-                    SelectObject(previewDC, oldPreview);
-                    DeleteDC(previewDC);
-                } else {
-                    captured = FALSE;
-                }
-            } else {
-                captured = FALSE;
-            }
-        }
-
-        SelectObject(captureDC, oldBitmap);
-        DeleteDC(captureDC);
-        ReleaseDC(viewWindow, sourceDC);
-        if (!captured) {
-            DeleteObject(frame);
-            return nullptr;
-        }
-
-        outWidth = width;
-        outHeight = height;
-        return frame;
-    }
-
-    bool ensureContentTransitionWindow()
-    {
-        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
-            return true;
-
-        static const wchar_t className[] = L"AuroraContentTransitionSurface";
-        WNDCLASSEXW cls { };
-        cls.cbSize = sizeof(cls);
-        cls.lpfnWndProc = contentTransitionProcedure;
-        cls.hInstance = GetModuleHandleW(nullptr);
-        cls.lpszClassName = className;
-        if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-            return false;
-
-        RECT client { };
-        GetClientRect(window, &client);
-        contentTransitionWindow = CreateWindowExW(
-            WS_EX_NOACTIVATE | WS_EX_LAYERED,
-            className, L"",
-            WS_CHILD | WS_CLIPSIBLINGS,
-            0, contentTop(), std::max(1L, client.right),
-            std::max(1L, client.bottom - contentTop()),
-            window, nullptr, GetModuleHandleW(nullptr), this);
-        if (!contentTransitionWindow)
-            return false;
-
-        SetLayeredWindowAttributes(contentTransitionWindow, 0, 255, LWA_ALPHA);
-        return true;
-    }
-
-    void updateContentTransitionWindow()
-    {
-        if (!contentTransitionWindow || !IsWindow(contentTransitionWindow) || !window)
-            return;
-
-        RECT client { };
-        GetClientRect(window, &client);
-        const int top = contentTop();
-        int left = sidebarWidth();
-        int width = std::max(1L, client.right - left);
-        int height = std::max(1L, client.bottom - top);
-
-        if (contentTransitionMode == ContentTransitionMode::Sidebar) {
-            left = 0;
-            width = std::max(1L, client.right);
-        }
-        SetWindowPos(contentTransitionWindow, HWND_TOP, left, top, width, height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        InvalidateRect(contentTransitionWindow, nullptr, FALSE);
-    }
-
-    bool beginContentTransition(HBITMAP bitmap, int width, int height, ContentTransitionMode mode)
-    {
-        if (!bitmap || width <= 0 || height <= 0) {
-            if (bitmap)
-                DeleteObject(bitmap);
-            return false;
-        }
-
-        finishContentTransition();
-        contentTransitionBitmap = bitmap;
-        contentTransitionBitmapWidth = width;
-        contentTransitionBitmapHeight = height;
-        contentTransitionMode = mode;
-        contentTransitionStart = GetTickCount64();
-        contentTransitionFading = false;
-        contentTransitionFadeStart = 0;
-
-        if (!ensureContentTransitionWindow()) {
-            finishContentTransition();
-            return false;
-        }
-
-        updateContentTransitionWindow();
-        SetLayeredWindowAttributes(contentTransitionWindow, 0, 255, LWA_ALPHA);
-        startChromeAnimationTimer();
-        return true;
-    }
-
-    void finishContentTransition()
-    {
-        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
-            DestroyWindow(contentTransitionWindow);
-        contentTransitionWindow = nullptr;
-        if (contentTransitionBitmap)
-            DeleteObject(contentTransitionBitmap);
-        contentTransitionBitmap = nullptr;
-        contentTransitionBitmapWidth = 0;
-        contentTransitionBitmapHeight = 0;
-        contentTransitionMode = ContentTransitionMode::None;
-        contentTransitionFading = false;
-        contentTransitionFadeStart = 0;
-    }
-
-    void paintContentTransition(HDC dc)
-    {
-        if (!dc || !contentTransitionBitmap || contentTransitionMode == ContentTransitionMode::None)
-            return;
-
-        RECT destination { };
-        if (!contentTransitionWindow || !GetClientRect(contentTransitionWindow, &destination))
-            return;
-        const int width = static_cast<int>(destination.right - destination.left);
-        const int height = static_cast<int>(destination.bottom - destination.top);
-        if (width <= 0 || height <= 0)
-            return;
-
-        const bool dark = chromeDarkTheme();
-        HBRUSH background = CreateSolidBrush(dark ? RGB(24, 24, 27) : RGB(246, 247, 249));
-        FillRect(dc, &destination, background);
-        DeleteObject(background);
-
-        HDC bitmapDC = CreateCompatibleDC(dc);
-        if (bitmapDC) {
-            HGDIOBJ oldBitmap = SelectObject(bitmapDC, contentTransitionBitmap);
-            SetStretchBltMode(dc, HALFTONE);
-            SetBrushOrgEx(dc, 0, 0, nullptr);
-
-            if (contentTransitionMode == ContentTransitionMode::Sidebar) {
-                const int left = std::clamp(sidebarWidth(), 0, width);
-                const int drawWidth = std::max(0, width - left);
-                if (drawWidth > 0)
-                    StretchBlt(dc, left, 0, drawWidth, height, bitmapDC, 0, 0,
-                        contentTransitionBitmapWidth, contentTransitionBitmapHeight, SRCCOPY);
-
-                // Draw the sidebar in the transition surface too: the WebKit child
-                // remains alive underneath, while this surface owns all visible pixels
-                // until the final one-time WebKit resize is complete.
-                const int savedState = SaveDC(dc);
-                SetViewportOrgEx(dc, 0, -contentTop(), nullptr);
-                drawSidebarPanel(dc);
-                if (savedState)
-                    RestoreDC(dc, savedState);
-            } else {
-                const ULONGLONG elapsed = GetTickCount64() - contentTransitionStart;
-                const float t = std::clamp(static_cast<float>(elapsed) / 180.0f, 0.0f, 1.0f);
-                const float eased = t * t * (3.0f - 2.0f * t);
-                const float scale = 0.982f + 0.018f * eased;
-                const int drawWidth = std::max(1, static_cast<int>(width * scale));
-                const int drawHeight = std::max(1, static_cast<int>(height * scale));
-                const int drawLeft = (width - drawWidth) / 2;
-                const int drawTop = (height - drawHeight) / 2;
-                StretchBlt(dc, drawLeft, drawTop, drawWidth, drawHeight, bitmapDC, 0, 0,
-                    contentTransitionBitmapWidth, contentTransitionBitmapHeight, SRCCOPY);
-            }
-
-            SelectObject(bitmapDC, oldBitmap);
-            DeleteDC(bitmapDC);
-        }
     }
 
     void captureTabThumbnail(TabState& tab)
@@ -3319,12 +2883,6 @@ struct BrowserState {
 
     ~BrowserState()
     {
-        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
-            DestroyWindow(contentTransitionWindow);
-        contentTransitionWindow = nullptr;
-        if (contentTransitionBitmap)
-            DeleteObject(contentTransitionBitmap);
-        contentTransitionBitmap = nullptr;
         if (addressSuggestionWindow && IsWindow(addressSuggestionWindow))
             DestroyWindow(addressSuggestionWindow);
         if (addressBar && addressBarOriginalProcedure)
@@ -4113,31 +3671,12 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
-        if (sidebarAnimating) {
-            sidebarAnimating = false;
-            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
-            sidebarOpen = sidebarAnimationTargetWidth > 0;
-            resize(true, false);
-        }
-        if (contentTransitionMode != ContentTransitionMode::None)
-            finishContentTransition();
-
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         if (addressEditing)
             endAddressEditing();
-
-        HBITMAP nextPageFrame = nullptr;
-        int nextPageWidth = 0;
-        int nextPageHeight = 0;
-        if (previouslyActive != index && !webFullscreen) {
-            nextPageFrame = copyTabPreviewFrame(*tabs[index], nextPageWidth, nextPageHeight);
-            if (!nextPageFrame)
-                nextPageFrame = captureViewFrame(*tabs[index], nextPageWidth, nextPageHeight);
-        }
-        if (nextPageFrame)
-            beginContentTransition(nextPageFrame, nextPageWidth, nextPageHeight, ContentTransitionMode::TabSwitch);
-
+        if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
+            captureTabThumbnail(*tabs[previouslyActive]);
         tabOverviewVisible = false;
         tabOverviewAnimating = false;
         hoveredOverviewTab = -1;
@@ -4180,17 +3719,14 @@ search.addEventListener('keydown',e=>{
         if (selectedView)
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-        resize(true, false);
+        resize();
         if (selectedView) {
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            // Queue WebKit's paint normally. The snapshot overlay conceals any brief
-            // empty accelerated frame while the new page surface becomes current.
-            InvalidateRect(selectedView, nullptr, FALSE);
+            RedrawWindow(selectedView, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
         }
-        if (contentTransitionMode != ContentTransitionMode::None)
-            updateContentTransitionWindow();
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -4919,15 +4455,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (tabs.empty())
             return;
 
-        if (sidebarAnimating) {
-            sidebarAnimating = false;
-            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
-            sidebarOpen = sidebarAnimationTargetWidth > 0;
-            resize(true, false);
-        }
-        if (contentTransitionMode != ContentTransitionMode::None)
-            finishContentTransition();
-
         if (tabOverviewVisible) {
             activateTab(activeTab);
             return;
@@ -4973,7 +4500,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (command == kSidebarBookmarks) sidebarSection = 0;
         else if (command == kSidebarReadingList) sidebarSection = 1;
         else if (command == kSidebarHistory) sidebarSection = 2;
-        setSidebarOpenAnimated(true);
+        sidebarOpen = true;
+        resize();
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void executeWebEditCommand(const char* command)
@@ -5044,7 +4573,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
-    void resize(bool invalidateWebViews = true, bool invalidateWholeWindow = true)
+    void resize()
     {
         if (!window)
             return;
@@ -5054,27 +4583,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         RECT pill = addressPillRect();
-        if (invalidateWholeWindow) {
-            MoveWindow(
-                addressBar,
-                pill.left + scaleForDpi(window, 30),
-                pill.top + scaleForDpi(window, 2),
-                std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
-                std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
-                TRUE
-            );
-        }
+        MoveWindow(
+            addressBar,
+            pill.left + scaleForDpi(window, 30),
+            pill.top + scaleForDpi(window, 2),
+            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
+            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
+            TRUE
+        );
 
         int contentTop = this->contentTop();
-        int contentLeft = sidebarWidth();
-        if (!sidebarAnimating)
-            sidebarAnimatedWidth = contentLeft;
+        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
         for (const auto& tab : tabs) {
-            // During the sidebar transition only the visible page must track the
-            // animated width. Resizing hidden WebKit views every 16 ms causes waste
-            // and can leave them with stale/black composited frames.
-            if (!invalidateWholeWindow && tab.get() != active())
-                continue;
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
@@ -5090,16 +4610,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 FALSE
             );
-            if (invalidateWebViews && tab.get() == active() && IsWindowVisible(viewWindow))
+            if (tab.get() == active() && IsWindowVisible(viewWindow))
                 InvalidateRect(viewWindow, nullptr, FALSE);
         }
 
         if (findBarVisible)
             positionFindBar();
-        if (invalidateWholeWindow)
-            InvalidateRect(window, nullptr, FALSE);
-        if (contentTransitionMode != ContentTransitionMode::None)
-            updateContentTransitionWindow();
+        InvalidateRect(window, nullptr, FALSE);
     }
 
     void toggleMaximizeWindow()
@@ -5171,13 +4688,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kCommandReload:
             reloadOrStop();
             break;
-        case kCommandSidebar: {
-            const bool targetOpen = sidebarAnimating
-                ? sidebarAnimationTargetWidth == 0
-                : !sidebarOpen;
-            setSidebarOpenAnimated(targetOpen);
+        case kCommandSidebar:
+            sidebarOpen = !sidebarOpen;
+            resize();
+            InvalidateRect(window, nullptr, FALSE);
             break;
-        }
         case kCommandPrivacy:
             showWebsiteSettingsMenu();
             break;
@@ -5295,9 +4810,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
-        case kSidebarBookmarks: sidebarSection = 0; setSidebarOpenAnimated(true); break;
-        case kSidebarReadingList: sidebarSection = 1; setSidebarOpenAnimated(true); break;
-        case kSidebarHistory: sidebarSection = 2; setSidebarOpenAnimated(true); break;
+        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; resize(); break;
+        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; resize(); break;
+        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; resize(); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -5599,30 +5114,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void drawSidebarPanel(HDC dc)
     {
-        if (!sidebarOpen && !sidebarAnimating)
+        if (!sidebarOpen)
             return;
 
-        const int visibleWidth = sidebarWidth();
-        if (visibleWidth <= 0)
-            return;
-
-        const int savedDC = SaveDC(dc);
         const bool dark = chromeDarkTheme();
-        const int width = scaleForDpi(window, 300);
-        const int top = contentTop();
+        int width = scaleForDpi(window, 300);
+        int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
-        IntersectClipRect(dc, 0, top, visibleWidth, client.bottom);
 
-        RECT panel { 0, top, visibleWidth, client.bottom };
+        RECT panel { 0, top, width, client.bottom };
         HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
         FillRect(dc, &panel, brush);
         DeleteObject(brush);
 
         HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
-        MoveToEx(dc, visibleWidth - 1, top, nullptr);
-        LineTo(dc, visibleWidth - 1, client.bottom);
+        MoveToEx(dc, width - 1, top, nullptr);
+        LineTo(dc, width - 1, client.bottom);
         SelectObject(dc, oldPen);
         DeleteObject(divider);
 
@@ -5778,29 +5287,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (secondaryFont) DeleteObject(secondaryFont);
         if (headingFont) DeleteObject(headingFont);
         DeleteObject(font);
-        if (savedDC)
-            RestoreDC(dc, savedDC);
     }
 
     bool handleSidebarHit(POINT point)
     {
-        if ((!sidebarOpen && !sidebarAnimating) || sidebarWidth() <= 0)
+        if (!sidebarOpen)
             return false;
 
-        int width = sidebarWidth();
+        int width = scaleForDpi(window, 300);
         int top = contentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
 
-        // Consume clicks only inside the visible animated sidebar. Do not interfere
-        // with page interaction elsewhere while the sidebar is moving.
-        if (sidebarAnimating)
-            return true;
-
         RECT closeRect { width - scaleForDpi(window, 52), top + scaleForDpi(window, 8),
             width - scaleForDpi(window, 6), top + scaleForDpi(window, 48) };
         if (PtInRect(&closeRect, point)) {
-            setSidebarOpenAnimated(false);
+            sidebarOpen = false;
+            resize();
+            InvalidateRect(window, nullptr, FALSE);
             return true;
         }
 
@@ -6110,37 +5614,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             drawTabOverviewPage(dc);
     }
 };
-
-LRESULT CALLBACK contentTransitionProcedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        browser = static_cast<BrowserState*>(create ? create->lpCreateParams : nullptr);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(browser));
-    }
-
-    switch (message) {
-    case WM_PAINT: {
-        PAINTSTRUCT paint { };
-        HDC dc = BeginPaint(hwnd, &paint);
-        if (browser)
-            browser->paintContentTransition(dc);
-        EndPaint(hwnd, &paint);
-        return 0;
-    }
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_NCHITTEST:
-        return HTTRANSPARENT;
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-    case WM_NCDESTROY:
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        break;
-    }
-    return DefWindowProcW(hwnd, message, wParam, lParam);
-}
 
 void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef listener, const void* clientInfo)
 {
