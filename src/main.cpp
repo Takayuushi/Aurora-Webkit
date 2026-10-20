@@ -3915,7 +3915,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewAnimating = false;
             tabOverviewClosing = false;
             if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-                
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         }
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
