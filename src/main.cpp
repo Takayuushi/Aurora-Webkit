@@ -4058,12 +4058,30 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
+        if (sidebarAnimating) {
+            sidebarAnimating = false;
+            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
+            sidebarOpen = sidebarAnimationTargetWidth > 0;
+            resize(true, false);
+        }
+        if (contentTransitionMode != ContentTransitionMode::None)
+            finishContentTransition();
+
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         if (addressEditing)
             endAddressEditing();
+
+        HBITMAP nextPageFrame = nullptr;
+        int nextPageWidth = 0;
+        int nextPageHeight = 0;
+        if (previouslyActive != index && !webFullscreen)
+            nextPageFrame = captureViewFrame(*tabs[index], nextPageWidth, nextPageHeight);
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
             captureTabThumbnail(*tabs[previouslyActive]);
+        if (nextPageFrame)
+            beginContentTransition(nextPageFrame, nextPageWidth, nextPageHeight, ContentTransitionMode::TabSwitch);
+
         tabOverviewVisible = false;
         tabOverviewAnimating = false;
         hoveredOverviewTab = -1;
@@ -4106,14 +4124,17 @@ search.addEventListener('keydown',e=>{
         if (selectedView)
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-        resize();
+        resize(true, false);
         if (selectedView) {
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            RedrawWindow(selectedView, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            // Queue WebKit's paint normally. The snapshot overlay conceals any brief
+            // empty accelerated frame while the new page surface becomes current.
+            InvalidateRect(selectedView, nullptr, FALSE);
             SetFocus(selectedView);
         }
+        if (contentTransitionMode != ContentTransitionMode::None)
+            updateContentTransitionWindow();
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -4841,6 +4862,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (tabs.empty())
             return;
+
+        if (sidebarAnimating) {
+            sidebarAnimating = false;
+            sidebarAnimatedWidth = sidebarAnimationTargetWidth;
+            sidebarOpen = sidebarAnimationTargetWidth > 0;
+            resize(true, false);
+        }
+        if (contentTransitionMode != ContentTransitionMode::None)
+            finishContentTransition();
 
         if (tabOverviewVisible) {
             activateTab(activeTab);
