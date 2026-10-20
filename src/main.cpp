@@ -1726,12 +1726,15 @@ struct BrowserState {
 
         const int top = contentTop();
         const int height = std::max(0, static_cast<int>(client.bottom) - top);
-        if (sidebarAnimating) {
+        // Keep the sidebar on its own HWND both while moving and while settled.
+        // The WebKit view remains stationary underneath it, avoiding renderer
+        // blackouts caused by moving/resizing the accelerated WKView child.
+        if (sidebarOpen || sidebarAnimating) {
             if (ensureOverlayWindows()) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 SetWindowPos(sidebarOverlayWindow, HWND_TOP, left, top, width, height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
                 InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)) {
@@ -1743,7 +1746,7 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 SetWindowPos(tabOverviewWindow, HWND_TOP, left, top,
                     std::max(0, static_cast<int>(client.right) - left), height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
             ShowWindow(tabOverviewWindow, SW_HIDE);
@@ -1758,16 +1761,16 @@ struct BrowserState {
         hoveredSidebarRow = -1;
         hoveredSidebarSettings = false;
 
-        // Overview owns the content canvas, so keep its sidebar layout change
-        // immediate rather than moving a hidden WebKit surface through the cards.
+        // The overview owns the content canvas; update its overlay layout without
+        // asking the WebKit surface to resize or repaint.
         if (tabOverviewVisible) {
             sidebarOpen = !sidebarOpen;
             sidebarAnimating = false;
             sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
             sidebarAnimationTarget = sidebarAnimationFrom;
-            resize();
-            RedrawWindow(window, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            positionOverlayWindows();
+            const RECT buttonRect = sidebarButtonRect();
+            InvalidateRect(window, &buttonRect, FALSE);
             return;
         }
 
@@ -1780,8 +1783,12 @@ struct BrowserState {
         if (sidebarAnimating)
             startChromeAnimationTimer();
 
-        resize();
-        redrawAfterLayoutChange();
+        // Only the independent sidebar overlay changes geometry during this
+        // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
+        // resize and synchronously repaint the WebKit GPU surface.
+        positionOverlayWindows();
+        const RECT buttonRect = sidebarButtonRect();
+        InvalidateRect(window, &buttonRect, FALSE);
     }
 
     void updateToolbarHover(POINT point)
@@ -2005,17 +2012,16 @@ struct BrowserState {
 
         if (sidebarAnimating) {
             const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 260;
-            // Animate the dedicated overlay only. Moving the accelerated WebKit
-            // HWND on every timer tick was causing black frames after sidebar close.
+            // Animate only the independent sidebar overlay. The WebKit HWND is
+            // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
-                // resize() commits the final WebKit geometry before it hides the
-                // overlay, avoiding a one-frame gap between the two surfaces.
                 sidebarAnimating = false;
-                resize();
-                redrawAfterLayoutChange();
+                positionOverlayWindows();
+                const RECT buttonRect = sidebarButtonRect();
+                InvalidateRect(window, &buttonRect, FALSE);
             }
         }
 
@@ -4755,10 +4761,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         );
 
         int contentTop = this->contentTop();
-        // Keep the live WebKit HWND at a stable viewport during the overlay motion.
-        // Sidebar layout is committed only once, when the animation has completed.
-        int contentLeft = webFullscreen ? 0
-            : (sidebarAnimating ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0));
+        // The sidebar is a real overlay, not a viewport resize. Keep the accelerated
+        // WebKit surface at x=0 for both open/closed states so the renderer never
+        // has to recreate its backing surface just because the library drawer moved.
+        const int contentLeft = 0;
         const int offscreenX = static_cast<int>(client.right) + scaleForDpi(window, 24);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
@@ -4774,9 +4780,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 continue;
             }
 
-            const int viewWidth = sidebarAnimating && !webFullscreen
-                ? static_cast<int>(client.right)
-                : static_cast<int>(client.right - contentLeft);
+            const int viewWidth = static_cast<int>(client.right);
             MoveWindow(
                 viewWindow,
                 contentLeft,
