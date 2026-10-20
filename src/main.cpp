@@ -1082,6 +1082,9 @@ void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK contentTransitionProcedure(HWND, UINT, WPARAM, LPARAM);
+
+enum class ContentTransitionMode { None, Sidebar, TabSwitch };
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -1173,6 +1176,14 @@ struct BrowserState {
     int sidebarAnimationStartWidth { 0 };
     int sidebarAnimationTargetWidth { 0 };
     ULONGLONG sidebarAnimationStart { 0 };
+    HWND contentTransitionWindow { nullptr };
+    HBITMAP contentTransitionBitmap { nullptr };
+    int contentTransitionBitmapWidth { 0 };
+    int contentTransitionBitmapHeight { 0 };
+    ContentTransitionMode contentTransitionMode { ContentTransitionMode::None };
+    ULONGLONG contentTransitionStart { 0 };
+    ULONGLONG contentTransitionFadeStart { 0 };
+    bool contentTransitionFading { false };
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
@@ -2964,6 +2975,12 @@ struct BrowserState {
 
     ~BrowserState()
     {
+        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
+            DestroyWindow(contentTransitionWindow);
+        contentTransitionWindow = nullptr;
+        if (contentTransitionBitmap)
+            DeleteObject(contentTransitionBitmap);
+        contentTransitionBitmap = nullptr;
         if (addressSuggestionWindow && IsWindow(addressSuggestionWindow))
             DestroyWindow(addressSuggestionWindow);
         if (addressBar && addressBarOriginalProcedure)
