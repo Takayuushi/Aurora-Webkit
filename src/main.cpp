@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cwchar>
 #include <cwctype>
 #include <cstddef>
