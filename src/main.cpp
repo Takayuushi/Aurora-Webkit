@@ -5384,10 +5384,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(47, 47, 50) : RGB(250, 250, 251));
+        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(44, 44, 48) : RGB(247, 248, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
+
+        // A restrained top-edge sheen gives the native toolbar a glass-like surface
+        // without moving any controls or relying on platform-specific backdrop APIs.
+        const int sheenHeight = std::max(1, scaleForDpi(window, 6));
+        const COLORREF sheenTop = dark ? RGB(62, 62, 68) : RGB(255, 255, 255);
+        const COLORREF sheenBottom = dark ? RGB(44, 44, 48) : RGB(247, 248, 251);
+        for (int y = 0; y < sheenHeight; ++y) {
+            const float weight = static_cast<float>(y) / std::max(1, sheenHeight - 1);
+            HBRUSH sheenBrush = CreateSolidBrush(blendColor(sheenTop, sheenBottom, weight));
+            RECT sheenRect { 0, y, client.right, y + 1 };
+            FillRect(dc, &sheenRect, sheenBrush);
+            DeleteObject(sheenBrush);
+        }
 
         HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(65, 65, 69) : RGB(226, 228, 231));
         HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
@@ -5489,6 +5502,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     blendColor(inactiveFill, activeFill, activeWeight),
                     blendColor(inactiveBorder, activeBorder, activeWeight),
                     static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
+                if (activeWeight > 0.04f) {
+                    const int inset = MulDiv(10, dpi, 96);
+                    RECT tabSheen { tabRect.left + inset, tabRect.top + MulDiv(2, dpi, 96),
+                        tabRect.right - inset, tabRect.top + MulDiv(3, dpi, 96) };
+                    const COLORREF sheen = blendColor(dark ? RGB(47, 47, 49) : RGB(233, 234, 236),
+                        dark ? RGB(101, 101, 106) : RGB(255, 255, 255), activeWeight);
+                    HBRUSH tabSheenBrush = CreateSolidBrush(sheen);
+                    FillRect(dc, &tabSheen, tabSheenBrush);
+                    DeleteObject(tabSheenBrush);
+                }
                 const int iconSize = MulDiv(16, dpi, 96);
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
                 RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
@@ -5518,9 +5541,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT pill = addressPillRect();
         drawRoundedControl(dc, pill,
-            dark ? RGB(63, 63, 67) : RGB(247, 248, 250),
-            dark ? RGB(88, 88, 92) : RGB(226, 229, 233),
+            dark ? RGB(61, 61, 66) : RGB(249, 250, 252),
+            dark ? RGB(91, 91, 97) : RGB(220, 224, 230),
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
+        const int addressSheenInset = std::max(5, MulDiv(13, dpi, 96));
+        RECT addressSheen { pill.left + addressSheenInset, pill.top + MulDiv(2, dpi, 96),
+            pill.right - addressSheenInset, pill.top + MulDiv(3, dpi, 96) };
+        HBRUSH addressSheenBrush = CreateSolidBrush(dark ? RGB(91, 91, 97) : RGB(255, 255, 255));
+        FillRect(dc, &addressSheen, addressSheenBrush);
+        DeleteObject(addressSheenBrush);
         if (!addressEditing) {
             const std::wstring addressText = addressDisplayText();
             if (!addressText.empty()) {
