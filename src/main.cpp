@@ -5388,13 +5388,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if ((!sidebarOpen && !sidebarAnimating) || sidebarWidth() <= 0)
             return false;
-        if (sidebarAnimating)
-            return true;
 
         int width = sidebarWidth();
         int top = contentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
+
+        // Consume clicks only inside the visible animated sidebar. Do not interfere
+        // with page interaction elsewhere while the sidebar is moving.
+        if (sidebarAnimating)
+            return true;
 
         RECT closeRect { width - scaleForDpi(window, 52), top + scaleForDpi(window, 8),
             width - scaleForDpi(window, 6), top + scaleForDpi(window, 48) };
