@@ -3829,6 +3829,21 @@ search.addEventListener('keydown',e=>{
 
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
+        if (switchingFromOverview && index == previouslyActive) {
+            // The active page has remained live behind the overview overlay.
+            // Close the overlay directly instead of resizing/redrawing WebKit.
+            tabOverviewVisible = false;
+            tabOverviewAnimating = false;
+            hoveredOverviewTab = -1;
+            hoveredOverviewNewTab = false;
+            positionOverlayWindows(true);
+            if (auto* selected = active()) {
+                if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                    SetFocus(viewWindow);
+                invalidateTabChrome(selected);
+            }
+            return;
+        }
         if (addressEditing)
             endAddressEditing();
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
@@ -4627,18 +4642,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         if (addressEditing)
             endAddressEditing();
-        if (auto* tab = active())
-            captureTabThumbnail(*tab);
 
+        // Do not synchronously PrintWindow/BitBlt the live WebKit surface here.
+        // Use its last preview (or the lightweight placeholder) during the animation;
+        // thumbnail capture on the UI thread caused a noticeable pause on entry.
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         startChromeAnimationTimer();
-        // The overview is an independent child surface layered above the live page.
-        // This avoids hide/show and offscreen moves that caused renderer loss/flicker.
-        resize();
+        // Lay out only the overlay. resize() would invalidate and relayout the
+        // accelerated page underneath, which is unnecessary for an overlay transition.
+        positionOverlayWindows(true);
         SetFocus(window);
         if (tabOverviewWindow) {
             InvalidateRect(tabOverviewWindow, nullptr, FALSE);
