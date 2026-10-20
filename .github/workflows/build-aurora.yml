@@ -238,6 +238,9 @@ jobs:
           if (-not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) { throw "Visual Studio vcpkg.exe not found under $vcpkgRoot" }
 
           $env:VCPKG_ROOT = $vcpkgRoot
+          # Store vcpkg binary archives alongside the configured engine so the WebKit snapshot retains them.
+          $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache"
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           $env:PATH = "C:\xampp\apache\bin;C:\xampp\perl\bin;C:\xampp\mysql\bin;C:\Program Files\CMake\bin;C:\Program Files\Ninja;C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;C:\Program Files\LLVM\bin;C:\Program Files (x86)\GnuWin32\bin;$env:PATH"
           $env:PYTHON = "python"
           $env:PYTHON3 = "python"
@@ -294,6 +297,9 @@ jobs:
           # Each Actions step starts with a fresh process environment. Recreate
           # the same tool and WebKit paths used by the WebKit build step.
           $env:VCPKG_ROOT = $vcpkgRoot
+          # Store vcpkg binary archives alongside the configured engine so the WebKit snapshot retains them.
+          $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache"
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           $env:PATH = "C:\xampp\apache\bin;C:\xampp\perl\bin;C:\xampp\mysql\bin;C:\Program Files\CMake\bin;C:\Program Files\Ninja;C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;C:\Program Files\LLVM\bin;C:\Program Files (x86)\GnuWin32\bin;$env:PATH"
           $env:PYTHON = "python"
           $env:PYTHON3 = "python"
