@@ -4635,9 +4635,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (sidebarAnimating) {
+            // Settle the drawer at its target state; the overlay layout below will
+            // place it once, without a redundant hide/show in the middle of overview entry.
             sidebarAnimating = false;
-            if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow))
-                ShowWindow(sidebarOverlayWindow, SW_HIDE);
+            sidebarOverlayAnimationFrameReady = false;
         }
 
         if (addressEditing)
