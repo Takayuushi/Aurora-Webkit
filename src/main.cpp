@@ -1185,6 +1185,8 @@ struct BrowserState {
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
+    bool tabOverviewClosing { false };
+    ULONGLONG tabOverviewClosingStart { 0 };
     int hoveredOverviewTab { -1 };
     bool hoveredOverviewNewTab { false };
     int sidebarSection { 0 };
@@ -1713,14 +1715,17 @@ struct BrowserState {
         if (!window)
             return false;
 
-        const auto ensure = [&](HWND& handle) {
+        const auto ensure = [&](HWND& handle, DWORD extendedStyle) {
             if (handle && IsWindow(handle))
                 return true;
-            handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+            handle = CreateWindowExW(extendedStyle, overlayWindowClassName, L"", WS_CHILD,
                 0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
             return handle != nullptr;
         };
-        return ensure(sidebarOverlayWindow) && ensure(tabOverviewWindow);
+        // Layered composition lets overview transitions change opacity without
+        // repainting hundreds of GDI objects on every timer tick.
+        return ensure(sidebarOverlayWindow, 0)
+            && ensure(tabOverviewWindow, WS_EX_LAYERED);
     }
 
     void positionOverlayWindows(bool forceTop = false)
@@ -1757,22 +1762,39 @@ struct BrowserState {
             ShowWindow(sidebarOverlayWindow, SW_HIDE);
         }
 
-        if (tabOverviewVisible) {
+        if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindows()) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
+                const float openProgress = tabOverviewAnimating ? tabOverviewEase() : 1.0f;
+                const ULONGLONG closeElapsed = tabOverviewClosing
+                    ? GetTickCount64() - tabOverviewClosingStart : 0;
+                const float closeT = tabOverviewClosing
+                    ? std::clamp(static_cast<float>(closeElapsed) / 160.0f, 0.0f, 1.0f) : 0.0f;
+                const float closeEase = closeT * closeT * (3.0f - 2.0f * closeT);
+                const float opacity = tabOverviewClosing ? 1.0f - closeEase : openProgress;
+                const int slideOffset = tabOverviewClosing
+                    ? static_cast<int>(std::lround(closeEase * scaleForDpi(window, 8)))
+                    : tabOverviewAnimating
+                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 12)))
+                        : 0;
+                SetLayeredWindowAttributes(tabOverviewWindow, 0,
+                    static_cast<BYTE>(std::clamp(opacity * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
+
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
                     flags |= SWP_SHOWWINDOW;
                 SetWindowPos(tabOverviewWindow,
-                    alreadyVisible && !forceTop ? nullptr : HWND_TOP, left, top,
+                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
+                    left, top + slideOffset,
                     std::max(0, static_cast<int>(client.right) - left), height, flags);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
             ShowWindow(tabOverviewWindow, SW_HIDE);
+            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
         }
     }
 
@@ -1982,8 +2004,9 @@ struct BrowserState {
         if (!tabOverviewAnimating)
             return 1.0f;
         const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 280.0f, 0.0f, 1.0f);
-        return t * t * (3.0f - 2.0f * t);
+        const float t = std::clamp(static_cast<float>(elapsed) / 210.0f, 0.0f, 1.0f);
+        const float inverse = 1.0f - t;
+        return 1.0f - inverse * inverse * inverse;
     }
 
     void animateChrome()
@@ -2025,13 +2048,63 @@ struct BrowserState {
         }
 
         if (tabOverviewAnimating) {
-            const bool transitionStillActive = GetTickCount64() - tabOverviewAnimationStart < 280;
-            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
-                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-            if (transitionStillActive)
+            const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
+            const bool transitionStillActive = elapsed < 210;
+            const float progress = tabOverviewEase();
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
+                RECT client { };
+                GetClientRect(window, &client);
+                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                const int offset = static_cast<int>(std::lround(
+                    (1.0f - progress) * scaleForDpi(window, 12)));
+                SetLayeredWindowAttributes(tabOverviewWindow, 0,
+                    static_cast<BYTE>(std::clamp(progress * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
+                SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+            }
+            if (transitionStillActive) {
                 continueAnimation = true;
-            else
+            } else {
                 tabOverviewAnimating = false;
+                if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
+                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+                    SetWindowPos(tabOverviewWindow, nullptr,
+                        sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                }
+            }
+        }
+
+        if (tabOverviewClosing) {
+            const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
+            const bool transitionStillActive = elapsed < 160;
+            const float t = std::clamp(static_cast<float>(elapsed) / 160.0f, 0.0f, 1.0f);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
+                RECT client { };
+                GetClientRect(window, &client);
+                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 8)));
+                SetLayeredWindowAttributes(tabOverviewWindow, 0,
+                    static_cast<BYTE>(std::clamp((1.0f - eased) * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
+                SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+            }
+            if (transitionStillActive) {
+                continueAnimation = true;
+            } else {
+                tabOverviewClosing = false;
+                if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
+                    ShowWindow(tabOverviewWindow, SW_HIDE);
+                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+                }
+                if (auto* selected = active()) {
+                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                }
+                positionOverlayWindows(true);
+            }
         }
 
         if (sidebarAnimating) {
@@ -2104,22 +2177,7 @@ struct BrowserState {
         const int row = static_cast<int>(index / static_cast<size_t>(columns));
         const int left = groupLeft + column * (cardWidth + gap);
         const int top = area.top + headerHeight + row * (cardHeight + gap);
-        int drawLeft = left;
-        int drawTop = top;
-        int drawWidth = cardWidth;
-        int drawHeight = cardHeight;
-        if (tabOverviewAnimating) {
-            const float progress = tabOverviewEase();
-            // A deliberate, eased lift-and-scale gives overview entry a visible
-            // Safari-like spatial transition instead of the previous 13px nudge.
-            const int inset = static_cast<int>((1.0f - progress) * scaleForDpi(window, 14));
-            const int travel = static_cast<int>((1.0f - progress) * scaleForDpi(window, 34));
-            drawLeft += inset;
-            drawTop += travel + inset;
-            drawWidth = std::max(scaleForDpi(window, 100), drawWidth - inset * 2);
-            drawHeight = std::max(scaleForDpi(window, 80), drawHeight - inset * 2);
-        }
-        return { drawLeft, drawTop, drawLeft + drawWidth, drawTop + drawHeight };
+        return { left, top, left + cardWidth, top + cardHeight };
     }
 
     RECT tabOverviewCloseRect(size_t index) const
@@ -2503,7 +2561,12 @@ struct BrowserState {
             FillRect(dc, &preview, previewBrush);
             DeleteObject(previewBrush);
 
-            if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0 && tabs[i]->previewHeight > 0) {
+            if (tabs[i]->internalPage == L"start") {
+                // The Start Page has a deterministic native preview. Prefer it over
+                // any stale capture from the accelerated WebKit surface, which can
+                // be black after another tab has been active.
+                drawStartPageThumbnail(dc, preview);
+            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0 && tabs[i]->previewHeight > 0) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
                     HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
@@ -2520,8 +2583,6 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
-            } else if (tabs[i]->internalPage == L"start") {
-                drawStartPageThumbnail(dc, preview);
             } else if (tabs[i]->internalPage == L"settings") {
                 const bool tabDark = tabs[i]->hasInternalThemeSnapshot
                     ? tabs[i]->internalDarkTheme : dark;
@@ -3834,6 +3895,10 @@ search.addEventListener('keydown',e=>{
             // Close the overlay directly instead of resizing/redrawing WebKit.
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
+            tabOverviewClosing = true;
+            tabOverviewClosingStart = GetTickCount64();
+            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            startChromeAnimationTimer();
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
@@ -3848,10 +3913,18 @@ search.addEventListener('keydown',e=>{
             endAddressEditing();
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
             captureTabThumbnail(*tabs[previouslyActive]);
-        tabOverviewVisible = false;
-        tabOverviewAnimating = false;
-        if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-            ShowWindow(tabOverviewWindow, SW_HIDE);
+        if (!switchingFromOverview) {
+            tabOverviewVisible = false;
+            tabOverviewAnimating = false;
+            tabOverviewClosing = false;
+        } else {
+            // Leave the overview overlay above the content while the selected
+            // WebKit view is restored and synchronously painted underneath it.
+            tabOverviewAnimating = false;
+            tabOverviewClosing = false;
+            if (tabOverviewWindow && IsWindow(tabOverviewWindow))
+                SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+        }
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         activeTab = index;
@@ -3886,19 +3959,34 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        // Raise the target view before resizing siblings so their viewport updates cannot
-        // momentarily paint over the selected surface. Keep redraw suppressed until layout
-        // and final z-order are established.
-        if (selectedView)
+        // When leaving overview, keep the overview HWND above the WebKit surfaces
+        // while the new tab is positioned and painted. Avoid moving/repainting the
+        // address-bar child because the toolbar geometry has not changed.
+        if (selectedView && !switchingFromOverview)
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-        resize();
+        resize(!switchingFromOverview);
         if (selectedView) {
-            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            if (!switchingFromOverview) {
+                SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            }
             RedrawWindow(selectedView, nullptr, nullptr,
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
             SetFocus(selectedView);
+        }
+
+        if (switchingFromOverview) {
+            // The freshly painted tab is now beneath the overview. Begin a short
+            // compositor fade/slide; the active WKView is raised only after the
+            // overlay has become transparent, avoiding a black intermediate frame.
+            tabOverviewVisible = false;
+            tabOverviewClosing = true;
+            tabOverviewClosingStart = GetTickCount64();
+            tabOverviewAnimating = false;
+            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            startChromeAnimationTimer();
+            positionOverlayWindows(true);
         }
         // activateTab raises the selected WKView last; restore overlay z-order after
         // that so an open sidebar remains above it without touching the renderer.
@@ -4647,6 +4735,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // Do not synchronously PrintWindow/BitBlt the live WebKit surface here.
         // Use its last preview (or the lightweight placeholder) during the animation;
         // thumbnail capture on the UI thread caused a noticeable pause on entry.
+        tabOverviewClosing = false;
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -4783,7 +4872,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
     }
 
-    void resize()
+    void resize(bool invalidateChrome = true)
     {
         // A minimized HWND reports a 0x0 client size. Do not propagate that size
         // into WKView child HWNDs: some WebKit GPU surfaces never recover cleanly.
@@ -4794,15 +4883,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!GetClientRect(window, &client))
             return;
 
-        RECT pill = addressPillRect();
-        MoveWindow(
-            addressBar,
-            pill.left + scaleForDpi(window, 30),
-            pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
-            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
-            TRUE
-        );
+        if (invalidateChrome) {
+            RECT pill = addressPillRect();
+            const int targetX = pill.left + scaleForDpi(window, 30);
+            const int targetY = pill.top + scaleForDpi(window, 2);
+            const int targetWidth = std::max<int>(scaleForDpi(window, 140),
+                static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62)));
+            const int targetHeight = std::max<int>(scaleForDpi(window, 24),
+                static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4)));
+            RECT current { };
+            GetWindowRect(addressBar, &current);
+            MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&current), 2);
+            if (current.left != targetX || current.top != targetY
+                || current.right - current.left != targetWidth
+                || current.bottom - current.top != targetHeight) {
+                MoveWindow(addressBar, targetX, targetY, targetWidth, targetHeight, FALSE);
+            }
+        }
 
         int contentTop = this->contentTop();
         // The sidebar is a real overlay, not a viewport resize. Keep the accelerated
@@ -4840,7 +4937,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (findBarVisible)
             positionFindBar();
         positionOverlayWindows(true);
-        InvalidateRect(window, nullptr, FALSE);
+        if (invalidateChrome)
+            InvalidateRect(window, nullptr, FALSE);
     }
 
     void toggleMaximizeWindow()
@@ -9195,12 +9293,14 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         tracking.hwndTrack = overlay;
         TrackMouseEvent(&tracking);
 
-        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + state->contentTop() };
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (overlay == state->tabOverviewWindow) {
-            const RECT area = state->tabOverviewAreaRect();
-            point.x += area.left;
+            MapWindowPoints(overlay, state->window, &point, 1);
+        } else {
+            point.y += state->contentTop();
         }
-        state->updateToolbarHover(point);
+        if (!state->tabOverviewClosing)
+            state->updateToolbarHover(point);
         return 0;
     }
 
@@ -9209,12 +9309,12 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         return 0;
 
     case WM_LBUTTONDOWN: {
-        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + state->contentTop() };
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (overlay == state->sidebarOverlayWindow) {
+            point.y += state->contentTop();
             state->handleSidebarHit(point);
-        } else if (overlay == state->tabOverviewWindow) {
-            const RECT area = state->tabOverviewAreaRect();
-            point.x += area.left;
+        } else if (overlay == state->tabOverviewWindow && !state->tabOverviewClosing) {
+            MapWindowPoints(overlay, state->window, &point, 1);
             state->handleTabOverviewHit(point);
         }
         SetFocus(state->window);
