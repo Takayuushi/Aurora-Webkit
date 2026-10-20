@@ -4606,7 +4606,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // The overview is an independent child surface layered above the live page.
         // This avoids hide/show and offscreen moves that caused renderer loss/flicker.
         resize();
-        positionOverlayWindows();
         SetFocus(window);
         if (tabOverviewWindow) {
             InvalidateRect(tabOverviewWindow, nullptr, FALSE);
