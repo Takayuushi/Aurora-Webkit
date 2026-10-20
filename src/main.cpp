@@ -2067,6 +2067,252 @@ struct BrowserState {
             card.right - inset, card.top + inset + size };
     }
 
+    HBITMAP captureViewFrame(TabState& tab, int& outWidth, int& outHeight)
+    {
+        outWidth = 0;
+        outHeight = 0;
+        HWND viewWindow = WKViewGetWindow(tab.view.get());
+        if (!viewWindow)
+            return nullptr;
+
+        RECT client { };
+        if (!GetClientRect(viewWindow, &client))
+            return nullptr;
+        const int width = static_cast<int>(client.right - client.left);
+        const int height = static_cast<int>(client.bottom - client.top);
+        if (width < 80 || height < 60)
+            return nullptr;
+
+        HDC sourceDC = GetDC(viewWindow);
+        if (!sourceDC)
+            return nullptr;
+        HDC captureDC = CreateCompatibleDC(sourceDC);
+        HBITMAP frame = CreateCompatibleBitmap(sourceDC, width, height);
+        if (!captureDC || !frame) {
+            if (frame) DeleteObject(frame);
+            if (captureDC) DeleteDC(captureDC);
+            ReleaseDC(viewWindow, sourceDC);
+            return nullptr;
+        }
+
+        HGDIOBJ oldBitmap = SelectObject(captureDC, frame);
+        RECT full { 0, 0, width, height };
+        HBRUSH fill = CreateSolidBrush(chromeDarkTheme() ? RGB(25, 25, 28) : RGB(246, 247, 249));
+        FillRect(captureDC, &full, fill);
+        DeleteObject(fill);
+
+        BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
+        if (!captured)
+            captured = BitBlt(captureDC, 0, 0, width, height, sourceDC, 0, 0, SRCCOPY);
+
+        bool looksBlank = false;
+        if (captured) {
+            int sampled = 0;
+            int nearBlack = 0;
+            int minLuminance = 255;
+            int maxLuminance = 0;
+            for (int sy = 1; sy <= 5; ++sy) {
+                for (int sx = 1; sx <= 7; ++sx) {
+                    const int x = width * sx / 8;
+                    const int y = height * sy / 6;
+                    const COLORREF pixel = GetPixel(captureDC, x, y);
+                    if (pixel == CLR_INVALID)
+                        continue;
+                    const int luminance = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
+                        + GetBValue(pixel) * 11) / 100;
+                    ++sampled;
+                    minLuminance = std::min(minLuminance, luminance);
+                    maxLuminance = std::max(maxLuminance, luminance);
+                    if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
+                        ++nearBlack;
+                }
+            }
+            looksBlank = sampled >= 20 && nearBlack * 100 >= sampled * 94
+                && maxLuminance - minLuminance <= 9;
+        }
+
+        if (!captured || looksBlank) {
+            if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0) {
+                HDC previewDC = CreateCompatibleDC(sourceDC);
+                if (previewDC) {
+                    HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
+                    SetStretchBltMode(captureDC, HALFTONE);
+                    captured = StretchBlt(captureDC, 0, 0, width, height,
+                        previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
+                    SelectObject(previewDC, oldPreview);
+                    DeleteDC(previewDC);
+                } else {
+                    captured = FALSE;
+                }
+            } else {
+                captured = FALSE;
+            }
+        }
+
+        SelectObject(captureDC, oldBitmap);
+        DeleteDC(captureDC);
+        ReleaseDC(viewWindow, sourceDC);
+        if (!captured) {
+            DeleteObject(frame);
+            return nullptr;
+        }
+
+        outWidth = width;
+        outHeight = height;
+        return frame;
+    }
+
+    bool ensureContentTransitionWindow()
+    {
+        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
+            return true;
+
+        static const wchar_t className[] = L"AuroraContentTransitionSurface";
+        WNDCLASSEXW cls { };
+        cls.cbSize = sizeof(cls);
+        cls.lpfnWndProc = contentTransitionProcedure;
+        cls.hInstance = GetModuleHandleW(nullptr);
+        cls.lpszClassName = className;
+        if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return false;
+
+        RECT client { };
+        GetClientRect(window, &client);
+        contentTransitionWindow = CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_LAYERED,
+            className, L"",
+            WS_CHILD | WS_CLIPSIBLINGS,
+            0, contentTop(), std::max(1L, client.right),
+            std::max(1L, client.bottom - contentTop()),
+            window, nullptr, GetModuleHandleW(nullptr), this);
+        if (!contentTransitionWindow)
+            return false;
+
+        SetLayeredWindowAttributes(contentTransitionWindow, 0, 255, LWA_ALPHA);
+        return true;
+    }
+
+    void updateContentTransitionWindow()
+    {
+        if (!contentTransitionWindow || !IsWindow(contentTransitionWindow) || !window)
+            return;
+
+        RECT client { };
+        GetClientRect(window, &client);
+        const int top = contentTop();
+        int left = sidebarWidth();
+        int width = std::max(1L, client.right - left);
+        int height = std::max(1L, client.bottom - top);
+
+        if (contentTransitionMode == ContentTransitionMode::Sidebar) {
+            left = 0;
+            width = std::max(1L, client.right);
+        }
+        SetWindowPos(contentTransitionWindow, HWND_TOP, left, top, width, height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(contentTransitionWindow, nullptr, FALSE);
+    }
+
+    bool beginContentTransition(HBITMAP bitmap, int width, int height, ContentTransitionMode mode)
+    {
+        if (!bitmap || width <= 0 || height <= 0) {
+            if (bitmap)
+                DeleteObject(bitmap);
+            return false;
+        }
+
+        finishContentTransition();
+        contentTransitionBitmap = bitmap;
+        contentTransitionBitmapWidth = width;
+        contentTransitionBitmapHeight = height;
+        contentTransitionMode = mode;
+        contentTransitionStart = GetTickCount64();
+        contentTransitionFading = false;
+        contentTransitionFadeStart = 0;
+
+        if (!ensureContentTransitionWindow()) {
+            finishContentTransition();
+            return false;
+        }
+
+        updateContentTransitionWindow();
+        SetLayeredWindowAttributes(contentTransitionWindow, 0, 255, LWA_ALPHA);
+        startChromeAnimationTimer();
+        return true;
+    }
+
+    void finishContentTransition()
+    {
+        if (contentTransitionWindow && IsWindow(contentTransitionWindow))
+            DestroyWindow(contentTransitionWindow);
+        contentTransitionWindow = nullptr;
+        if (contentTransitionBitmap)
+            DeleteObject(contentTransitionBitmap);
+        contentTransitionBitmap = nullptr;
+        contentTransitionBitmapWidth = 0;
+        contentTransitionBitmapHeight = 0;
+        contentTransitionMode = ContentTransitionMode::None;
+        contentTransitionFading = false;
+        contentTransitionFadeStart = 0;
+    }
+
+    void paintContentTransition(HDC dc)
+    {
+        if (!dc || !contentTransitionBitmap || contentTransitionMode == ContentTransitionMode::None)
+            return;
+
+        RECT destination { };
+        if (!contentTransitionWindow || !GetClientRect(contentTransitionWindow, &destination))
+            return;
+        const int width = static_cast<int>(destination.right - destination.left);
+        const int height = static_cast<int>(destination.bottom - destination.top);
+        if (width <= 0 || height <= 0)
+            return;
+
+        const bool dark = chromeDarkTheme();
+        HBRUSH background = CreateSolidBrush(dark ? RGB(24, 24, 27) : RGB(246, 247, 249));
+        FillRect(dc, &destination, background);
+        DeleteObject(background);
+
+        HDC bitmapDC = CreateCompatibleDC(dc);
+        if (bitmapDC) {
+            HGDIOBJ oldBitmap = SelectObject(bitmapDC, contentTransitionBitmap);
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, nullptr);
+
+            if (contentTransitionMode == ContentTransitionMode::Sidebar) {
+                const int left = std::clamp(sidebarWidth(), 0, width);
+                const int drawWidth = std::max(0, width - left);
+                if (drawWidth > 0)
+                    StretchBlt(dc, left, 0, drawWidth, height, bitmapDC, 0, 0,
+                        contentTransitionBitmapWidth, contentTransitionBitmapHeight, SRCCOPY);
+
+                // Draw the sidebar in the transition surface too: the WebKit child
+                // remains alive underneath, while this surface owns all visible pixels
+                // until the final one-time WebKit resize is complete.
+                const int savedState = SaveDC(dc);
+                SetViewportOrgEx(dc, 0, -contentTop(), nullptr);
+                drawSidebarPanel(dc);
+                if (savedState)
+                    RestoreDC(dc, savedState);
+            } else {
+                const ULONGLONG elapsed = GetTickCount64() - contentTransitionStart;
+                const float t = std::clamp(static_cast<float>(elapsed) / 180.0f, 0.0f, 1.0f);
+                const float eased = t * t * (3.0f - 2.0f * t);
+                const float scale = 0.982f + 0.018f * eased;
+                const int drawWidth = std::max(1, static_cast<int>(width * scale));
+                const int drawHeight = std::max(1, static_cast<int>(height * scale));
+                const int drawLeft = (width - drawWidth) / 2;
+                const int drawTop = (height - drawHeight) / 2;
+                StretchBlt(dc, drawLeft, drawTop, drawWidth, drawHeight, bitmapDC, 0, 0,
+                    contentTransitionBitmapWidth, contentTransitionBitmapHeight, SRCCOPY);
+            }
+
+            SelectObject(bitmapDC, oldBitmap);
+            DeleteDC(bitmapDC);
+        }
+    }
+
     void captureTabThumbnail(TabState& tab)
     {
         HWND viewWindow = WKViewGetWindow(tab.view.get());
