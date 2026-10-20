@@ -4678,6 +4678,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!sidebarAnimating)
             sidebarAnimatedWidth = contentLeft;
         for (const auto& tab : tabs) {
+            // During the sidebar transition only the visible page must track the
+            // animated width. Resizing hidden WebKit views every 16 ms causes waste
+            // and can leave them with stale/black composited frames.
+            if (!invalidateWholeWindow && tab.get() != active())
+                continue;
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
@@ -5208,13 +5213,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         const int savedDC = SaveDC(dc);
-        IntersectClipRect(dc, 0, contentTop(), visibleWidth, GetSystemMetrics(SM_CYSCREEN) + contentTop());
-
         const bool dark = chromeDarkTheme();
         const int width = scaleForDpi(window, 300);
         const int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
+        IntersectClipRect(dc, 0, top, visibleWidth, client.bottom);
 
         RECT panel { 0, top, visibleWidth, client.bottom };
         HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
