@@ -1159,6 +1159,7 @@ struct BrowserState {
     HWND tabOverviewWindow { nullptr };
     HBITMAP sidebarOverlayBitmap { nullptr };
     SIZE sidebarOverlayBitmapSize { 0, 0 };
+    bool sidebarOverlayAnimationFrameReady { false };
     HBITMAP tabOverviewBitmap { nullptr };
     SIZE tabOverviewBitmapSize { 0, 0 };
     bool downloadsAnimationTimerActive { false };
@@ -1780,6 +1781,7 @@ struct BrowserState {
 
         hoveredSidebarRow = -1;
         hoveredSidebarSettings = false;
+        sidebarOverlayAnimationFrameReady = false;
 
         // The overview owns the content canvas; update its overlay layout without
         // asking the WebKit surface to resize or repaint.
@@ -9029,6 +9031,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 DestroyWindow(state->tabOverviewWindow);
                 state->tabOverviewWindow = nullptr;
             }
+            if (state->sidebarOverlayBitmap) {
+                DeleteObject(state->sidebarOverlayBitmap);
+                state->sidebarOverlayBitmap = nullptr;
+                state->sidebarOverlayBitmapSize = SIZE { 0, 0 };
+            }
+            if (state->tabOverviewBitmap) {
+                DeleteObject(state->tabOverviewBitmap);
+                state->tabOverviewBitmap = nullptr;
+                state->tabOverviewBitmapSize = SIZE { 0, 0 };
+            }
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
@@ -9077,37 +9089,60 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         GetClientRect(overlay, &client);
         const int width = std::max(1L, client.right);
         const int height = std::max(1L, client.bottom);
+
+        HBITMAP& cachedBitmap = overlay == state->sidebarOverlayWindow
+            ? state->sidebarOverlayBitmap : state->tabOverviewBitmap;
+        SIZE& cachedSize = overlay == state->sidebarOverlayWindow
+            ? state->sidebarOverlayBitmapSize : state->tabOverviewBitmapSize;
+        bool recreatedBitmap = false;
+        if (!cachedBitmap || cachedSize.cx != width || cachedSize.cy != height) {
+            if (cachedBitmap)
+                DeleteObject(cachedBitmap);
+            cachedBitmap = CreateCompatibleBitmap(dc, width, height);
+            cachedSize = cachedBitmap ? SIZE { width, height } : SIZE { 0, 0 };
+            recreatedBitmap = true;
+            if (overlay == state->sidebarOverlayWindow)
+                state->sidebarOverlayAnimationFrameReady = false;
+        }
+
         HDC bufferDC = CreateCompatibleDC(dc);
-        HBITMAP bufferBitmap = bufferDC ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+        const bool reuseSidebarFrame = overlay == state->sidebarOverlayWindow
+            && state->sidebarAnimating && state->sidebarOverlayAnimationFrameReady
+            && !recreatedBitmap && cachedBitmap;
 
-        if (bufferDC && bufferBitmap) {
-            HGDIOBJ oldBitmap = SelectObject(bufferDC, bufferBitmap);
-            RECT bufferRect { 0, 0, width, height };
-            HBRUSH background = CreateSolidBrush(state->chromeDarkTheme()
-                ? RGB(30, 30, 32) : RGB(240, 241, 244));
-            FillRect(bufferDC, &bufferRect, background);
-            DeleteObject(background);
+        if (bufferDC && cachedBitmap) {
+            HGDIOBJ oldBitmap = SelectObject(bufferDC, cachedBitmap);
+            if (!reuseSidebarFrame) {
+                RECT bufferRect { 0, 0, width, height };
+                HBRUSH background = CreateSolidBrush(state->chromeDarkTheme()
+                    ? RGB(30, 30, 32) : RGB(240, 241, 244));
+                FillRect(bufferDC, &bufferRect, background);
+                DeleteObject(background);
 
-            const int saved = SaveDC(bufferDC);
-            if (saved) {
-                if (overlay == state->sidebarOverlayWindow) {
-                    SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
-                    state->drawSidebarPanel(bufferDC, true);
-                } else if (overlay == state->tabOverviewWindow) {
-                    const RECT area = state->tabOverviewAreaRect();
-                    SetViewportOrgEx(bufferDC, -area.left, -state->contentTop(), nullptr);
-                    state->drawTabOverviewPage(bufferDC);
+                const int saved = SaveDC(bufferDC);
+                if (saved) {
+                    if (overlay == state->sidebarOverlayWindow) {
+                        SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
+                        state->drawSidebarPanel(bufferDC, true);
+                    } else if (overlay == state->tabOverviewWindow) {
+                        const RECT area = state->tabOverviewAreaRect();
+                        SetViewportOrgEx(bufferDC, -area.left, -state->contentTop(), nullptr);
+                        state->drawTabOverviewPage(bufferDC);
+                    }
+                    RestoreDC(bufferDC, saved);
                 }
-                RestoreDC(bufferDC, saved);
+                if (overlay == state->sidebarOverlayWindow && state->sidebarAnimating)
+                    state->sidebarOverlayAnimationFrameReady = true;
             }
 
             BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
             SelectObject(bufferDC, oldBitmap);
-            DeleteObject(bufferBitmap);
             DeleteDC(bufferDC);
         } else {
             if (bufferDC)
                 DeleteDC(bufferDC);
+            if (overlay == state->sidebarOverlayWindow)
+                state->sidebarOverlayAnimationFrameReady = false;
             const int saved = SaveDC(dc);
             if (saved) {
                 if (overlay == state->sidebarOverlayWindow) {
