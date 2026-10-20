@@ -1746,7 +1746,7 @@ struct BrowserState {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -1772,12 +1772,12 @@ struct BrowserState {
                     ? std::clamp(static_cast<float>(closeElapsed) / 160.0f, 0.0f, 1.0f) : 0.0f;
                 const float closeEase = closeT * closeT * (3.0f - 2.0f * closeT);
                 const int slideOffset = tabOverviewClosing
-                    ? static_cast<int>(std::lround(closeEase * scaleForDpi(window, 8)))
+                    ? static_cast<int>(std::lround(closeEase * scaleForDpi(window, 14)))
                     : tabOverviewAnimating
-                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 12)))
+                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 36)))
                         : 0;
 
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -2000,7 +2000,7 @@ struct BrowserState {
         if (!tabOverviewAnimating)
             return 1.0f;
         const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 210.0f, 0.0f, 1.0f);
+        const float t = std::clamp(static_cast<float>(elapsed) / 260.0f, 0.0f, 1.0f);
         const float inverse = 1.0f - t;
         return 1.0f - inverse * inverse * inverse;
     }
@@ -2045,16 +2045,16 @@ struct BrowserState {
 
         if (tabOverviewAnimating) {
             const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-            const bool transitionStillActive = elapsed < 210;
+            const bool transitionStillActive = elapsed < 260;
             const float progress = tabOverviewEase();
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
                 RECT client { };
                 GetClientRect(window, &client);
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(
-                    (1.0f - progress) * scaleForDpi(window, 12)));
+                    (1.0f - progress) * scaleForDpi(window, 36)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
             if (transitionStillActive) {
                 continueAnimation = true;
@@ -2064,7 +2064,7 @@ struct BrowserState {
                     
                     SetWindowPos(tabOverviewWindow, nullptr,
                         sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
-                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                 }
             }
         }
@@ -2080,7 +2080,7 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 8)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
             if (transitionStillActive) {
                 continueAnimation = true;
@@ -2100,7 +2100,7 @@ struct BrowserState {
         }
 
         if (sidebarAnimating) {
-            const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 260;
+            const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 240;
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
