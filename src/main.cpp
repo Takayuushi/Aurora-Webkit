@@ -1169,6 +1169,8 @@ struct BrowserState {
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
     bool tabOverviewVisible { false };
+    int hoveredOverviewTab { -1 };
+    bool hoveredOverviewNewTab { false };
     int sidebarSection { 0 };
     ThemeMode themeMode { ThemeMode::System };
     std::wstring homePage { L"https://www.google.com" };
@@ -1794,6 +1796,44 @@ struct BrowserState {
                 InvalidateRect(window, &rect, FALSE);
             }
         }
+
+        int nextOverviewTab = -1;
+        bool nextOverviewNewTab = false;
+        if (tabOverviewVisible) {
+            const RECT overviewArea = tabOverviewAreaRect();
+            if (PtInRect(&overviewArea, point)) {
+                const RECT newTabRect = tabOverviewNewTabRect();
+                if (PtInRect(&newTabRect, point))
+                    nextOverviewNewTab = true;
+                else {
+                    for (size_t i = 0; i < tabs.size(); ++i) {
+                        const RECT cardRect = tabOverviewCardRect(i);
+                        if (PtInRect(&cardRect, point)) {
+                            nextOverviewTab = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (nextOverviewTab != hoveredOverviewTab || nextOverviewNewTab != hoveredOverviewNewTab) {
+            const int previousTab = hoveredOverviewTab;
+            const bool previousNewTab = hoveredOverviewNewTab;
+            hoveredOverviewTab = nextOverviewTab;
+            hoveredOverviewNewTab = nextOverviewNewTab;
+            if (previousTab >= 0 && static_cast<size_t>(previousTab) < tabs.size()) {
+                const RECT rect = tabOverviewCardRect(static_cast<size_t>(previousTab));
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (hoveredOverviewTab >= 0 && static_cast<size_t>(hoveredOverviewTab) < tabs.size()) {
+                const RECT rect = tabOverviewCardRect(static_cast<size_t>(hoveredOverviewTab));
+                InvalidateRect(window, &rect, FALSE);
+            }
+            if (previousNewTab || hoveredOverviewNewTab) {
+                const RECT rect = tabOverviewNewTabRect();
+                InvalidateRect(window, &rect, FALSE);
+            }
+        }
     }
 
     float tabSwitchEase() const
@@ -1938,9 +1978,43 @@ struct BrowserState {
         }
 
         HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
+        RECT captureRect { 0, 0, sourceWidth, sourceHeight };
+        HBRUSH initialCaptureBrush = CreateSolidBrush(RGB(8, 12, 18));
+        FillRect(captureDC, &captureRect, initialCaptureBrush);
+        DeleteObject(initialCaptureBrush);
+
+        const auto captureLooksBlank = [&]() {
+            int validSamples = 0;
+            int nearBlackSamples = 0;
+            int minLuminance = 255;
+            int maxLuminance = 0;
+            for (int sy = 1; sy <= 7; ++sy) {
+                const int y = (sourceHeight * sy) / 8;
+                for (int sx = 1; sx <= 9; ++sx) {
+                    const int x = (sourceWidth * sx) / 10;
+                    const COLORREF pixel = GetPixel(captureDC, x, y);
+                    if (pixel == CLR_INVALID)
+                        continue;
+                    const int luminance = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
+                        + GetBValue(pixel) * 11) / 100;
+                    ++validSamples;
+                    minLuminance = std::min(minLuminance, luminance);
+                    maxLuminance = std::max(maxLuminance, luminance);
+                    if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
+                        ++nearBlackSamples;
+                }
+            }
+            return validSamples >= 20
+                && nearBlackSamples * 100 >= validSamples * 94
+                && maxLuminance - minLuminance <= 9;
+        };
+
         BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
-        if (!captured)
+        if (!captured || captureLooksBlank()) {
             captured = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight, sourceDC, 0, 0, SRCCOPY);
+            if (captured && captureLooksBlank())
+                captured = FALSE;
+        }
 
         if (captured) {
             const double factor = std::min(480.0 / sourceWidth, 270.0 / sourceHeight);
@@ -2027,7 +2101,9 @@ struct BrowserState {
         DrawTextW(dc, L"Tab Overview", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         const RECT newTab = tabOverviewNewTabRect();
-        HBRUSH newTabBrush = CreateSolidBrush(dark ? RGB(58, 58, 61) : RGB(255, 255, 255));
+        HBRUSH newTabBrush = CreateSolidBrush(dark
+            ? (hoveredOverviewNewTab ? RGB(72, 72, 76) : RGB(58, 58, 61))
+            : (hoveredOverviewNewTab ? RGB(245, 247, 250) : RGB(255, 255, 255)));
         HPEN newTabPen = CreatePen(PS_SOLID, 1, dark ? RGB(78, 78, 82) : RGB(213, 216, 220));
         HBRUSH oldNewBrush = static_cast<HBRUSH>(SelectObject(dc, newTabBrush));
         HPEN oldNewPen = static_cast<HPEN>(SelectObject(dc, newTabPen));
@@ -2055,12 +2131,18 @@ struct BrowserState {
             if (card.top >= area.bottom || card.bottom <= area.top)
                 continue;
 
+            const bool cardHovered = hoveredOverviewTab == static_cast<int>(i);
+            RECT shadowRect = card;
+            OffsetRect(&shadowRect, 0, scaleForDpi(window, 3));
+            const COLORREF shadowColor = dark ? RGB(23, 23, 25) : RGB(222, 225, 230);
+            drawRoundedControl(dc, shadowRect, shadowColor, shadowColor,
+                static_cast<float>(scaleForDpi(window, 10)));
             HBRUSH cardBrush = CreateSolidBrush(dark
-                ? (i == activeTab ? RGB(53, 53, 56) : RGB(43, 43, 46))
-                : (i == activeTab ? RGB(255, 255, 255) : RGB(253, 253, 254)));
+                ? (i == activeTab ? RGB(53, 53, 56) : cardHovered ? RGB(49, 49, 53) : RGB(43, 43, 46))
+                : (i == activeTab ? RGB(255, 255, 255) : cardHovered ? RGB(255, 255, 255) : RGB(253, 253, 254)));
             HPEN cardPen = CreatePen(PS_SOLID, 1, dark
-                ? (i == activeTab ? RGB(102, 126, 164) : RGB(69, 69, 73))
-                : (i == activeTab ? RGB(133, 166, 211) : RGB(220, 222, 226)));
+                ? (i == activeTab ? RGB(102, 126, 164) : cardHovered ? RGB(85, 85, 92) : RGB(69, 69, 73))
+                : (i == activeTab ? RGB(133, 166, 211) : cardHovered ? RGB(194, 204, 216) : RGB(220, 222, 226)));
             HBRUSH oldCardBrush = static_cast<HBRUSH>(SelectObject(dc, cardBrush));
             HPEN oldCardPen = static_cast<HPEN>(SelectObject(dc, cardPen));
             RoundRect(dc, card.left, card.top, card.right, card.bottom,
@@ -3395,11 +3477,20 @@ search.addEventListener('keydown',e=>{
             return;
 
         const size_t previouslyActive = activeTab;
+        const bool switchingFromOverview = tabOverviewVisible;
         if (addressEditing)
             endAddressEditing();
+        if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
+            captureTabThumbnail(*tabs[previouslyActive]);
         tabOverviewVisible = false;
+        hoveredOverviewTab = -1;
+        hoveredOverviewNewTab = false;
         activeTab = index;
-        tabSwitchAnimating = false;
+        previousActiveTab = previouslyActive;
+        tabSwitchAnimationStart = GetTickCount64();
+        tabSwitchAnimating = previouslyActive != index && tabsBarHeight() > 0;
+        if (tabSwitchAnimating)
+            startChromeAnimationTimer();
 
         // Keep background WKViews visible at the bottom of the child-window z-order.
         // This prevents WebKit's WM_SHOWWINDOW -> ActivityState::IsVisible transition
@@ -3426,15 +3517,16 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        // Size every WebKit view before changing sibling z-order. Promoting the selected
-        // view first lets later MoveWindow calls for background views overlap the selected
-        // surface during a tab switch, briefly exposing a black renderer frame.
+        // Raise the target view before resizing siblings so their viewport updates cannot
+        // momentarily paint over the selected surface. Keep redraw suppressed until layout
+        // and final z-order are established.
+        if (selectedView)
+            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
         resize();
         if (selectedView) {
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            // A child view can retain an invalid region while it sits behind another tab.
-            // Request its normal paint only after layout and final z-order are established.
             RedrawWindow(selectedView, nullptr, nullptr,
                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             SetFocus(selectedView);
@@ -5185,7 +5277,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
-                const float activeWeight = i == activeTab ? 1.0f : 0.0f;
+                const float transitionProgress = tabSwitchEase();
+                const float activeWeight = i == activeTab ? transitionProgress
+                    : (tabSwitchAnimating && i == previousActiveTab ? 1.0f - transitionProgress : 0.0f);
                 const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
                 const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
                 const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
