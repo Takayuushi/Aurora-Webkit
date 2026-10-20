@@ -364,7 +364,7 @@ jobs:
             }
             $cacheText = Get-Content -LiteralPath $cacheFile -Raw
             $cachedCompilerPath = $null
-            if ($cacheText -match '(?m)^CMAKE_CXX_COMPILER:FILEPATH=(.+)$') { $cachedCompilerPath = $Matches[1].Trim().Replace('/', '\') }
+            if ($cacheText -match '(?m)^CMAKE_CXX_COMPILER:(?:FILEPATH|STRING|UNINITIALIZED)=(.+)$') { $cachedCompilerPath = $Matches[1].Trim().Replace('/', '\') }
             $currentCompilerPath = (Join-Path $env:ProgramFiles "LLVM\bin\clang-cl.exe").Replace('/', '\')
             $cachedSystemVersion = $null
             if ($cacheText -match '(?m)^CMAKE_SYSTEM_VERSION:(?:INTERNAL|STRING)=(.+)$') { $cachedSystemVersion = $Matches[1].Trim() }
