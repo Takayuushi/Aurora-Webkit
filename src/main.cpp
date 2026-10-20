@@ -1710,22 +1710,21 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
-    bool ensureOverlayWindows()
+    bool ensureOverlayWindow(HWND& handle)
     {
         if (!window)
             return false;
+        if (handle && IsWindow(handle))
+            return true;
+        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+            0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        return handle != nullptr;
+    }
 
-        const auto ensure = [&](HWND& handle, DWORD extendedStyle) {
-            if (handle && IsWindow(handle))
-                return true;
-            handle = CreateWindowExW(extendedStyle, overlayWindowClassName, L"", WS_CHILD,
-                0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
-            return handle != nullptr;
-        };
-        // Layered composition lets overview transitions change opacity without
-        // repainting hundreds of GDI objects on every timer tick.
-        return ensure(sidebarOverlayWindow, 0)
-            && ensure(tabOverviewWindow, WS_EX_LAYERED);
+    bool ensureOverlayWindows()
+    {
+        return ensureOverlayWindow(sidebarOverlayWindow)
+            && ensureOverlayWindow(tabOverviewWindow);
     }
 
     void positionOverlayWindows(bool forceTop = false)
@@ -1743,7 +1742,7 @@ struct BrowserState {
         // The WebKit view remains stationary underneath it, avoiding renderer
         // blackouts caused by moving/resizing the accelerated WKView child.
         if (sidebarOpen || sidebarAnimating) {
-            if (ensureOverlayWindows()) {
+            if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
@@ -1763,7 +1762,7 @@ struct BrowserState {
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
-            if (ensureOverlayWindows()) {
+            if (ensureOverlayWindow(tabOverviewWindow)) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 const float openProgress = tabOverviewAnimating ? tabOverviewEase() : 1.0f;
@@ -1772,14 +1771,11 @@ struct BrowserState {
                 const float closeT = tabOverviewClosing
                     ? std::clamp(static_cast<float>(closeElapsed) / 160.0f, 0.0f, 1.0f) : 0.0f;
                 const float closeEase = closeT * closeT * (3.0f - 2.0f * closeT);
-                const float opacity = tabOverviewClosing ? 1.0f - closeEase : openProgress;
                 const int slideOffset = tabOverviewClosing
                     ? static_cast<int>(std::lround(closeEase * scaleForDpi(window, 8)))
                     : tabOverviewAnimating
                         ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 12)))
                         : 0;
-                SetLayeredWindowAttributes(tabOverviewWindow, 0,
-                    static_cast<BYTE>(std::clamp(opacity * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
 
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
                 if (alreadyVisible && !forceTop)
@@ -1794,7 +1790,7 @@ struct BrowserState {
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
             ShowWindow(tabOverviewWindow, SW_HIDE);
-            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            
         }
     }
 
@@ -2057,8 +2053,6 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(
                     (1.0f - progress) * scaleForDpi(window, 12)));
-                SetLayeredWindowAttributes(tabOverviewWindow, 0,
-                    static_cast<BYTE>(std::clamp(progress * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
             }
@@ -2067,7 +2061,7 @@ struct BrowserState {
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+                    
                     SetWindowPos(tabOverviewWindow, nullptr,
                         sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
@@ -2085,8 +2079,6 @@ struct BrowserState {
                 GetClientRect(window, &client);
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 8)));
-                SetLayeredWindowAttributes(tabOverviewWindow, 0,
-                    static_cast<BYTE>(std::clamp((1.0f - eased) * 255.0f, 0.0f, 255.0f)), LWA_ALPHA);
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
             }
@@ -2096,7 +2088,7 @@ struct BrowserState {
                 tabOverviewClosing = false;
                 if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
                     ShowWindow(tabOverviewWindow, SW_HIDE);
-                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+                    
                 }
                 if (auto* selected = active()) {
                     if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
@@ -3897,7 +3889,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewAnimating = false;
             tabOverviewClosing = true;
             tabOverviewClosingStart = GetTickCount64();
-            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            
             startChromeAnimationTimer();
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
@@ -3923,7 +3915,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewAnimating = false;
             tabOverviewClosing = false;
             if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-                SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+                
         }
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
@@ -3984,7 +3976,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosing = true;
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewAnimating = false;
-            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         }
