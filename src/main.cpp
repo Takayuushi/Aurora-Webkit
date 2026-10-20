@@ -1169,6 +1169,8 @@ struct BrowserState {
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
     bool tabOverviewVisible { false };
+    bool tabOverviewAnimating { false };
+    ULONGLONG tabOverviewAnimationStart { 0 };
     int hoveredOverviewTab { -1 };
     bool hoveredOverviewNewTab { false };
     int sidebarSection { 0 };
@@ -1845,6 +1847,14 @@ struct BrowserState {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    float tabOverviewEase() const
+    {
+        if (!tabOverviewAnimating)
+            return 1.0f;
+        const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
+        const float t = std::clamp(static_cast<float>(elapsed) / 220.0f, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
 
     void animateChrome()
     {
@@ -1882,6 +1892,16 @@ struct BrowserState {
                 continueAnimation = true;
             else
                 tabSwitchAnimating = false;
+        }
+
+        if (tabOverviewAnimating) {
+            const bool transitionStillActive = GetTickCount64() - tabOverviewAnimationStart < 220;
+            const RECT overviewArea = tabOverviewAreaRect();
+            InvalidateRect(window, &overviewArea, FALSE);
+            if (transitionStillActive)
+                continueAnimation = true;
+            else
+                tabOverviewAnimating = false;
         }
 
         // Do not invalidate the whole chrome band here: it includes Smart Search,
@@ -1938,7 +1958,11 @@ struct BrowserState {
         const int column = static_cast<int>(index % static_cast<size_t>(columns));
         const int row = static_cast<int>(index / static_cast<size_t>(columns));
         const int left = groupLeft + column * (cardWidth + gap);
-        const int top = area.top + headerHeight + row * (cardHeight + gap);
+        int top = area.top + headerHeight + row * (cardHeight + gap);
+        if (tabOverviewAnimating) {
+            const int offset = static_cast<int>((1.0f - tabOverviewEase()) * scaleForDpi(window, 13));
+            top += offset;
+        }
         return { left, top, left + cardWidth, top + cardHeight };
     }
 
@@ -3654,6 +3678,7 @@ search.addEventListener('keydown',e=>{
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
             captureTabThumbnail(*tabs[previouslyActive]);
         tabOverviewVisible = false;
+        tabOverviewAnimating = false;
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         activeTab = index;
@@ -4441,6 +4466,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             captureTabThumbnail(*tab);
 
         tabOverviewVisible = true;
+        tabOverviewAnimating = true;
+        tabOverviewAnimationStart = GetTickCount64();
+        hoveredOverviewTab = -1;
+        hoveredOverviewNewTab = false;
+        startChromeAnimationTimer();
         for (const auto& tab : tabs) {
             if (HWND viewWindow = WKViewGetWindow(tab->view.get()))
                 ShowWindow(viewWindow, SW_HIDE);
