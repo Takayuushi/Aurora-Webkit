@@ -127,7 +127,7 @@ jobs:
             $fingerprint = [System.BitConverter]::ToString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source))).Replace("-", "").ToLowerInvariant().Substring(0,20)
           } finally { $hash.Dispose() }
           Write-Host "WebKit compiler fingerprint: $fingerprint (MSVC $($msvc.Name), clang $clangVersion, SDK $($sdk.Name))"
-          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)sdk_version=$($sdk.Name)$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
       # The key changes only when the engine, compiler toolchain, or CMake graph changes.
       # Fallback restore lets the last good engine be migrated without throwing it away.
@@ -333,6 +333,7 @@ jobs:
         env:
           CURRENT_BUILD_FINGERPRINT: ${{ steps.build-fingerprint.outputs.fingerprint }}
           CURRENT_CLANG_VERSION: ${{ steps.build-fingerprint.outputs.clang_version }}
+          CURRENT_SDK_VERSION: ${{ steps.build-fingerprint.outputs.sdk_version }}
           CURRENT_CMAKE_HASH: ${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
         shell: powershell
         run: |
@@ -371,10 +372,9 @@ jobs:
 
             $sdkCompatible = $true
             if ($cachedSystemVersion -match '^10\.0\.\d+(?:\.\d+)?$' -and $cachedSystemVersion -ne '10.0') {
-              $sdkRoot = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\Include"
-              $sdkCompatible = [bool](Get-ChildItem -LiteralPath $sdkRoot -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -eq $cachedSystemVersion -or $_.Name.StartsWith("$cachedSystemVersion.") } |
-                Select-Object -First 1)
+              $sdkCompatible = $cachedSystemVersion -eq $env:CURRENT_SDK_VERSION -or
+                "$cachedSystemVersion.0" -eq $env:CURRENT_SDK_VERSION -or
+                $cachedSystemVersion -eq ($env:CURRENT_SDK_VERSION -replace '\.0$', '')
             }
 
             $allowIncremental = $compilerMetadata -and
