@@ -76,6 +76,7 @@
 namespace {
 
 constexpr wchar_t windowClassName[] = L"AuroraWindow";
+constexpr wchar_t overlayWindowClassName[] = L"AuroraOverlayWindow";
 constexpr wchar_t windowTitle[] = L"Aurora";
 
 std::wstring auroraExecutableDirectory()
@@ -1083,6 +1084,7 @@ void drawWebsiteSettings(HDC dc, const RECT& rect, bool dark = false)
 LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK overlayWindowProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -1153,6 +1155,8 @@ struct BrowserState {
     HMENU bookmarksMenu { nullptr };
     HWND downloadsPopoverWindow { nullptr };
     HWND sharePopoverWindow { nullptr };
+    HWND sidebarOverlayWindow { nullptr };
+    HWND tabOverviewWindow { nullptr };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
@@ -1696,6 +1700,56 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
+    bool ensureOverlayWindows()
+    {
+        if (!window)
+            return false;
+
+        const auto ensure = [&](HWND& handle) {
+            if (handle && IsWindow(handle))
+                return true;
+            handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+                0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+            return handle != nullptr;
+        };
+        return ensure(sidebarOverlayWindow) && ensure(tabOverviewWindow);
+    }
+
+    void positionOverlayWindows()
+    {
+        if (!window || IsIconic(window))
+            return;
+
+        RECT client { };
+        if (!GetClientRect(window, &client))
+            return;
+
+        const int top = contentTop();
+        const int height = std::max(0, static_cast<int>(client.bottom) - top);
+        if (sidebarAnimating) {
+            if (ensureOverlayWindows()) {
+                const int width = scaleForDpi(window, 300);
+                const int left = sidebarOffset() - width;
+                SetWindowPos(sidebarOverlayWindow, HWND_TOP, left, top, width, height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+            }
+        } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)) {
+            ShowWindow(sidebarOverlayWindow, SW_HIDE);
+        }
+
+        if (tabOverviewVisible) {
+            if (ensureOverlayWindows()) {
+                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                SetWindowPos(tabOverviewWindow, HWND_TOP, left, top,
+                    std::max(0, static_cast<int>(client.right) - left), height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            }
+        } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
+            ShowWindow(tabOverviewWindow, SW_HIDE);
+        }
+    }
+
     void toggleSidebar()
     {
         if (!window)
@@ -1876,22 +1930,10 @@ struct BrowserState {
             }
         }
         if (nextOverviewTab != hoveredOverviewTab || nextOverviewNewTab != hoveredOverviewNewTab) {
-            const int previousTab = hoveredOverviewTab;
-            const bool previousNewTab = hoveredOverviewNewTab;
             hoveredOverviewTab = nextOverviewTab;
             hoveredOverviewNewTab = nextOverviewNewTab;
-            if (previousTab >= 0 && static_cast<size_t>(previousTab) < tabs.size()) {
-                const RECT rect = tabOverviewCardRect(static_cast<size_t>(previousTab));
-                InvalidateRect(window, &rect, FALSE);
-            }
-            if (hoveredOverviewTab >= 0 && static_cast<size_t>(hoveredOverviewTab) < tabs.size()) {
-                const RECT rect = tabOverviewCardRect(static_cast<size_t>(hoveredOverviewTab));
-                InvalidateRect(window, &rect, FALSE);
-            }
-            if (previousNewTab || hoveredOverviewNewTab) {
-                const RECT rect = tabOverviewNewTabRect();
-                InvalidateRect(window, &rect, FALSE);
-            }
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         }
     }
 
@@ -1953,8 +1995,8 @@ struct BrowserState {
 
         if (tabOverviewAnimating) {
             const bool transitionStillActive = GetTickCount64() - tabOverviewAnimationStart < 280;
-            const RECT overviewArea = tabOverviewAreaRect();
-            InvalidateRect(window, &overviewArea, FALSE);
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             if (transitionStillActive)
                 continueAnimation = true;
             else
@@ -1963,25 +2005,14 @@ struct BrowserState {
 
         if (sidebarAnimating) {
             const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 260;
-            if (!tabOverviewVisible) {
-                if (auto* selected = active()) {
-                    if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                        // Move only; the WKView keeps a constant frame size during
-                        // the animation so WebKit does not relayout on every tick.
-                        SetWindowPos(viewWindow, HWND_TOP, sidebarOffset(), contentTop(), 0, 0,
-                            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
-                    }
-                }
-            }
-            RECT client { };
-            if (GetClientRect(window, &client)) {
-                RECT contentArea { 0, contentTop(), client.right, client.bottom };
-                InvalidateRect(window, &contentArea, FALSE);
-            }
+            // Animate the dedicated overlay only. Moving the accelerated WebKit
+            // HWND on every timer tick was causing black frames after sidebar close.
+            positionOverlayWindows();
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
                 sidebarAnimating = false;
+                positionOverlayWindows();
                 resize();
                 redrawAfterLayoutChange();
             }
@@ -3773,6 +3804,8 @@ search.addEventListener('keydown',e=>{
             captureTabThumbnail(*tabs[previouslyActive]);
         tabOverviewVisible = false;
         tabOverviewAnimating = false;
+        if (tabOverviewWindow && IsWindow(tabOverviewWindow))
+            ShowWindow(tabOverviewWindow, SW_HIDE);
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         activeTab = index;
@@ -3867,6 +3900,8 @@ search.addEventListener('keydown',e=>{
             }
             resize();
             InvalidateRect(window, nullptr, FALSE);
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         } else {
             activateTab(activeTab);
         }
@@ -4550,6 +4585,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
         }
 
+        if (sidebarAnimating) {
+            sidebarAnimating = false;
+            if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow))
+                ShowWindow(sidebarOverlayWindow, SW_HIDE);
+        }
+
         if (addressEditing)
             endAddressEditing();
         if (auto* tab = active())
@@ -4561,12 +4602,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         startChromeAnimationTimer();
-        // Move live WKViews offscreen while preserving their visibility/state;
-        // this leaves the parent HWND free to draw the animated overview.
+        // The overview is an independent child surface layered above the live page.
+        // This avoids hide/show and offscreen moves that caused renderer loss/flicker.
         resize();
+        positionOverlayWindows();
         SetFocus(window);
-        RedrawWindow(window, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        if (tabOverviewWindow) {
+            InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+            UpdateWindow(tabOverviewWindow);
+        }
     }
 
     void showSidebarSelectionMenu()
@@ -4711,20 +4755,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         );
 
         int contentTop = this->contentTop();
-        int contentLeft = webFullscreen ? 0 : sidebarOffset();
+        // Keep the live WebKit HWND at a stable viewport during the overlay motion.
+        // Sidebar layout is committed only once, when the animation has completed.
+        int contentLeft = webFullscreen ? 0
+            : (sidebarAnimating ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0));
         const int offscreenX = static_cast<int>(client.right) + scaleForDpi(window, 24);
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
 
-            // Never stack inactive WebKit HWNDs over the selected page. During
-            // Tab Overview, move every live surface outside the clipped client
-            // area so the parent can paint the overview without hiding WebKit
-            // (WM_SHOWWINDOW can invalidate video/GPU renderer state on this port).
-            // Keep the existing size and visibility; only the active surface gets
-            // resized to the current viewport.
-            if (tabOverviewVisible || tab.get() != active()) {
+            // Inactive WebKit HWNDs stay below the active page. Tab Overview is
+            // now an independent child overlay, so the selected page remains alive
+            // and stationary behind it rather than being moved offscreen.
+            if (tab.get() != active()) {
                 SetWindowPos(viewWindow, HWND_BOTTOM, offscreenX, contentTop, 0, 0,
                     SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
                 continue;
@@ -4747,6 +4791,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         if (findBarVisible)
             positionFindBar();
+        positionOverlayWindows();
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -5243,9 +5288,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return rect.right;
     }
 
-    void drawSidebarPanel(HDC dc)
+    void drawSidebarPanel(HDC dc, bool overlaySurface = false)
     {
-        if (!sidebarOpen && !sidebarAnimating)
+        if (sidebarAnimating ? !overlaySurface : !sidebarOpen)
             return;
 
         const int savedDC = SaveDC(dc);
@@ -5257,9 +5302,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
-        // Translate the complete sidebar as one surface: at progress 0 it is
-        // entirely left of the client, and at progress 1 it sits at x=0.
-        SetViewportOrgEx(dc, sidebarOffset() - width, 0, nullptr);
 
         RECT panel { 0, top, width, client.bottom };
         HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
@@ -5431,8 +5473,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     bool handleSidebarHit(POINT point)
     {
         if (sidebarAnimating) {
-            const int visibleWidth = sidebarOffset();
-            return point.x >= 0 && point.x < visibleWidth && point.y >= contentTop();
+            // The overlay window clips clicks to its visible portion; coordinates
+            // arriving here are local to the sliding panel.
+            return point.x >= 0 && point.x < scaleForDpi(window, 300)
+                && point.y >= contentTop();
         }
         if (!sidebarOpen)
             return false;
@@ -5750,9 +5794,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
         drawTabOverview(dc, overviewRect, dark);
-
-        if (tabOverviewVisible)
-            drawTabOverviewPage(dc);
     }
 };
 
@@ -8956,6 +8997,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 DestroyWindow(state->sharePopoverWindow);
                 state->sharePopoverWindow = nullptr;
             }
+            if (state->sidebarOverlayWindow && IsWindow(state->sidebarOverlayWindow)) {
+                DestroyWindow(state->sidebarOverlayWindow);
+                state->sidebarOverlayWindow = nullptr;
+            }
+            if (state->tabOverviewWindow && IsWindow(state->tabOverviewWindow)) {
+                DestroyWindow(state->tabOverviewWindow);
+                state->tabOverviewWindow = nullptr;
+            }
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
@@ -8976,6 +9025,90 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     return DefWindowProcW(window, message, wParam, lParam);
+}
+
+LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_NCCREATE) {
+        auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        auto* state = static_cast<BrowserState*>(createInfo->lpCreateParams);
+        if (!state)
+            return FALSE;
+        SetWindowLongPtrW(overlay, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        return TRUE;
+    }
+
+    auto* state = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(overlay, GWLP_USERDATA));
+    if (!state)
+        return DefWindowProcW(overlay, message, wParam, lParam);
+
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT paint { };
+        HDC dc = BeginPaint(overlay, &paint);
+        const int saved = SaveDC(dc);
+        if (saved) {
+            if (overlay == state->sidebarOverlayWindow) {
+                SetViewportOrgEx(dc, 0, -state->contentTop(), nullptr);
+                state->drawSidebarPanel(dc, true);
+            } else if (overlay == state->tabOverviewWindow) {
+                const RECT area = state->tabOverviewAreaRect();
+                SetViewportOrgEx(dc, -area.left, -state->contentTop(), nullptr);
+                state->drawTabOverviewPage(dc);
+            }
+            RestoreDC(dc, saved);
+        }
+        EndPaint(overlay, &paint);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tracking { };
+        tracking.cbSize = sizeof(tracking);
+        tracking.dwFlags = TME_LEAVE;
+        tracking.hwndTrack = overlay;
+        TrackMouseEvent(&tracking);
+
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + state->contentTop() };
+        if (overlay == state->tabOverviewWindow) {
+            const RECT area = state->tabOverviewAreaRect();
+            point.x += area.left;
+        }
+        state->updateToolbarHover(point);
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        state->updateToolbarHover(POINT { -1, -1 });
+        return 0;
+
+    case WM_LBUTTONDOWN: {
+        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + state->contentTop() };
+        if (overlay == state->sidebarOverlayWindow) {
+            state->handleSidebarHit(point);
+        } else if (overlay == state->tabOverviewWindow) {
+            const RECT area = state->tabOverviewAreaRect();
+            point.x += area.left;
+            state->handleTabOverviewHit(point);
+        }
+        SetFocus(state->window);
+        return 0;
+    }
+
+    case WM_KEYDOWN:
+        if (state->tabOverviewVisible && wParam == VK_ESCAPE) {
+            state->activateTab(state->activeTab);
+            return 0;
+        }
+        break;
+
+    default:
+        break;
+    }
+    return DefWindowProcW(overlay, message, wParam, lParam);
 }
 
 } // namespace
@@ -9003,6 +9136,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     if (!RegisterClassExW(&windowClass)) {
         MessageBoxW(nullptr, L"Could not register the Aurora window class.", windowTitle, MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        return 1;
+    }
+
+    WNDCLASSEXW overlayClass { };
+    overlayClass.cbSize = sizeof(overlayClass);
+    overlayClass.lpfnWndProc = overlayWindowProcedure;
+    overlayClass.hInstance = instance;
+    overlayClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    overlayClass.hbrBackground = nullptr;
+    overlayClass.lpszClassName = overlayWindowClassName;
+    if (!RegisterClassExW(&overlayClass)) {
+        MessageBoxW(nullptr, L"Could not register the Aurora overlay window class.", windowTitle, MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
     }
