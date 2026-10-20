@@ -1157,6 +1157,10 @@ struct BrowserState {
     HWND sharePopoverWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
+    HBITMAP sidebarOverlayBitmap { nullptr };
+    SIZE sidebarOverlayBitmapSize { 0, 0 };
+    HBITMAP tabOverviewBitmap { nullptr };
+    SIZE tabOverviewBitmapSize { 0, 0 };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
@@ -1689,8 +1693,11 @@ struct BrowserState {
         if (!sidebarAnimating)
             return sidebarOpen ? 1.0f : 0.0f;
         const ULONGLONG elapsed = GetTickCount64() - sidebarAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 260.0f, 0.0f, 1.0f);
-        const float eased = t * t * (3.0f - 2.0f * t);
+        const float t = std::clamp(static_cast<float>(elapsed) / 240.0f, 0.0f, 1.0f);
+        // Cubic ease-out starts promptly but settles gently instead of visibly
+        // crawling through the final portion of the sidebar slide.
+        const float inverse = 1.0f - t;
+        const float eased = 1.0f - inverse * inverse * inverse;
         return sidebarAnimationFrom + (sidebarAnimationTarget - sidebarAnimationFrom) * eased;
     }
 
@@ -1733,22 +1740,35 @@ struct BrowserState {
             if (ensureOverlayWindows()) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
-                SetWindowPos(sidebarOverlayWindow, HWND_TOP, left, top, width, height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                if (alreadyVisible)
+                    flags |= SWP_NOZORDER;
+                else
+                    flags |= SWP_SHOWWINDOW;
+                SetWindowPos(sidebarOverlayWindow, alreadyVisible ? nullptr : HWND_TOP,
+                    left, top, width, height, flags);
                 InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
             }
-        } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)) {
+        } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
+            && IsWindowVisible(sidebarOverlayWindow)) {
             ShowWindow(sidebarOverlayWindow, SW_HIDE);
         }
 
         if (tabOverviewVisible) {
             if (ensureOverlayWindows()) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
-                SetWindowPos(tabOverviewWindow, HWND_TOP, left, top,
-                    std::max(0, static_cast<int>(client.right) - left), height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                if (alreadyVisible)
+                    flags |= SWP_NOZORDER;
+                else
+                    flags |= SWP_SHOWWINDOW;
+                SetWindowPos(tabOverviewWindow, alreadyVisible ? nullptr : HWND_TOP, left, top,
+                    std::max(0, static_cast<int>(client.right) - left), height, flags);
             }
-        } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
+        } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
+            && IsWindowVisible(tabOverviewWindow)) {
             ShowWindow(tabOverviewWindow, SW_HIDE);
         }
     }
