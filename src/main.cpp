@@ -2117,6 +2117,46 @@ struct BrowserState {
             card.right - inset, card.top + inset + size };
     }
 
+    HBITMAP copyTabPreviewFrame(TabState& tab, int& outWidth, int& outHeight)
+    {
+        outWidth = 0;
+        outHeight = 0;
+        if (!tab.previewBitmap || tab.previewWidth <= 0 || tab.previewHeight <= 0)
+            return nullptr;
+
+        HDC referenceDC = GetDC(window);
+        if (!referenceDC)
+            return nullptr;
+        HDC sourceDC = CreateCompatibleDC(referenceDC);
+        HDC targetDC = CreateCompatibleDC(referenceDC);
+        HBITMAP copy = CreateCompatibleBitmap(referenceDC, tab.previewWidth, tab.previewHeight);
+        if (!sourceDC || !targetDC || !copy) {
+            if (copy) DeleteObject(copy);
+            if (sourceDC) DeleteDC(sourceDC);
+            if (targetDC) DeleteDC(targetDC);
+            ReleaseDC(window, referenceDC);
+            return nullptr;
+        }
+
+        HGDIOBJ oldSource = SelectObject(sourceDC, tab.previewBitmap);
+        HGDIOBJ oldTarget = SelectObject(targetDC, copy);
+        const BOOL copied = BitBlt(targetDC, 0, 0, tab.previewWidth, tab.previewHeight,
+            sourceDC, 0, 0, SRCCOPY);
+        SelectObject(targetDC, oldTarget);
+        SelectObject(sourceDC, oldSource);
+        DeleteDC(targetDC);
+        DeleteDC(sourceDC);
+        ReleaseDC(window, referenceDC);
+        if (!copied) {
+            DeleteObject(copy);
+            return nullptr;
+        }
+
+        outWidth = tab.previewWidth;
+        outHeight = tab.previewHeight;
+        return copy;
+    }
+
     HBITMAP captureViewFrame(TabState& tab, int& outWidth, int& outHeight)
     {
         outWidth = 0;
@@ -4082,10 +4122,11 @@ search.addEventListener('keydown',e=>{
         HBITMAP nextPageFrame = nullptr;
         int nextPageWidth = 0;
         int nextPageHeight = 0;
-        if (previouslyActive != index && !webFullscreen)
-            nextPageFrame = captureViewFrame(*tabs[index], nextPageWidth, nextPageHeight);
-        if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
-            captureTabThumbnail(*tabs[previouslyActive]);
+        if (previouslyActive != index && !webFullscreen) {
+            nextPageFrame = copyTabPreviewFrame(*tabs[index], nextPageWidth, nextPageHeight);
+            if (!nextPageFrame)
+                nextPageFrame = captureViewFrame(*tabs[index], nextPageWidth, nextPageHeight);
+        }
         if (nextPageFrame)
             beginContentTransition(nextPageFrame, nextPageWidth, nextPageHeight, ContentTransitionMode::TabSwitch);
 
