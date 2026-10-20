@@ -1168,6 +1168,11 @@ struct BrowserState {
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
+    bool sidebarAnimating { false };
+    int sidebarAnimatedWidth { 0 };
+    int sidebarAnimationStartWidth { 0 };
+    int sidebarAnimationTargetWidth { 0 };
+    ULONGLONG sidebarAnimationStart { 0 };
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
@@ -1740,7 +1745,7 @@ struct BrowserState {
         }
 
         int nextSidebarRow = -1;
-        if (sidebarOpen) {
+        if (sidebarOpen && !sidebarAnimating) {
             const int sidebarWidth = scaleForDpi(window, 300);
             const int rowTop = contentTop() + scaleForDpi(window, 88);
             const int rowHeight = scaleForDpi(window, 46);
@@ -1856,6 +1861,53 @@ struct BrowserState {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    int sidebarWidth() const
+    {
+        if (webFullscreen || !window)
+            return 0;
+        if (sidebarAnimating)
+            return std::clamp(sidebarAnimatedWidth, 0, scaleForDpi(window, 300));
+        return sidebarOpen ? scaleForDpi(window, 300) : 0;
+    }
+
+    void setSidebarOpenAnimated(bool open)
+    {
+        if (!window || webFullscreen) {
+            sidebarOpen = open;
+            sidebarAnimating = false;
+            sidebarAnimatedWidth = open && window ? scaleForDpi(window, 300) : 0;
+            resize();
+            return;
+        }
+
+        const int fullWidth = scaleForDpi(window, 300);
+        const int currentWidth = sidebarWidth();
+        const int targetWidth = open ? fullWidth : 0;
+        if (!sidebarAnimating && currentWidth == targetWidth) {
+            sidebarOpen = open;
+            return;
+        }
+
+        sidebarOpen = open || currentWidth > 0;
+        sidebarAnimationStartWidth = currentWidth;
+        sidebarAnimationTargetWidth = targetWidth;
+        sidebarAnimatedWidth = currentWidth;
+        sidebarAnimationStart = GetTickCount64();
+        sidebarAnimating = currentWidth != targetWidth;
+        if (!sidebarAnimating) {
+            sidebarOpen = open;
+            sidebarAnimatedWidth = targetWidth;
+        } else {
+            startChromeAnimationTimer();
+        }
+
+        resize(false, false);
+        RECT client { };
+        GetClientRect(window, &client);
+        RECT repaint { 0, contentTop(), fullWidth, client.bottom };
+        InvalidateRect(window, &repaint, FALSE);
+    }
+
     void animateChrome()
     {
         if (!window)
@@ -1904,6 +1956,35 @@ struct BrowserState {
                 tabOverviewAnimating = false;
         }
 
+        if (sidebarAnimating) {
+            const ULONGLONG elapsed = GetTickCount64() - sidebarAnimationStart;
+            const float t = std::clamp(static_cast<float>(elapsed) / 240.0f, 0.0f, 1.0f);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            const int previousWidth = sidebarAnimatedWidth;
+            sidebarAnimatedWidth = static_cast<int>(std::lround(
+                sidebarAnimationStartWidth
+                + (sidebarAnimationTargetWidth - sidebarAnimationStartWidth) * eased));
+
+            // Move WebKit views without forcing synchronous invalidation every frame.
+            // This avoids repeatedly clearing the accelerated surface during the slide.
+            resize(false, false);
+            RECT client { };
+            GetClientRect(window, &client);
+            RECT repaint { 0, contentTop(), scaleForDpi(window, 300), client.bottom };
+            if (previousWidth != sidebarAnimatedWidth)
+                InvalidateRect(window, &repaint, FALSE);
+
+            if (elapsed < 240) {
+                continueAnimation = true;
+            } else {
+                sidebarAnimating = false;
+                sidebarAnimatedWidth = sidebarAnimationTargetWidth;
+                sidebarOpen = sidebarAnimationTargetWidth > 0;
+                // Repaint the active WebKit view once at the final size, not on every frame.
+                resize(true, true);
+            }
+        }
+
         // Do not invalidate the whole chrome band here: it includes Smart Search,
         // whose surface was visibly flashing during unrelated hover transitions.
         if (!continueAnimation) {
@@ -1916,7 +1997,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+        const int left = sidebarWidth();
         return { left, contentTop(), client.right, client.bottom };
     }
 
@@ -4500,9 +4581,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (command == kSidebarBookmarks) sidebarSection = 0;
         else if (command == kSidebarReadingList) sidebarSection = 1;
         else if (command == kSidebarHistory) sidebarSection = 2;
-        sidebarOpen = true;
-        resize();
-        InvalidateRect(window, nullptr, FALSE);
+        setSidebarOpenAnimated(true);
     }
 
     void executeWebEditCommand(const char* command)
@@ -4573,7 +4652,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
-    void resize()
+    void resize(bool invalidateWebViews = true, bool invalidateWholeWindow = true)
     {
         if (!window)
             return;
@@ -4583,17 +4662,21 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         RECT pill = addressPillRect();
-        MoveWindow(
-            addressBar,
-            pill.left + scaleForDpi(window, 30),
-            pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
-            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
-            TRUE
-        );
+        if (invalidateWholeWindow) {
+            MoveWindow(
+                addressBar,
+                pill.left + scaleForDpi(window, 30),
+                pill.top + scaleForDpi(window, 2),
+                std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
+                std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
+                TRUE
+            );
+        }
 
         int contentTop = this->contentTop();
-        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
+        int contentLeft = sidebarWidth();
+        if (!sidebarAnimating)
+            sidebarAnimatedWidth = contentLeft;
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
@@ -4610,13 +4693,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
                 FALSE
             );
-            if (tab.get() == active() && IsWindowVisible(viewWindow))
+            if (invalidateWebViews && tab.get() == active() && IsWindowVisible(viewWindow))
                 InvalidateRect(viewWindow, nullptr, FALSE);
         }
 
         if (findBarVisible)
             positionFindBar();
-        InvalidateRect(window, nullptr, FALSE);
+        if (invalidateWholeWindow)
+            InvalidateRect(window, nullptr, FALSE);
     }
 
     void toggleMaximizeWindow()
@@ -4688,11 +4772,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kCommandReload:
             reloadOrStop();
             break;
-        case kCommandSidebar:
-            sidebarOpen = !sidebarOpen;
-            resize();
-            InvalidateRect(window, nullptr, FALSE);
+        case kCommandSidebar: {
+            const bool targetOpen = sidebarAnimating
+                ? sidebarAnimationTargetWidth == 0
+                : !sidebarOpen;
+            setSidebarOpenAnimated(targetOpen);
             break;
+        }
         case kCommandPrivacy:
             showWebsiteSettingsMenu();
             break;
@@ -4810,9 +4896,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
-        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; resize(); break;
-        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; resize(); break;
-        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; resize(); break;
+        case kSidebarBookmarks: sidebarSection = 0; setSidebarOpenAnimated(true); break;
+        case kSidebarReadingList: sidebarSection = 1; setSidebarOpenAnimated(true); break;
+        case kSidebarHistory: sidebarSection = 2; setSidebarOpenAnimated(true); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -5114,24 +5200,31 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void drawSidebarPanel(HDC dc)
     {
-        if (!sidebarOpen)
+        if (!sidebarOpen && !sidebarAnimating)
             return;
 
+        const int visibleWidth = sidebarWidth();
+        if (visibleWidth <= 0)
+            return;
+
+        const int savedDC = SaveDC(dc);
+        IntersectClipRect(dc, 0, contentTop(), visibleWidth, GetSystemMetrics(SM_CYSCREEN) + contentTop());
+
         const bool dark = chromeDarkTheme();
-        int width = scaleForDpi(window, 300);
-        int top = contentTop();
+        const int width = scaleForDpi(window, 300);
+        const int top = contentTop();
         RECT client { };
         GetClientRect(window, &client);
 
-        RECT panel { 0, top, width, client.bottom };
+        RECT panel { 0, top, visibleWidth, client.bottom };
         HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
         FillRect(dc, &panel, brush);
         DeleteObject(brush);
 
         HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
-        MoveToEx(dc, width - 1, top, nullptr);
-        LineTo(dc, width - 1, client.bottom);
+        MoveToEx(dc, visibleWidth - 1, top, nullptr);
+        LineTo(dc, visibleWidth - 1, client.bottom);
         SelectObject(dc, oldPen);
         DeleteObject(divider);
 
@@ -5287,14 +5380,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (secondaryFont) DeleteObject(secondaryFont);
         if (headingFont) DeleteObject(headingFont);
         DeleteObject(font);
+        if (savedDC)
+            RestoreDC(dc, savedDC);
     }
 
     bool handleSidebarHit(POINT point)
     {
-        if (!sidebarOpen)
+        if ((!sidebarOpen && !sidebarAnimating) || sidebarWidth() <= 0)
             return false;
+        if (sidebarAnimating)
+            return true;
 
-        int width = scaleForDpi(window, 300);
+        int width = sidebarWidth();
         int top = contentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
@@ -5302,9 +5399,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT closeRect { width - scaleForDpi(window, 52), top + scaleForDpi(window, 8),
             width - scaleForDpi(window, 6), top + scaleForDpi(window, 48) };
         if (PtInRect(&closeRect, point)) {
-            sidebarOpen = false;
-            resize();
-            InvalidateRect(window, nullptr, FALSE);
+            setSidebarOpenAnimated(false);
             return true;
         }
 
