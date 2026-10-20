@@ -608,37 +608,51 @@ jobs:
 
       - name: Remove superseded WebKit caches
         if: success() && steps.save-webkit-snapshot.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_REF: ${{ github.ref }}
           CURRENT_WEBKIT_CACHE_KEY: webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
         shell: powershell
         run: |
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            Accept = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          $escapedRef = [System.Uri]::EscapeDataString($env:GITHUB_REF)
-          $baseUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/caches"
-          $toDelete = @()
-          $page = 1
-          do {
-            $uri = "$baseUri?ref=$escapedRef&per_page=100&page=$page"
-            $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
-            $pageCaches = @($response.actions_caches)
-            foreach ($cache in $pageCaches) {
-              $isWebKitCache = ($cache.key -like "webkit-src-*") -or ($cache.key -like "webkit-build-Windows-*")
-              if ($isWebKitCache -and $cache.key -ne $env:CURRENT_WEBKIT_CACHE_KEY) {
-                $toDelete += $cache
-              }
+          try {
+            $repository = $env:TARGET_REPOSITORY
+            if ([string]::IsNullOrWhiteSpace($repository) -or $repository -notmatch '^[^/]+/[^/]+$') {
+              throw "Repository context is invalid: '$repository'."
             }
-            $page++
-          } while ($pageCaches.Count -eq 100)
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $escapedRef = [System.Uri]::EscapeDataString($env:TARGET_REF)
+            $baseUri = "https://api.github.com/repos/$($repository)/actions/caches"
+            $null = [System.Uri]$baseUri
+            $toDelete = @()
+            $page = 1
+            do {
+              $uri = "$($baseUri)?ref=$escapedRef&per_page=100&page=$page"
+              $null = [System.Uri]$uri
+              $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+              $pageCaches = @($response.actions_caches)
+              foreach ($cache in $pageCaches) {
+                $isWebKitCache = ($cache.key -like "webkit-src-*") -or ($cache.key -like "webkit-build-Windows-*")
+                if ($isWebKitCache -and $cache.key -ne $env:CURRENT_WEBKIT_CACHE_KEY) {
+                  $toDelete += $cache
+                }
+              }
+              $page++
+            } while ($pageCaches.Count -eq 100)
 
-          foreach ($cache in $toDelete) {
-            $deleteUri = "$baseUri/$($cache.id)"
-            Invoke-RestMethod -Method Delete -Uri $deleteUri -Headers $headers | Out-Null
-            Write-Host "Removed superseded WebKit cache: $($cache.key) (id $($cache.id))"
+            foreach ($cache in $toDelete) {
+              $deleteUri = "$($baseUri)/$($cache.id)"
+              $null = [System.Uri]$deleteUri
+              Invoke-RestMethod -Method Delete -Uri $deleteUri -Headers $headers | Out-Null
+              Write-Host "Removed superseded WebKit cache: $($cache.key) (id $($cache.id))"
+            }
+          } catch {
+            Write-Warning "WebKit cache cleanup failed: $($_.Exception.Message). The saved engine cache and Aurora artifact must not be invalidated by cleanup."
           }
 
       - name: Upload Aurora artifact
