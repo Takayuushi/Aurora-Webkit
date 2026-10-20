@@ -99,23 +99,68 @@ jobs:
           }
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
-      # One cache contains the matching WebKit source, compiled output, and libraries.
-      # Keeping one snapshot avoids duplicate large caches evicting each other.
+      - name: Resolve WebKit compiler fingerprint
+        id: build-fingerprint
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio C++ toolchain was not found." }
+          $msvcRoot = Join-Path $vsInstall "VC\Tools\MSVC"
+          $msvc = Get-ChildItem -LiteralPath $msvcRoot -Directory | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $msvc) { throw "MSVC toolset was not found under $msvcRoot." }
+
+          $clang = Join-Path $env:ProgramFiles "LLVM\bin\clang-cl.exe"
+          if (-not (Test-Path $clang)) { throw "clang-cl was not found at $clang." }
+          $banner = (& $clang --version 2>&1 | Select-Object -First 1) -join ""
+          if ($banner -notmatch 'clang version\s+([0-9]+(?:\.[0-9]+){1,3})') { throw "Unable to determine clang-cl version: $banner" }
+          $clangVersion = $Matches[1]
+
+          $sdkRoot = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\Include"
+          $sdk = Get-ChildItem -LiteralPath $sdkRoot -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $sdk) { throw "Windows SDK was not found under $sdkRoot." }
+          $clVersion = (Get-Item -LiteralPath (Join-Path $msvc.FullName "bin\Hostx64\x64\cl.exe")).VersionInfo.FileVersion
+
+          $source = "$($msvc.Name)|$clVersion|$clangVersion|$($sdk.Name)"
+          $hash = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $fingerprint = [System.BitConverter]::ToString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source))).Replace("-", "").ToLowerInvariant().Substring(0,20)
+          } finally { $hash.Dispose() }
+          Write-Host "WebKit compiler fingerprint: $fingerprint (MSVC $($msvc.Name), clang $clangVersion, SDK $($sdk.Name))"
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+
+      # The key changes only when the engine, compiler toolchain, or CMake graph changes.
+      # Fallback restore lets the last good engine be migrated without throwing it away.
       - name: Restore saved WebKit build
         id: cache-webkit-src
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.WEBKIT_DIR }}
-          key: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          key: webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
+          restore-keys: |
+            webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-
+            webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-
+            webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-
+            webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+
+      - name: Report restored WebKit cache
+        if: steps.cache-webkit-src.outputs.cache-matched-key != ''
+        shell: powershell
+        env:
+          CACHE_MATCHED_KEY: ${{ steps.cache-webkit-src.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.cache-webkit-src.outputs.cache-hit }}
+        run: |
+          Write-Host "Exact cache hit: $env:CACHE_EXACT_HIT"
+          Write-Host "Restored cache key: $env:CACHE_MATCHED_KEY"
 
       - name: Require saved WebKit build for normal browser builds
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_webkit != true)
+        if: steps.cache-webkit-src.outputs.cache-matched-key == '' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_webkit != true)
         shell: powershell
         run: |
           throw "No saved WebKit build was found for the pinned SHA. This browser build will not rebuild WebKit automatically. Re-run this workflow manually and enable 'Rebuild WebKit' only when an intentional WebKit rebuild is needed."
 
       - name: Clone WebKit for an explicitly requested rebuild
-        if: steps.cache-webkit-src.outputs.cache-hit != 'true' && github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
+        if: steps.cache-webkit-src.outputs.cache-matched-key == '' && github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
         env:
           WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
         shell: powershell
@@ -131,7 +176,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not check out requested WebKit revision $env:WEBKIT_SHA" }
 
       - name: Verify WebKit checkout
-        if: steps.cache-webkit-src.outputs.cache-hit == 'true' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true)
+        if: steps.cache-webkit-src.outputs.cache-matched-key != '' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true)
         env:
           WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
         shell: powershell
@@ -281,6 +326,78 @@ jobs:
           ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
           if ($runtimeDirs.Count -eq 0) {
             throw "The saved WebKit build has no bin/bin64 runtime directory. Use Run workflow and enable 'Rebuild WebKit' to recreate the snapshot."
+          }
+
+      - name: Prepare saved WebKit graph for incremental builds
+        if: steps.cache-webkit-src.outputs.cache-matched-key != '' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true)
+        env:
+          CURRENT_BUILD_FINGERPRINT: ${{ steps.build-fingerprint.outputs.fingerprint }}
+          CURRENT_CLANG_VERSION: ${{ steps.build-fingerprint.outputs.clang_version }}
+          CURRENT_CMAKE_HASH: ${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
+        shell: powershell
+        run: |
+          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
+          $buildNinja = Join-Path $buildDir "build.ninja"
+          $cacheFile = Join-Path $buildDir "CMakeCache.txt"
+          if (-not (Test-Path -LiteralPath $buildNinja)) { throw "Configured Ninja graph not found at $buildNinja." }
+          if (-not (Test-Path -LiteralPath $cacheFile)) { throw "CMakeCache.txt not found at $cacheFile." }
+
+          $metadataPath = Join-Path $env:WEBKIT_DIR ".aurora-build-cache-metadata"
+          $metadata = @{}
+          if (Test-Path -LiteralPath $metadataPath) {
+            foreach ($line in Get-Content -LiteralPath $metadataPath) {
+              $pair = $line -split '=', 2
+              if ($pair.Count -eq 2) { $metadata[$pair[0]] = $pair[1] }
+            }
+          }
+
+          $allowIncremental = $false
+          if ($metadata.ContainsKey("fingerprint") -and $metadata.ContainsKey("cmake_hash")) {
+            $allowIncremental = $metadata["fingerprint"] -eq $env:CURRENT_BUILD_FINGERPRINT -and $metadata["cmake_hash"] -eq $env:CURRENT_CMAKE_HASH
+          } else {
+            # Migrate the legacy cache only after confirming its compiler is still compatible.
+            $compilerMetadata = Get-ChildItem -LiteralPath (Join-Path $buildDir "CMakeFiles") -Filter "CMakeCXXCompiler.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            $cachedCompilerVersion = $null
+            if ($compilerMetadata) {
+              $compilerText = Get-Content -LiteralPath $compilerMetadata.FullName -Raw
+              if ($compilerText -match 'set\(CMAKE_CXX_COMPILER_VERSION "([^"]+)"\)') { $cachedCompilerVersion = $Matches[1] }
+            }
+            $cacheText = Get-Content -LiteralPath $cacheFile -Raw
+            $cachedCompilerPath = $null
+            if ($cacheText -match '(?m)^CMAKE_CXX_COMPILER:FILEPATH=(.+)$') { $cachedCompilerPath = $Matches[1].Trim().Replace('/', '\') }
+            $currentCompilerPath = (Join-Path $env:ProgramFiles "LLVM\bin\clang-cl.exe").Replace('/', '\')
+            $cachedSystemVersion = $null
+            if ($cacheText -match '(?m)^CMAKE_SYSTEM_VERSION:(?:INTERNAL|STRING)=(.+)$') { $cachedSystemVersion = $Matches[1].Trim() }
+
+            $sdkCompatible = $true
+            if ($cachedSystemVersion -match '^10\.0\.\d+(?:\.\d+)?$' -and $cachedSystemVersion -ne '10.0') {
+              $sdkRoot = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\Include"
+              $sdkCompatible = [bool](Get-ChildItem -LiteralPath $sdkRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $cachedSystemVersion -or $_.Name.StartsWith("$cachedSystemVersion.") } |
+                Select-Object -First 1)
+            }
+
+            $allowIncremental = $compilerMetadata -and
+              $cachedCompilerVersion -eq $env:CURRENT_CLANG_VERSION -and
+              $cachedCompilerPath -and
+              ([System.IO.Path]::GetFullPath($cachedCompilerPath) -ieq [System.IO.Path]::GetFullPath($currentCompilerPath)) -and
+              $sdkCompatible
+          }
+
+          $metadataText = "fingerprint=$env:CURRENT_BUILD_FINGERPRINT$([Environment]::NewLine)cmake_hash=$env:CURRENT_CMAKE_HASH$([Environment]::NewLine)"
+          [System.IO.File]::WriteAllText($metadataPath, $metadataText, [System.Text.UTF8Encoding]::new($false))
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache") | Out-Null
+
+          if ($allowIncremental) {
+            # Avoid timestamp-only CMake regeneration caused by checking out identical integration files.
+            $safeStamp = (Get-Item -LiteralPath $buildNinja).LastWriteTimeUtc.AddSeconds(-2)
+            foreach ($inputPath in @((Join-Path $env:GITHUB_WORKSPACE "CMakeLists.txt"), (Join-Path $env:GITHUB_WORKSPACE "cmake\WebKitProjectHook.cmake"))) {
+              if (-not (Test-Path -LiteralPath $inputPath)) { throw "CMake input missing: $inputPath" }
+              [System.IO.File]::SetLastWriteTimeUtc($inputPath, $safeStamp)
+            }
+            Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
+          } else {
+            Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
 
       - name: Build Aurora target from the configured WebKit graph
@@ -450,13 +567,13 @@ jobs:
           $zipPath = Join-Path $out $zipName
           Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath $zipPath -Force
 
-      - name: Save rebuilt WebKit snapshot
+      - name: Save updated WebKit snapshot
         id: save-webkit-snapshot
-        if: success() && github.event_name == 'workflow_dispatch' && inputs.rebuild_webkit == true
+        if: success() && steps.cache-webkit-src.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.WEBKIT_DIR }}
-          key: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          key: webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
 
       - name: Pin successfully saved WebKit revision
         id: pin-webkit-sha
@@ -484,10 +601,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not push the new WebKit SHA pin. The older cache will be kept." }
 
       - name: Remove superseded WebKit caches
-        if: success() && steps.pin-webkit-sha.outcome == 'success'
+        if: success() && steps.save-webkit-snapshot.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-          CURRENT_WEBKIT_CACHE_KEY: webkit-src-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}
+          CURRENT_WEBKIT_CACHE_KEY: webkit-src-v2-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
         shell: powershell
         run: |
           $headers = @{
@@ -504,7 +621,7 @@ jobs:
             $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
             $pageCaches = @($response.actions_caches)
             foreach ($cache in $pageCaches) {
-              $isWebKitCache = ($cache.key -like "webkit-src-Windows-*") -or ($cache.key -like "webkit-build-Windows-*")
+              $isWebKitCache = ($cache.key -like "webkit-src-*") -or ($cache.key -like "webkit-build-Windows-*")
               if ($isWebKitCache -and $cache.key -ne $env:CURRENT_WEBKIT_CACHE_KEY) {
                 $toDelete += $cache
               }
