@@ -250,7 +250,7 @@ void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownl
 void navigationResponseDidBecomeDownload(WKPageRef, WKNavigationResponseRef, WKDownloadRef, const void*);
 void contextMenuDidCreateDownload(WKPageRef, WKDownloadRef, const void*);
 void resumeDownloadDidStart(WKDownloadRef, const void*);
-void openBrowserSettings(BrowserState*, int requestedSection = 0);
+void openBrowserSettings(BrowserState*, int requestedSection = -1);
 void showSharePopover(BrowserState*);
 LRESULT CALLBACK sharePopoverProcedure(HWND, UINT, WPARAM, LPARAM);
 void showDownloadsPopover(BrowserState*);
