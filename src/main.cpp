@@ -2126,6 +2126,14 @@ struct BrowserState {
                                 InvalidateRect(viewWindow, &exposedView, FALSE);
                             }
                         }
+                        // The drawer is now hidden, so refresh the active site's
+                        // thumbnail from its real page instead of from the overlay.
+                        if (auto* selected = active(); selected
+                            && selected->internalPage != L"start"
+                            && selected->internalPage != L"settings"
+                            && selected->internalPage != L"extensions") {
+                            captureTabThumbnail(*selected);
+                        }
                     }
                 }
             }
@@ -2200,6 +2208,20 @@ struct BrowserState {
 
     void captureTabThumbnail(TabState& tab)
     {
+        // Never capture through an overlay: PrintWindow/BitBlt can include the
+        // sidebar or Tab Overview itself in the returned pixels on accelerated WKViews.
+        if (!tab.browser || tab.browser->sidebarOpen || tab.browser->sidebarAnimating
+            || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
+            || tab.browser->tabOverviewClosing)
+            return;
+
+        auto page = WKViewGetPage(tab.view.get());
+        if (!page)
+            return;
+        const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl)
+            return;
+
         HWND viewWindow = WKViewGetWindow(tab.view.get());
         if (!viewWindow)
             return;
@@ -2284,7 +2306,7 @@ struct BrowserState {
                 tab.previewBitmap = preview;
                 tab.previewWidth = targetWidth;
                 tab.previewHeight = targetHeight;
-                tab.previewURL = tab.activeUrl;
+                tab.previewURL = pageURL.empty() ? tab.activeUrl : pageURL;
                 if (tabOverviewVisible && tabOverviewWindow) {
                     tabOverviewAnimationFrameReady = false;
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
