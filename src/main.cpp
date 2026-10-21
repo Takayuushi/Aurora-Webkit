@@ -3417,7 +3417,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="checks"><label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label></div>
 <p class="help">Some inspector functions depend on the pinned Windows WebKit build.</p></section>
 <div class="actions"><button class="action primary" type="submit">Save Changes</button></div>
-</main></div>
+</main>
 <script>
 (() => {
     const sectionNames = ['general', 'appearance', 'search', 'websites', 'privacy', 'advanced', 'about'];
