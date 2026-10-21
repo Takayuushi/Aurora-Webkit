@@ -3998,7 +3998,8 @@ search.addEventListener('keydown',e=>{
         if (selectedView && !switchingFromOverview)
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-        resize(!switchingFromOverview);
+        // Switching tabs does not change the toolbar geometry; avoid repainting the whole chrome band.
+        resize(false);
         if (selectedView) {
             if (!switchingFromOverview) {
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
