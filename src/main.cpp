@@ -2233,6 +2233,7 @@ struct BrowserState {
         const auto captureLooksBlank = [&]() {
             int validSamples = 0;
             int nearBlackSamples = 0;
+            int nearWhiteSamples = 0;
             int minLuminance = 255;
             int maxLuminance = 0;
             for (int sy = 1; sy <= 7; ++sy) {
@@ -2249,11 +2250,14 @@ struct BrowserState {
                     maxLuminance = std::max(maxLuminance, luminance);
                     if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
                         ++nearBlackSamples;
+                    if (GetRValue(pixel) > 245 && GetGValue(pixel) > 245 && GetBValue(pixel) > 245)
+                        ++nearWhiteSamples;
                 }
             }
             return validSamples >= 20
-                && nearBlackSamples * 100 >= validSamples * 94
-                && maxLuminance - minLuminance <= 9;
+                && maxLuminance - minLuminance <= 9
+                && (nearBlackSamples * 100 >= validSamples * 94
+                    || nearWhiteSamples * 100 >= validSamples * 94);
         };
 
         BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
@@ -4000,8 +4004,9 @@ search.addEventListener('keydown',e=>{
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            RedrawWindow(selectedView, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
+            // Do not force a synchronous full-tree repaint on tab activation.
+            // Keep WebKit's retained backing frame and let real invalid regions paint
+            // naturally; forcing UpdateNow here caused visible white/black frames.
             SetFocus(selectedView);
         }
 
@@ -4932,37 +4937,50 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        int contentTop = this->contentTop();
-        // The sidebar is a real overlay, not a viewport resize. Keep the accelerated
-        // WebKit surface at x=0 for both open/closed states so the renderer never
-        // has to recreate its backing surface just because the library drawer moved.
-        const int contentLeft = 0;
-        const int offscreenX = static_cast<int>(client.right) + scaleForDpi(window, 24);
+        const int contentTop = this->contentTop();
+        // Every WKView keeps the same viewport for its lifetime. Inactive views sit
+        // behind the active view at the same client bounds instead of being moved
+        // off-screen and forcing WebKit's accelerated backing surface to recompose
+        // whenever the user switches tabs.
+        const int viewLeft = 0;
+        const int viewWidth = std::max(0, static_cast<int>(client.right));
+        const int viewHeight = std::max(0, static_cast<int>(client.bottom - contentTop));
+        HWND activeViewWindow = nullptr;
+
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
 
-            // Inactive WebKit HWNDs stay below the active page. Tab Overview is
-            // now an independent child overlay, so the selected page remains alive
-            // and stationary behind it rather than being moved offscreen.
-            if (tab.get() != active()) {
-                SetWindowPos(viewWindow, HWND_BOTTOM, offscreenX, contentTop, 0, 0,
-                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
-                continue;
+            RECT current { };
+            bool geometryChanged = !GetWindowRect(viewWindow, &current);
+            if (!geometryChanged) {
+                MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&current), 2);
+                geometryChanged = current.left != viewLeft
+                    || current.top != contentTop
+                    || current.right - current.left != viewWidth
+                    || current.bottom - current.top != viewHeight;
             }
 
-            const int viewWidth = static_cast<int>(client.right);
-            MoveWindow(
-                viewWindow,
-                contentLeft,
-                contentTop,
-                std::max<int>(0, viewWidth),
-                std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
-                FALSE
-            );
-            if (IsWindowVisible(viewWindow))
-                InvalidateRect(viewWindow, nullptr, FALSE);
+            if (geometryChanged) {
+                MoveWindow(viewWindow, viewLeft, contentTop, viewWidth, viewHeight, FALSE);
+                // Only invalidate when the physical viewport truly changed; ordinary
+                // tab switches leave the retained WebKit frame untouched.
+                if (IsWindowVisible(viewWindow))
+                    InvalidateRect(viewWindow, nullptr, FALSE);
+            }
+
+            if (tab.get() == active()) {
+                activeViewWindow = viewWindow;
+            } else {
+                SetWindowPos(viewWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
+            }
+        }
+
+        if (activeViewWindow) {
+            SetWindowPos(activeViewWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
         }
 
         if (findBarVisible)
