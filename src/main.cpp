@@ -4056,6 +4056,8 @@ search.addEventListener('keydown',e=>{
 
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
+        if (switchingFromOverview && index != previouslyActive)
+            tabOverviewCaptureActivePending = false;
         if (switchingFromOverview && index == previouslyActive) {
             tabOverviewCaptureActivePending = false;
             // The active page has remained live behind the overview overlay.
@@ -8928,6 +8930,7 @@ void didChangeIsLoading(const void* clientInfo)
 
     if (page && WKPageGetEstimatedProgress(page) >= 1.0
         && tab->browser->tabOverviewVisible
+        && !tab->browser->tabOverviewAnimating
         && tab->internalPage != L"start"
         && tab->internalPage != L"settings"
         && tab->internalPage != L"extensions") {
