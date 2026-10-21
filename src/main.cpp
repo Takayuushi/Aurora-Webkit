@@ -1103,6 +1103,7 @@ struct TabState {
     HBITMAP previewBitmap { nullptr };
     int previewWidth { 0 };
     int previewHeight { 0 };
+    std::wstring previewURL;
 
     ~TabState()
     {
@@ -1163,6 +1164,7 @@ struct BrowserState {
     HBITMAP tabOverviewBitmap { nullptr };
     SIZE tabOverviewBitmapSize { 0, 0 };
     bool tabOverviewAnimationFrameReady { false };
+    bool tabOverviewCaptureActivePending { false };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
@@ -2062,10 +2064,21 @@ struct BrowserState {
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    
                     SetWindowPos(tabOverviewWindow, nullptr,
                         sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                }
+                if (tabOverviewCaptureActivePending) {
+                    tabOverviewCaptureActivePending = false;
+                    if (auto* selected = active(); selected
+                        && selected->internalPage != L"start"
+                        && selected->internalPage != L"settings"
+                        && selected->internalPage != L"extensions") {
+                        captureTabThumbnail(*selected);
+                    }
+                    tabOverviewAnimationFrameReady = false;
+                    if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                        InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 }
             }
         }
@@ -2284,6 +2297,11 @@ struct BrowserState {
                 tab.previewBitmap = preview;
                 tab.previewWidth = targetWidth;
                 tab.previewHeight = targetHeight;
+                tab.previewURL = tab.activeUrl;
+                if (tabOverviewVisible && tabOverviewWindow) {
+                    tabOverviewAnimationFrameReady = false;
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                }
             } else if (preview) {
                 DeleteObject(preview);
             }
@@ -2542,6 +2560,55 @@ struct BrowserState {
         const int cardHeight = scaleForDpi(window, 226);
         const int previewInset = scaleForDpi(window, 8);
         const int metaHeight = scaleForDpi(window, 58);
+        const auto previewBitmapLooksBlank = [&](const TabState& tab) {
+            if (!tab.previewBitmap || tab.previewWidth < 8 || tab.previewHeight < 8)
+                return true;
+            HDC bitmapDC = CreateCompatibleDC(dc);
+            if (!bitmapDC)
+                return false;
+            HGDIOBJ oldBitmap = SelectObject(bitmapDC, tab.previewBitmap);
+            if (!oldBitmap || oldBitmap == HGDI_ERROR) {
+                DeleteDC(bitmapDC);
+                return false;
+            }
+
+            int samples = 0;
+            int nearBlack = 0;
+            int nearWhite = 0;
+            int minLuma = 255;
+            int maxLuma = 0;
+            long long totalLuma = 0;
+            for (int sy = 1; sy <= 7; ++sy) {
+                const int y = std::clamp(tab.previewHeight * sy / 8, 0, tab.previewHeight - 1);
+                for (int sx = 1; sx <= 9; ++sx) {
+                    const int x = std::clamp(tab.previewWidth * sx / 10, 0, tab.previewWidth - 1);
+                    const COLORREF pixel = GetPixel(bitmapDC, x, y);
+                    if (pixel == CLR_INVALID)
+                        continue;
+                    const int luma = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
+                        + GetBValue(pixel) * 11) / 100;
+                    ++samples;
+                    totalLuma += luma;
+                    minLuma = std::min(minLuma, luma);
+                    maxLuma = std::max(maxLuma, luma);
+                    if (GetRValue(pixel) < 14 && GetGValue(pixel) < 14 && GetBValue(pixel) < 16)
+                        ++nearBlack;
+                    if (GetRValue(pixel) > 244 && GetGValue(pixel) > 244 && GetBValue(pixel) > 244)
+                        ++nearWhite;
+                }
+            }
+            SelectObject(bitmapDC, oldBitmap);
+            DeleteDC(bitmapDC);
+            if (samples < 30)
+                return false;
+            const double average = static_cast<double>(totalLuma) / samples;
+            const bool flatBlack = nearBlack * 100 >= samples * 86 && average < 20.0
+                && maxLuma - minLuma < 40;
+            const bool flatWhite = nearWhite * 100 >= samples * 86 && average > 238.0
+                && maxLuma - minLuma < 40;
+            return flatBlack || flatWhite;
+        };
+
         for (size_t i = 0; i < tabs.size(); ++i) {
             const RECT card = tabOverviewCardRect(i);
             if (card.top >= area.bottom || card.bottom <= area.top)
@@ -2583,7 +2650,10 @@ struct BrowserState {
                 const bool tabDark = tabs[i]->hasInternalThemeSnapshot
                     ? tabs[i]->internalDarkTheme : dark;
                 drawSettingsTabThumbnail(dc, preview, tabDark);
-            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0 && tabs[i]->previewHeight > 0) {
+            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
+                && tabs[i]->previewHeight > 0
+                && tabs[i]->previewURL == tabs[i]->activeUrl
+                && !previewBitmapLooksBlank(*tabs[i])) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
                     HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
@@ -2601,24 +2671,88 @@ struct BrowserState {
                     DeleteDC(previewDC);
                 }
             } else {
-                RECT fakeBar { preview.left, preview.top, preview.right, preview.top + scaleForDpi(window, 18) };
-                HBRUSH fakeBarBrush = CreateSolidBrush(dark ? RGB(48, 48, 51) : RGB(236, 238, 241));
-                FillRect(dc, &preview, fakeBarBrush);
-                DeleteObject(fakeBarBrush);
+                const bool placeholderDark = tabs[i]->hasInternalThemeSnapshot
+                    ? tabs[i]->internalDarkTheme : dark;
+                HBRUSH pageBrush = CreateSolidBrush(placeholderDark
+                    ? RGB(35, 39, 45) : RGB(250, 251, 253));
+                FillRect(dc, &preview, pageBrush);
+                DeleteObject(pageBrush);
+
+                RECT fakeBar { preview.left, preview.top, preview.right,
+                    preview.top + scaleForDpi(window, 20) };
+                HBRUSH barBrush = CreateSolidBrush(placeholderDark
+                    ? RGB(48, 52, 59) : RGB(235, 238, 243));
+                FillRect(dc, &fakeBar, barBrush);
+                DeleteObject(barBrush);
+
+                const int dot = scaleForDpi(window, 4);
+                for (int d = 0; d < 3; ++d) {
+                    HBRUSH dotBrush = CreateSolidBrush(d == 0 ? RGB(238, 92, 88)
+                        : d == 1 ? RGB(235, 185, 75) : RGB(78, 190, 116));
+                    RECT dotRect { preview.left + scaleForDpi(window, 8) + d * scaleForDpi(window, 8),
+                        preview.top + scaleForDpi(window, 7),
+                        preview.left + scaleForDpi(window, 8) + d * scaleForDpi(window, 8) + dot,
+                        preview.top + scaleForDpi(window, 7) + dot };
+                    FillRect(dc, &dotRect, dotBrush);
+                    DeleteObject(dotBrush);
+                }
+
+                RECT addressPill { preview.left + scaleForDpi(window, 38),
+                    preview.top + scaleForDpi(window, 4),
+                    preview.right - scaleForDpi(window, 10),
+                    preview.top + scaleForDpi(window, 16) };
+                drawRoundedControl(dc, addressPill,
+                    placeholderDark ? RGB(60, 64, 72) : RGB(255, 255, 255),
+                    placeholderDark ? RGB(75, 80, 88) : RGB(215, 220, 228),
+                    static_cast<float>(scaleForDpi(window, 5)));
+
+                const int contentLeft = preview.left + scaleForDpi(window, 12);
+                const int contentTop = preview.top + scaleForDpi(window, 30);
+                const int contentWidth = static_cast<int>(preview.right - preview.left)
+                    - scaleForDpi(window, 24);
                 if (tabs[i]->favicon) {
-                    const int iconSize = scaleForDpi(window, 20);
-                    DrawIconEx(dc, preview.left + scaleForDpi(window, 12),
-                        preview.top + scaleForDpi(window, 32), tabs[i]->favicon,
+                    const int iconSize = scaleForDpi(window, 17);
+                    DrawIconEx(dc, contentLeft, contentTop, tabs[i]->favicon,
                         iconSize, iconSize, 0, nullptr, DI_NORMAL);
                 }
-                RECT line1 { preview.left + scaleForDpi(window, 42), preview.top + scaleForDpi(window, 34),
-                    preview.right - scaleForDpi(window, 20), preview.top + scaleForDpi(window, 42) };
-                RECT line2 { preview.left + scaleForDpi(window, 42), preview.top + scaleForDpi(window, 48),
-                    preview.right - scaleForDpi(window, 50), preview.top + scaleForDpi(window, 55) };
-                HBRUSH lineBrush = CreateSolidBrush(dark ? RGB(72, 72, 75) : RGB(223, 226, 230));
-                FillRect(dc, &line1, lineBrush);
-                FillRect(dc, &line2, lineBrush);
-                DeleteObject(lineBrush);
+
+                HFONT placeholderFont = CreateFontW(-std::max(scaleForDpi(window, 10), 9),
+                    0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                    DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
+                HGDIOBJ oldPlaceholderFont = SelectObject(dc, placeholderFont);
+                SetTextColor(dc, placeholderDark ? RGB(229, 232, 238) : RGB(40, 45, 53));
+                RECT pageTitle { contentLeft + scaleForDpi(window, 23), contentTop,
+                    preview.right - scaleForDpi(window, 10),
+                    contentTop + scaleForDpi(window, 20) };
+                const std::wstring title = tabs[i]->title.empty() ? L"Loading page" : tabs[i]->title;
+                DrawTextW(dc, title.c_str(), -1, &pageTitle,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                if (placeholderFont) {
+                    SelectObject(dc, oldPlaceholderFont);
+                    DeleteObject(placeholderFont);
+                }
+
+                HBRUSH skeletonBrush = CreateSolidBrush(placeholderDark
+                    ? RGB(70, 76, 85) : RGB(225, 230, 237));
+                RECT hero { contentLeft, contentTop + scaleForDpi(window, 26),
+                    contentLeft + contentWidth * 46 / 100,
+                    contentTop + scaleForDpi(window, 59) };
+                FillRect(dc, &hero, skeletonBrush);
+                RECT line1 { contentLeft + contentWidth * 51 / 100,
+                    contentTop + scaleForDpi(window, 29), preview.right - scaleForDpi(window, 12),
+                    contentTop + scaleForDpi(window, 35) };
+                RECT line2 { line1.left, contentTop + scaleForDpi(window, 41),
+                    line1.right - scaleForDpi(window, 18), contentTop + scaleForDpi(window, 47) };
+                RECT line3 { contentLeft, contentTop + scaleForDpi(window, 69),
+                    preview.right - scaleForDpi(window, 36), contentTop + scaleForDpi(window, 75) };
+                RECT line4 { contentLeft, contentTop + scaleForDpi(window, 83),
+                    preview.right - scaleForDpi(window, 58), contentTop + scaleForDpi(window, 89) };
+                FillRect(dc, &line1, skeletonBrush);
+                FillRect(dc, &line2, skeletonBrush);
+                FillRect(dc, &line3, skeletonBrush);
+                FillRect(dc, &line4, skeletonBrush);
+                DeleteObject(skeletonBrush);
             }
 
             RECT closeRect = tabOverviewCloseRect(i);
@@ -3923,6 +4057,7 @@ search.addEventListener('keydown',e=>{
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         if (switchingFromOverview && index == previouslyActive) {
+            tabOverviewCaptureActivePending = false;
             // The active page has remained live behind the overview overlay.
             // Close the overlay directly instead of resizing/redrawing WebKit.
             tabOverviewVisible = false;
@@ -3947,6 +4082,7 @@ search.addEventListener('keydown',e=>{
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
             captureTabThumbnail(*tabs[previouslyActive]);
         if (!switchingFromOverview) {
+            tabOverviewCaptureActivePending = false;
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
             tabOverviewClosing = false;
@@ -4773,6 +4909,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // thumbnail capture on the UI thread caused a noticeable pause on entry.
         tabOverviewClosing = false;
         tabOverviewAnimationFrameReady = false;
+        tabOverviewCaptureActivePending = true;
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -8787,6 +8924,18 @@ void didChangeIsLoading(const void* clientInfo)
             tab->browser->recordVisit(url, tab->title.empty() ? url : tab->title);
             tab->lastRecordedUrl = url;
         }
+    }
+
+    if (page && WKPageGetEstimatedProgress(page) >= 1.0
+        && tab->browser->tabOverviewVisible
+        && tab->internalPage != L"start"
+        && tab->internalPage != L"settings"
+        && tab->internalPage != L"extensions") {
+        tab->browser->captureTabThumbnail(*tab);
+        tab->browser->tabOverviewAnimationFrameReady = false;
+        if (tab->browser->tabOverviewWindow
+            && IsWindowVisible(tab->browser->tabOverviewWindow))
+            InvalidateRect(tab->browser->tabOverviewWindow, nullptr, FALSE);
     }
 
     tab->browser->invalidateTabChrome(tab);
