@@ -1821,6 +1821,21 @@ struct BrowserState {
             return;
         }
 
+        // If the drawer is about to open, refresh a missing/stale page preview
+        // while the WebKit surface is still unobstructed. Do not capture at the
+        // end of the close animation, when that extra synchronous work is visible.
+        if (!sidebarOpen && !sidebarAnimating) {
+            if (auto* selected = active(); selected
+                && selected->internalPage != L"start"
+                && selected->internalPage != L"settings"
+                && selected->internalPage != L"extensions"
+                && (!selected->previewBitmap || selected->previewURL != selected->activeUrl)) {
+                auto page = WKViewGetPage(selected->view.get());
+                if (page && WKPageGetEstimatedProgress(page) >= 1.0)
+                    captureTabThumbnail(*selected);
+            }
+        }
+
         const float from = sidebarProgress();
         sidebarOpen = !sidebarOpen;
         sidebarAnimationFrom = from;
@@ -2126,21 +2141,9 @@ struct BrowserState {
                             scaleForDpi(window, 300), static_cast<int>(client.right));
                         RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
                         InvalidateRect(window, &exposedParent, FALSE);
-                        if (auto* selected = active()) {
-                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0, exposedWidth,
-                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
-                            }
-                        }
-                        // The drawer is now hidden, so refresh the active site's
-                        // thumbnail from its real page instead of from the overlay.
-                        if (auto* selected = active(); selected
-                            && selected->internalPage != L"start"
-                            && selected->internalPage != L"settings"
-                            && selected->internalPage != L"extensions") {
-                            captureTabThumbnail(*selected);
-                        }
+                        // The active WKView keeps its viewport and existing frame
+                        // while the drawer moves over it. Do not invalidate it here:
+                        // a forced repaint can produce the white flash seen on close.
                     }
                 }
             }
