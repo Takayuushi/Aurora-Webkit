@@ -1775,7 +1775,7 @@ struct BrowserState {
                 const int slideOffset = tabOverviewClosing
                     ? static_cast<int>(std::lround(closeEase * scaleForDpi(window, 14)))
                     : tabOverviewAnimating
-                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 36)))
+                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 48)))
                         : 0;
 
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2001,9 +2001,9 @@ struct BrowserState {
         if (!tabOverviewAnimating)
             return 1.0f;
         const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 260.0f, 0.0f, 1.0f);
+        const float t = std::clamp(static_cast<float>(elapsed) / 300.0f, 0.0f, 1.0f);
         const float inverse = 1.0f - t;
-        return 1.0f - inverse * inverse * inverse;
+        return 1.0f - inverse * inverse * inverse * inverse;
     }
 
     void animateChrome()
@@ -2046,14 +2046,14 @@ struct BrowserState {
 
         if (tabOverviewAnimating) {
             const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-            const bool transitionStillActive = elapsed < 260;
+            const bool transitionStillActive = elapsed < 300;
             const float progress = tabOverviewEase();
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
                 RECT client { };
                 GetClientRect(window, &client);
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(
-                    (1.0f - progress) * scaleForDpi(window, 36)));
+                    (1.0f - progress) * scaleForDpi(window, 48)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
@@ -2079,7 +2079,7 @@ struct BrowserState {
                 RECT client { };
                 GetClientRect(window, &client);
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
-                const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 8)));
+                const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 12)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
@@ -2112,6 +2112,22 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
+                if (!sidebarOpen) {
+                    RECT client { };
+                    if (GetClientRect(window, &client)) {
+                        const int exposedWidth = std::min(
+                            scaleForDpi(window, 300), static_cast<int>(client.right));
+                        RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
+                        InvalidateRect(window, &exposedParent, FALSE);
+                        if (auto* selected = active()) {
+                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
+                                RECT exposedView { 0, 0, exposedWidth,
+                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
+                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -2559,6 +2575,10 @@ struct BrowserState {
                 // any stale capture from the accelerated WebKit surface, which can
                 // be black after another tab has been active.
                 drawStartPageThumbnail(dc, preview);
+            } else if (tabs[i]->internalPage == L"settings") {
+                const bool tabDark = tabs[i]->hasInternalThemeSnapshot
+                    ? tabs[i]->internalDarkTheme : dark;
+                drawSettingsTabThumbnail(dc, preview, tabDark);
             } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0 && tabs[i]->previewHeight > 0) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
@@ -2576,10 +2596,6 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
-            } else if (tabs[i]->internalPage == L"settings") {
-                const bool tabDark = tabs[i]->hasInternalThemeSnapshot
-                    ? tabs[i]->internalDarkTheme : dark;
-                drawSettingsTabThumbnail(dc, preview, tabDark);
             } else {
                 RECT fakeBar { preview.left, preview.top, preview.right, preview.top + scaleForDpi(window, 18) };
                 HBRUSH fakeBarBrush = CreateSolidBrush(dark ? RGB(48, 48, 51) : RGB(236, 238, 241));
@@ -3310,7 +3326,7 @@ struct BrowserState {
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
 form{margin:0}
 button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
-.shell{width:min(1040px,calc(100% - 48px));margin:24px auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);animation:settings-shell-in .28s cubic-bezier(.2,.75,.25,1) both}
+.shell{width:min(1040px,calc(100% - 48px));margin:24px auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
 .top{padding:13px 22px 0;background:var(--glass-bar);backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);border-bottom:1px solid var(--line)}
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
@@ -3323,7 +3339,7 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .content{max-width:790px;margin:0 auto;padding:30px 34px 34px}
 h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.35px;margin:0 0 6px}
 .sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 27px}
-@keyframes settings-shell-in{from{opacity:0;transform:translateY(5px) scale(.996)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes settings-panel-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}.panel{display:none}.panel.active{display:block;animation:settings-panel-in .22s cubic-bezier(.2,.75,.25,1) both}
+@keyframes settings-shell-in{from{opacity:0;transform:translateY(14px) scale(.978)}70%{opacity:1;transform:translateY(-1px) scale(1.002)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes settings-panel-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}.panel{display:none}.panel.active{display:block;animation:settings-panel-in .26s cubic-bezier(.16,1,.3,1) both}
 .field{display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}
 .field:first-child{border-top:1px solid var(--line)}
 .field label,.field .fieldname{font-size:13px;line-height:1.4;font-weight:500}
@@ -3401,7 +3417,26 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="checks"><label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label></div>
 <p class="help">Some inspector functions depend on the pinned Windows WebKit build.</p></section>
 <div class="actions"><button class="action primary" type="submit">Save Changes</button></div>
-</main></form></div></body></html>)HTML";
+</main></div>
+<script>
+(() => {
+    const sectionNames = ['general', 'appearance', 'search', 'websites', 'privacy', 'advanced', 'about'];
+    const categories = Array.from(document.querySelectorAll('.categories .category'));
+    const panels = Array.from(document.querySelectorAll('.panel'));
+    categories.forEach((button, index) => {
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            const sectionName = sectionNames[index];
+            if (!sectionName)
+                return;
+            categories.forEach((item, itemIndex) => item.classList.toggle('active', itemIndex === index));
+            panels.forEach(panel => panel.classList.toggle('active', panel.dataset.section === sectionName));
+            window.location.href = 'aurora-settings://navigate?section=' + index;
+        });
+    });
+})();
+</script>
+</form></div></body></html>)HTML";
 
         const std::pair<const std::string, const std::string> replacements[] = {
             { "__HOME__", home }, { "__DOWNLOADS__", downloadsPath },
@@ -6451,9 +6486,15 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
 
     for (size_t i = 0; i < browser->tabs.size(); ++i) {
         if (browser->tabs[i]->internalPage == L"settings") {
-            browser->activateTab(i);
-            if (auto* tab = browser->active())
-                browser->loadSettingsPage(*tab, requestedSection);
+            if (i != browser->activeTab)
+                browser->activateTab(i);
+            if (auto* tab = browser->tabs[i].get()) {
+                if (requestedSection >= 0) {
+                    const int targetSection = std::clamp(requestedSection, 0, 6);
+                    if (tab->settingsSection != targetSection)
+                        browser->loadSettingsPage(*tab, targetSection);
+                }
+            }
             return;
         }
     }
@@ -7074,8 +7115,10 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     }
 
     if (command == L"aurora-settings://navigate" && section.size() == 1
-        && section[0] >= L'0' && section[0] <= L'6')
+        && section[0] >= L'0' && section[0] <= L'6') {
         tab->settingsSection = section[0] - L'0';
+        return;
+    }
 
     if (theme == L"light") browser->themeMode = ThemeMode::Light;
     else if (theme == L"dark") browser->themeMode = ThemeMode::Dark;
