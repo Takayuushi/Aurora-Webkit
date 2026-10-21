@@ -1164,7 +1164,6 @@ struct BrowserState {
     HBITMAP tabOverviewBitmap { nullptr };
     SIZE tabOverviewBitmapSize { 0, 0 };
     bool tabOverviewAnimationFrameReady { false };
-    bool tabOverviewCaptureActivePending { false };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
     bool lastReloadButtonLoading { false };
@@ -2068,18 +2067,6 @@ struct BrowserState {
                         sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                 }
-                if (tabOverviewCaptureActivePending) {
-                    tabOverviewCaptureActivePending = false;
-                    if (auto* selected = active(); selected
-                        && selected->internalPage != L"start"
-                        && selected->internalPage != L"settings"
-                        && selected->internalPage != L"extensions") {
-                        captureTabThumbnail(*selected);
-                    }
-                    tabOverviewAnimationFrameReady = false;
-                    if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
-                        InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                }
             }
         }
 
@@ -2560,55 +2547,6 @@ struct BrowserState {
         const int cardHeight = scaleForDpi(window, 226);
         const int previewInset = scaleForDpi(window, 8);
         const int metaHeight = scaleForDpi(window, 58);
-        const auto previewBitmapLooksBlank = [&](const TabState& tab) {
-            if (!tab.previewBitmap || tab.previewWidth < 8 || tab.previewHeight < 8)
-                return true;
-            HDC bitmapDC = CreateCompatibleDC(dc);
-            if (!bitmapDC)
-                return false;
-            HGDIOBJ oldBitmap = SelectObject(bitmapDC, tab.previewBitmap);
-            if (!oldBitmap || oldBitmap == HGDI_ERROR) {
-                DeleteDC(bitmapDC);
-                return false;
-            }
-
-            int samples = 0;
-            int nearBlack = 0;
-            int nearWhite = 0;
-            int minLuma = 255;
-            int maxLuma = 0;
-            long long totalLuma = 0;
-            for (int sy = 1; sy <= 7; ++sy) {
-                const int y = std::clamp(tab.previewHeight * sy / 8, 0, tab.previewHeight - 1);
-                for (int sx = 1; sx <= 9; ++sx) {
-                    const int x = std::clamp(tab.previewWidth * sx / 10, 0, tab.previewWidth - 1);
-                    const COLORREF pixel = GetPixel(bitmapDC, x, y);
-                    if (pixel == CLR_INVALID)
-                        continue;
-                    const int luma = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
-                        + GetBValue(pixel) * 11) / 100;
-                    ++samples;
-                    totalLuma += luma;
-                    minLuma = std::min(minLuma, luma);
-                    maxLuma = std::max(maxLuma, luma);
-                    if (GetRValue(pixel) < 14 && GetGValue(pixel) < 14 && GetBValue(pixel) < 16)
-                        ++nearBlack;
-                    if (GetRValue(pixel) > 244 && GetGValue(pixel) > 244 && GetBValue(pixel) > 244)
-                        ++nearWhite;
-                }
-            }
-            SelectObject(bitmapDC, oldBitmap);
-            DeleteDC(bitmapDC);
-            if (samples < 30)
-                return false;
-            const double average = static_cast<double>(totalLuma) / samples;
-            const bool flatBlack = nearBlack * 100 >= samples * 86 && average < 20.0
-                && maxLuma - minLuma < 40;
-            const bool flatWhite = nearWhite * 100 >= samples * 86 && average > 238.0
-                && maxLuma - minLuma < 40;
-            return flatBlack || flatWhite;
-        };
-
         for (size_t i = 0; i < tabs.size(); ++i) {
             const RECT card = tabOverviewCardRect(i);
             if (card.top >= area.bottom || card.bottom <= area.top)
@@ -2652,8 +2590,7 @@ struct BrowserState {
                 drawSettingsTabThumbnail(dc, preview, tabDark);
             } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
-                && tabs[i]->previewURL == tabs[i]->activeUrl
-                && !previewBitmapLooksBlank(*tabs[i])) {
+                && tabs[i]->previewURL == tabs[i]->activeUrl) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
                     HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
@@ -4056,10 +3993,7 @@ search.addEventListener('keydown',e=>{
 
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
-        if (switchingFromOverview && index != previouslyActive)
-            tabOverviewCaptureActivePending = false;
         if (switchingFromOverview && index == previouslyActive) {
-            tabOverviewCaptureActivePending = false;
             // The active page has remained live behind the overview overlay.
             // Close the overlay directly instead of resizing/redrawing WebKit.
             tabOverviewVisible = false;
@@ -4084,7 +4018,6 @@ search.addEventListener('keydown',e=>{
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
             captureTabThumbnail(*tabs[previouslyActive]);
         if (!switchingFromOverview) {
-            tabOverviewCaptureActivePending = false;
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
             tabOverviewClosing = false;
@@ -4911,7 +4844,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // thumbnail capture on the UI thread caused a noticeable pause on entry.
         tabOverviewClosing = false;
         tabOverviewAnimationFrameReady = false;
-        tabOverviewCaptureActivePending = true;
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -8928,17 +8860,17 @@ void didChangeIsLoading(const void* clientInfo)
         }
     }
 
+    // Capture only the visible active page while Tab Overview is absent. Capturing
+    // after the overlay appears can record the overlay itself as nested page content.
     if (page && WKPageGetEstimatedProgress(page) >= 1.0
-        && tab->browser->tabOverviewVisible
+        && tab == tab->browser->active()
+        && !tab->browser->tabOverviewVisible
         && !tab->browser->tabOverviewAnimating
+        && !tab->browser->tabOverviewClosing
         && tab->internalPage != L"start"
         && tab->internalPage != L"settings"
         && tab->internalPage != L"extensions") {
         tab->browser->captureTabThumbnail(*tab);
-        tab->browser->tabOverviewAnimationFrameReady = false;
-        if (tab->browser->tabOverviewWindow
-            && IsWindowVisible(tab->browser->tabOverviewWindow))
-            InvalidateRect(tab->browser->tabOverviewWindow, nullptr, FALSE);
     }
 
     tab->browser->invalidateTabChrome(tab);
