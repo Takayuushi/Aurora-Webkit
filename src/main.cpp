@@ -1748,7 +1748,7 @@ struct BrowserState {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -1756,7 +1756,8 @@ struct BrowserState {
                 SetWindowPos(sidebarOverlayWindow,
                     alreadyVisible && !forceTop ? nullptr : HWND_TOP,
                     left, top, width, height, flags);
-                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
@@ -1779,7 +1780,7 @@ struct BrowserState {
                         ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 48)))
                         : 0;
 
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -1788,6 +1789,8 @@ struct BrowserState {
                     alreadyVisible && !forceTop ? nullptr : HWND_TOP,
                     left, top + slideOffset,
                     std::max(0, static_cast<int>(client.right) - left), height, flags);
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
@@ -2056,7 +2059,9 @@ struct BrowserState {
                 const int offset = static_cast<int>(std::lround(
                     (1.0f - progress) * scaleForDpi(window, 48)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
             if (transitionStillActive) {
                 continueAnimation = true;
@@ -2081,7 +2086,9 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int offset = static_cast<int>(std::lround(eased * scaleForDpi(window, 12)));
                 SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
             if (transitionStillActive) {
                 continueAnimation = true;
@@ -4861,9 +4868,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (addressEditing)
             endAddressEditing();
 
-        // Do not synchronously PrintWindow/BitBlt the live WebKit surface here.
-        // Use its last preview (or the lightweight placeholder) during the animation;
-        // thumbnail capture on the UI thread caused a noticeable pause on entry.
+        // Populate a missing/stale active-site preview before the overview HWND is
+        // shown. Capturing after it opens risks saving the overview or a transient
+        // compositor frame as the page thumbnail. Reuse existing URL-matched
+        // previews so normal entry does not recapture pages unnecessarily.
+        if (auto* selected = active(); selected
+            && selected->internalPage != L"start"
+            && selected->internalPage != L"settings"
+            && selected->internalPage != L"extensions"
+            && (!selected->previewBitmap || selected->previewURL != selected->activeUrl)) {
+            auto page = WKViewGetPage(selected->view.get());
+            if (page && WKPageGetEstimatedProgress(page) >= 1.0)
+                captureTabThumbnail(*selected);
+        }
+
         tabOverviewClosing = false;
         tabOverviewAnimationFrameReady = false;
         tabOverviewVisible = true;
@@ -4877,8 +4895,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         positionOverlayWindows(true);
         SetFocus(window);
         if (tabOverviewWindow) {
-            InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-            UpdateWindow(tabOverviewWindow);
+            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         }
     }
 
