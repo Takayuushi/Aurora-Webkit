@@ -410,12 +410,12 @@ jobs:
         if: inputs.rebuild_webkit != true
         shell: powershell
         run: |
-          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\\Release"
+          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
           if (-not (Test-Path (Join-Path $buildDir "build.ninja"))) {
             throw "Configured Ninja graph is missing; refusing to attempt an implicit WebKit build."
           }
 
-          $ninja = "C:\\Program Files\\Ninja\\ninja.exe"
+          $ninja = "C:\Program Files\Ninja\ninja.exe"
           if (-not (Test-Path -LiteralPath $ninja)) {
             $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
             if ($ninjaCommand) { $ninja = $ninjaCommand.Source }
@@ -429,7 +429,7 @@ jobs:
           }
 
           $webkitCompiles = @($plan | Where-Object {
-            $_.ToString() -match '^\\s*\\[\\d+/\\d+\\]\\s+Building\\s+(C|CXX|ASM|OBJCXX)\\s+object\\s+Source[\\\\/](WebCore|JavaScriptCore|WTF|WebKit)[\\\\/]'
+            $_.ToString() -match '^\s*\[\d+/\d+\]\s+Building\s+(C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
           })
           if ($webkitCompiles.Count -gt 0) {
             Write-Host "Ninja plans to rebuild $($webkitCompiles.Count) WebKit C/C++ objects:"
