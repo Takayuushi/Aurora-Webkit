@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - fix/safari-download-toolbar-sidebar
-      - fix/address-bar-flicker-tab-switch-settings
     paths-ignore:
       - ".github/workflows/build-aurora.yml"
   workflow_dispatch:
