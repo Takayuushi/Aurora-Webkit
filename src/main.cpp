@@ -1515,7 +1515,7 @@ struct BrowserState {
             else if (tab.internalPage == L"extensions") loadExtensionsPage();
             else if (tab.internalPage == L"downloads") loadDownloadsPage();
             else if (tab.internalPage == L"settings") loadSettingsPage(tab);
-            else if (tab.internalPage == L"about") loadSettingsPage(tab, 6);
+            else if (tab.internalPage == L"about") loadSettingsPage(tab, 12);
         }
         if (!tabs.empty())
             activeTab = std::min(previousTab, tabs.size() - 1);
