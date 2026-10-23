@@ -3495,16 +3495,16 @@ struct BrowserState {
         const std::string duckSelected = engine == "DuckDuckGo" ? " selected" : "";
         const std::string activeGeneral = tab.settingsSection == 0 ? " active" : "";
         const std::string activeTabs = tab.settingsSection == 1 ? " active" : "";
-        const std::string activeAppearance = tab.settingsSection == 2 ? " active" : "";
-        const std::string activeAutoFill = tab.settingsSection == 3 ? " active" : "";
-        const std::string activePasswords = tab.settingsSection == 4 ? " active" : "";
-        const std::string activeSearch = tab.settingsSection == 5 ? " active" : "";
-        const std::string activeSecurity = tab.settingsSection == 6 ? " active" : "";
-        const std::string activePrivacy = tab.settingsSection == 7 ? " active" : "";
-        const std::string activeWebsites = tab.settingsSection == 8 ? " active" : "";
-        const std::string activeProfiles = tab.settingsSection == 9 ? " active" : "";
-        const std::string activeExtensions = tab.settingsSection == 10 ? " active" : "";
-        const std::string activeAdvanced = tab.settingsSection == 11 ? " active" : "";
+        const std::string activeAutoFill = tab.settingsSection == 2 ? " active" : "";
+        const std::string activePasswords = tab.settingsSection == 3 ? " active" : "";
+        const std::string activeSearch = tab.settingsSection == 4 ? " active" : "";
+        const std::string activeSecurity = tab.settingsSection == 5 ? " active" : "";
+        const std::string activePrivacy = tab.settingsSection == 6 ? " active" : "";
+        const std::string activeWebsites = tab.settingsSection == 7 ? " active" : "";
+        const std::string activeProfiles = tab.settingsSection == 8 ? " active" : "";
+        const std::string activeExtensions = tab.settingsSection == 9 ? " active" : "";
+        const std::string activeAdvanced = tab.settingsSection == 10 ? " active" : "";
+        const std::string activeAppearance = tab.settingsSection == 11 ? " active" : "";
         const std::string activeAbout = tab.settingsSection == 12 ? " active" : "";
         auto checked = [](bool value) { return value ? " checked" : ""; };
         std::string extensionItems;
@@ -3543,17 +3543,17 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 /* Safari-inspired individually coloured category glyphs. */
 .category:nth-child(1) svg{color:#85858b;--icon-bg:rgba(142,142,147,.15)}
 .category:nth-child(2) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
-.category:nth-child(3) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
-.category:nth-child(4) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
-.category:nth-child(5) svg{color:#30a46c;--icon-bg:rgba(48,164,108,.14)}
-.category:nth-child(6) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.14)}
-.category:nth-child(7) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
-.category:nth-child(8) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
-.category:nth-child(9) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(3) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(4) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
+.category:nth-child(5) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
+.category:nth-child(6) svg{color:#ff453a;--icon-bg:rgba(255,69,58,.13)}
+.category:nth-child(7) svg{color:#30a46c;--icon-bg:rgba(48,164,108,.14)}
+.category:nth-child(8) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(9) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
 .category:nth-child(10) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
-.category:nth-child(11) svg{color:#ff453a;--icon-bg:rgba(255,69,58,.13)}
-.category:nth-child(12) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
-.category:nth-child(13) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
+.category:nth-child(11) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
+.category:nth-child(12) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
+.category:nth-child(13) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
 .checkrow input:disabled{opacity:.5;cursor:not-allowed}
 .checkrow .muted{color:var(--muted);font-size:12px}
 .category.active svg{filter:saturate(1.08)}
@@ -3599,16 +3599,16 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <nav class="categories" aria-label="Settings categories">
 <button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.2"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5"/></svg><span>General</span></button>
 <button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Tabs</span></button>
-<button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg><span>Appearance</span></button>
-<button class="category__ACTIVE_AUTOFILL__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.1 2.8-5.2 7-5.2s7 2.1 7 5.2"/></svg><span>AutoFill</span></button>
-<button class="category__ACTIVE_PASSWORDS__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 3 3-2 2 2 2-3 3-2-2-3 3"/></svg><span>Passwords</span></button>
-<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
-<button class="category__ACTIVE_SECURITY__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Security</span></button>
-<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-4l2 2M20 5v4h-4M20 15a8 8 0 0 1-14 4l-2-2M4 19v-4h4"/></svg><span>Privacy</span></button>
-<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="8"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
-<button class="category__ACTIVE_PROFILES__" type="submit" formaction="aurora-settings://navigate" name="section" value="9"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.1 2.3-5 6-5s6 1.9 6 5M17 8h4M19 6v4"/></svg><span>Profiles</span></button>
-<button class="category__ACTIVE_EXTENSIONS__" type="submit" formaction="aurora-settings://navigate" name="section" value="10"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2.5 2.5 0 1 1 0 5H3v3a2 2 0 0 0 2 2h4v-3a2.5 2.5 0 1 1 5 0v3h5a2 2 0 0 0 2-2v-4h-3a2.5 2.5 0 1 1 0-5h3V5a2 2 0 0 0-2-2h-4v3a2.5 2.5 0 1 1-5 0z"/></svg><span>Extensions</span></button>
-<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="11"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
+<button class="category__ACTIVE_AUTOFILL__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.1 2.8-5.2 7-5.2s7 2.1 7 5.2"/></svg><span>AutoFill</span></button>
+<button class="category__ACTIVE_PASSWORDS__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 3 3-2 2 2 2-3 3-2-2-3 3"/></svg><span>Passwords</span></button>
+<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
+<button class="category__ACTIVE_SECURITY__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Security</span></button>
+<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-4l2 2M20 5v4h-4M20 15a8 8 0 0 1-14 4l-2-2M4 19v-4h4"/></svg><span>Privacy</span></button>
+<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
+<button class="category__ACTIVE_PROFILES__" type="submit" formaction="aurora-settings://navigate" name="section" value="8"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.1 2.3-5 6-5s6 1.9 6 5M17 8h4M19 6v4"/></svg><span>Profiles</span></button>
+<button class="category__ACTIVE_EXTENSIONS__" type="submit" formaction="aurora-settings://navigate" name="section" value="9"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2.5 2.5 0 1 1 0 5H3v3a2 2 0 0 0 2 2h4v-3a2.5 2.5 0 1 1 5 0v3h5a2 2 0 0 0 2-2v-4h-3a2.5 2.5 0 1 1 0-5h3V5a2 2 0 0 0-2-2h-4v3a2.5 2.5 0 1 1-5 0z"/></svg><span>Extensions</span></button>
+<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="10"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
+<button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="11"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg><span>Appearance</span></button>
 <button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="12"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
 </nav></header><main class="content">
 <section class="panel__ACTIVE_SECTION_GENERAL__" data-section="general"><h1>General</h1><p class="sub">Choose your homepage and where downloads are saved.</p>
@@ -3691,7 +3691,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 </main>
 <script>
 (() => {
-    const sectionNames = ['general', 'tabs', 'appearance', 'autofill', 'passwords', 'search', 'security', 'privacy', 'websites', 'profiles', 'extensions', 'advanced', 'about'];
+    const sectionNames = ['general', 'tabs', 'autofill', 'passwords', 'search', 'security', 'privacy', 'websites', 'profiles', 'extensions', 'advanced', 'appearance', 'about'];
     const categories = Array.from(document.querySelectorAll('.categories .category'));
     const panels = Array.from(document.querySelectorAll('.panel'));
     categories.forEach((button, index) => {
@@ -5410,7 +5410,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             clearHistory();
             break;
         case kPrivacyWebsiteSettings:
-            openBrowserSettings(this, 8);
+            openBrowserSettings(this, 7);
             break;
         case kCommandDownloads:
             showDownloadsMenu();
