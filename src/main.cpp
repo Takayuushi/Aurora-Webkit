@@ -4484,7 +4484,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             clearHistory();
             break;
         case kPrivacyWebsiteSettings:
-            openBrowserSettings(this, 3);
+            openBrowserSettings(this, 4);
             break;
         case kCommandDownloads:
             showDownloadsMenu();
@@ -4598,7 +4598,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openBrowserSettings(this);
             break;
         case kMenuAbout:
-            openBrowserSettings(this, 6);
+            openBrowserSettings(this, 7);
             break;
         case 5997: {
             std::wstring folder = downloadsDirectory();
@@ -6252,7 +6252,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     BrowserState* browser = tab->browser;
     if (url == L"about:aurora") {
         WKFramePolicyListenerIgnore(listener);
-        openBrowserSettings(browser, 6);
+        openBrowserSettings(browser, 7);
         return;
     }
     if (url.rfind(L"aurora-download:", 0) == 0) {
