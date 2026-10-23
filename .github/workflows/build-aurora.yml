@@ -406,6 +406,39 @@ jobs:
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
 
+      - name: Guard against implicit WebKit rebuilds
+        if: inputs.rebuild_webkit != true
+        shell: powershell
+        run: |
+          $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\\Release"
+          if (-not (Test-Path (Join-Path $buildDir "build.ninja"))) {
+            throw "Configured Ninja graph is missing; refusing to attempt an implicit WebKit build."
+          }
+
+          $ninja = "C:\\Program Files\\Ninja\\ninja.exe"
+          if (-not (Test-Path -LiteralPath $ninja)) {
+            $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
+            if ($ninjaCommand) { $ninja = $ninjaCommand.Source }
+            else { throw "Ninja was not found; refusing to start an unverified Aurora build." }
+          }
+
+          # Inspect the exact work Ninja plans to do, without compiling anything.
+          $plan = @(& $ninja -C $buildDir -n Aurora 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect the incremental build plan (exit code $LASTEXITCODE). Refusing to proceed."
+          }
+
+          $webkitCompiles = @($plan | Where-Object {
+            $_.ToString() -match '^\\s*\\[\\d+/\\d+\\]\\s+Building\\s+(C|CXX|ASM|OBJCXX)\\s+object\\s+Source[\\\\/](WebCore|JavaScriptCore|WTF|WebKit)[\\\\/]'
+          })
+          if ($webkitCompiles.Count -gt 0) {
+            Write-Host "Ninja plans to rebuild $($webkitCompiles.Count) WebKit C/C++ objects:"
+            $webkitCompiles | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
+            throw "Refusing this normal Aurora build because WebKit objects are stale or missing. Use 'Rebuild WebKit' only when an intentional full engine rebuild is wanted."
+          }
+
+          Write-Host "Incremental preflight passed: no WebCore, JavaScriptCore, WTF, or WebKit objects need recompilation."
+
       - name: Build Aurora target from the configured WebKit graph
         shell: powershell
         run: |
