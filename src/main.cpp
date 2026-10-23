@@ -1211,6 +1211,11 @@ struct BrowserState {
     bool openLinksInBackground { false };
     bool searchSuggestionsEnabled { true };
     bool showFullWebsiteAddress { false };
+    bool newTabsOpenWithHomepage { false };
+    bool newWindowsOpenWithHomepage { false };
+    bool showWebsiteIconsInTabs { true };
+    bool alwaysShowTabBar { false };
+    bool hasCreatedInitialTab { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -1229,7 +1234,8 @@ struct BrowserState {
             const std::wstring value = fromUTF8(line.substr(split + 1));
             if (key == "home")
                 homePage = value;
-            else if (key == "search" && (value == L"Google" || value == L"Bing" || value == L"DuckDuckGo"))
+            else if (key == "search" && (value == L"Google" || value == L"Bing"
+                || value == L"DuckDuckGo" || value == L"Yahoo" || value == L"Ecosia"))
                 searchEngine = value;
             else if (key == "downloads")
                 downloadLocation = value;
@@ -1247,6 +1253,14 @@ struct BrowserState {
                 searchSuggestionsEnabled = value == L"1" || value == L"true";
             else if (key == "showFullWebsiteAddress")
                 showFullWebsiteAddress = value == L"1" || value == L"true";
+            else if (key == "newTabsOpenWithHomepage")
+                newTabsOpenWithHomepage = value == L"1" || value == L"true";
+            else if (key == "newWindowsOpenWithHomepage")
+                newWindowsOpenWithHomepage = value == L"1" || value == L"true";
+            else if (key == "showWebsiteIconsInTabs")
+                showWebsiteIconsInTabs = value == L"1" || value == L"true";
+            else if (key == "alwaysShowTabBar")
+                alwaysShowTabBar = value == L"1" || value == L"true";
             else if (key == "javascript")
                 javascriptEnabled = value == L"1" || value == L"true";
             else if (key == "images")
@@ -1286,6 +1300,10 @@ struct BrowserState {
              << "openLinksInBackground\t" << (openLinksInBackground ? "1" : "0") << '\n'
              << "searchSuggestionsEnabled\t" << (searchSuggestionsEnabled ? "1" : "0") << '\n'
              << "showFullWebsiteAddress\t" << (showFullWebsiteAddress ? "1" : "0") << '\n'
+             << "newTabsOpenWithHomepage\t" << (newTabsOpenWithHomepage ? "1" : "0") << '\n'
+             << "newWindowsOpenWithHomepage\t" << (newWindowsOpenWithHomepage ? "1" : "0") << '\n'
+             << "showWebsiteIconsInTabs\t" << (showWebsiteIconsInTabs ? "1" : "0") << '\n'
+             << "alwaysShowTabBar\t" << (alwaysShowTabBar ? "1" : "0") << '\n'
              << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
              << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
              << "popups\t" << (allowPopups ? "1" : "0") << '\n'
@@ -1456,6 +1474,10 @@ struct BrowserState {
             return L"https://www.bing.com/search?q=" + encoded;
         if (searchEngine == L"DuckDuckGo")
             return L"https://duckduckgo.com/?q=" + encoded;
+        if (searchEngine == L"Yahoo")
+            return L"https://search.yahoo.com/search?p=" + encoded;
+        if (searchEngine == L"Ecosia")
+            return L"https://www.ecosia.org/search?q=" + encoded;
         return L"https://www.google.com/search?q=" + encoded;
     }
 
@@ -1527,7 +1549,10 @@ struct BrowserState {
 
     int titleBarHeight() const { return webFullscreen ? 0 : scaleForDpi(window, kTitleBarHeight); }
     int toolbarHeight() const { return webFullscreen ? 0 : scaleForDpi(window, kToolbarHeight); }
-    int tabsBarHeight() const { return webFullscreen || tabs.size() <= 1 ? 0 : scaleForDpi(window, kTabsBarHeight); }
+    int tabsBarHeight() const {
+        return webFullscreen || tabs.empty() || (tabs.size() <= 1 && !alwaysShowTabBar)
+            ? 0 : scaleForDpi(window, kTabsBarHeight);
+    }
     int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
 
     void enterWebFullscreen()
@@ -3493,6 +3518,12 @@ struct BrowserState {
         const std::string googleSelected = engine == "Google" ? " selected" : "";
         const std::string bingSelected = engine == "Bing" ? " selected" : "";
         const std::string duckSelected = engine == "DuckDuckGo" ? " selected" : "";
+        const std::string yahooSelected = engine == "Yahoo" ? " selected" : "";
+        const std::string ecosiaSelected = engine == "Ecosia" ? " selected" : "";
+        const std::string newTabStartSelected = newTabsOpenWithHomepage ? "" : " selected";
+        const std::string newTabHomeSelected = newTabsOpenWithHomepage ? " selected" : "";
+        const std::string newWindowStartSelected = newWindowsOpenWithHomepage ? "" : " selected";
+        const std::string newWindowHomeSelected = newWindowsOpenWithHomepage ? " selected" : "";
         const std::string activeGeneral = tab.settingsSection == 0 ? " active" : "";
         const std::string activeTabs = tab.settingsSection == 1 ? " active" : "";
         const std::string activeAutoFill = tab.settingsSection == 2 ? " active" : "";
@@ -3614,11 +3645,23 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <section class="panel__ACTIVE_SECTION_GENERAL__" data-section="general"><h1>General</h1><p class="sub">Choose your homepage and where downloads are saved.</p>
 <div class="field"><label for="home">Homepage</label><input id="home" type="text" name="home" value="__HOME__"></div>
 <div class="field"><label for="downloads">Downloads location</label><input id="downloads" type="text" name="downloads" value="__DOWNLOADS__"></div>
-<p class="help">Enter a folder path that already exists on this PC. Leave the location blank to use the Windows Downloads folder.</p>
+<div class="field"><label for="newWindowDestination">New windows open with</label><select id="newWindowDestination" name="newWindowsOpenWith"><option value="startpage"__NEW_WINDOW_START__>Start Page</option><option value="homepage"__NEW_WINDOW_HOME__>Homepage</option></select></div>
+<div class="field"><label for="newTabDestination">New tabs open with</label><select id="newTabDestination" name="newTabsOpenWith"><option value="startpage"__NEW_TAB_START__>Start Page</option><option value="homepage"__NEW_TAB_HOME__>Homepage</option></select></div>
+<p class="help">Choose what Aurora displays when a new window or tab opens. The homepage is the address above; Start Page shows Favorites and your selected Start Page sections.</p>
+<div class="checks">
+<label class="checkrow"><input type="checkbox" disabled>Restore all windows from the previous session</label>
+<label class="checkrow"><input type="checkbox" disabled>Remove history items automatically</label>
+<label class="checkrow"><input type="checkbox" disabled>Open downloaded “safe” files automatically</label>
+</div><p class="help">Session restoration, automatic history retention, and automatic download launching are not implemented in this port.</p>
 </section>
 <section class="panel__ACTIVE_SECTION_TABS__" data-section="tabs"><h1>Tabs</h1><p class="sub">Control how links opened by websites behave.</p>
-<div class="checks"><label class="checkrow"><input type="hidden" name="backgroundTabs" value="0"><input id="backgroundTabs" type="checkbox" name="backgroundTabs" value="1"__BACKGROUND_TABS__>Open links in new tabs in the background</label></div>
-<p class="help">When enabled, links requesting a new tab open without switching away from the page you are reading.</p></section>
+<div class="checks">
+<label class="checkrow"><input type="hidden" name="backgroundTabs" value="0"><input id="backgroundTabs" type="checkbox" name="backgroundTabs" value="1"__BACKGROUND_TABS__>Open links in new tabs in the background</label>
+<label class="checkrow"><input type="hidden" name="websiteIcons" value="0"><input id="websiteIcons" type="checkbox" name="websiteIcons" value="1"__WEBSITE_ICONS__>Show website icons in tabs</label>
+<label class="checkrow"><input type="hidden" name="alwaysShowTabBar" value="0"><input id="alwaysShowTabBar" type="checkbox" name="alwaysShowTabBar" value="1"__ALWAYS_SHOW_TAB_BAR__>Always show the tab bar, even with one tab</label>
+<label class="checkrow"><input type="checkbox" disabled>Automatically move tabs to the toolbar</label>
+</div>
+<p class="help">Aurora currently opens web-requested windows as tabs. Compact-tab layout and Safari-specific tab keyboard shortcuts are not implemented.</p></section>
 <section class="panel__ACTIVE_SECTION_ABOUT__" data-section="about">
  <img class="about-cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
  <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
@@ -3653,16 +3696,16 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="checkbox" disabled>Detect compromised passwords</label>
 </div><p class="help">A password manager and secure credential store are not implemented in this experimental browser port. Aurora does not save website passwords.</p></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
-<div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option></select></div>
+<div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option><option value="Yahoo"__ENGINE_YAHOO__>Yahoo</option><option value="Ecosia"__ENGINE_ECOSIA__>Ecosia</option></select></div>
 <div class="checks"><label class="checkrow"><input type="hidden" name="searchSuggestions" value="0"><input id="searchSuggestions" type="checkbox" name="searchSuggestions" value="1"__SEARCH_SUGGESTIONS__>Show browsing history suggestions in Smart Search</label></div><p class="help">Suggestions come from local browsing history, not an external search-suggestions service.</p></section>
 <section class="panel__ACTIVE_SECTION_SECURITY__" data-section="security"><h1>Security</h1><p class="sub">Review site security protections provided by the current engine.</p>
 <div class="checks">
 <label class="checkrow"><input type="checkbox" disabled>Warn when visiting fraudulent websites</label>
 <label class="checkrow"><input type="checkbox" disabled>Use a built-in malicious-site database</label>
-</div><p class="help">This WebKit port has no Safe Browsing service configured, so Aurora cannot provide Safari's fraudulent-site warnings. HTTPS connection details remain available from the site information control.</p></section>
+<label class="checkrow"><input type="hidden" name="javascript" value="0"><input id="javascript" type="checkbox" name="javascript" value="1"__JAVASCRIPT__>Enable JavaScript</label>
+</div><p class="help">JavaScript is controlled by the WebKit engine and can be changed here. Aurora does not yet have a Safe Browsing service, so fraudulent-site warnings remain unavailable.</p></section>
 <section class="panel__ACTIVE_SECTION_WEBSITES__" data-section="websites"><h1>Websites</h1><p class="sub">Choose the default permissions used for websites.</p>
 <div class="checks">
-<label class="checkrow"><input type="hidden" name="javascript" value="0"><input id="javascript" type="checkbox" name="javascript" value="1"__JAVASCRIPT__>Enable JavaScript</label>
 <label class="checkrow"><input type="hidden" name="images" value="0"><input id="images" type="checkbox" name="images" value="1"__IMAGES__>Load images automatically</label>
 <label class="checkrow"><input type="hidden" name="popups" value="0"><input id="popups" type="checkbox" name="popups" value="1"__POPUPS__>Allow pop-up windows</label>
 <label class="checkrow"><input type="hidden" name="storage" value="0"><input id="storage" type="checkbox" name="storage" value="1"__STORAGE__>Allow website storage</label></div></section>
@@ -3714,6 +3757,11 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             { "__START_PAGE_BACKGROUND__", startPageBackgroundLabel },
             { "__THEME_SYSTEM__", systemSelected }, { "__THEME_LIGHT__", lightSelected }, { "__THEME_DARK__", darkSelected },
             { "__ENGINE_GOOGLE__", googleSelected }, { "__ENGINE_BING__", bingSelected }, { "__ENGINE_DUCK__", duckSelected },
+            { "__ENGINE_YAHOO__", yahooSelected }, { "__ENGINE_ECOSIA__", ecosiaSelected },
+            { "__NEW_WINDOW_START__", newWindowStartSelected }, { "__NEW_WINDOW_HOME__", newWindowHomeSelected },
+            { "__NEW_TAB_START__", newTabStartSelected }, { "__NEW_TAB_HOME__", newTabHomeSelected },
+            { "__WEBSITE_ICONS__", checked(showWebsiteIconsInTabs) },
+            { "__ALWAYS_SHOW_TAB_BAR__", checked(alwaysShowTabBar) },
             { "__JAVASCRIPT__", checked(javascriptEnabled) }, { "__IMAGES__", checked(imagesEnabled) },
             { "__POPUPS__", checked(allowPopups) }, { "__STORAGE__", checked(localStorageEnabled) },
             { "__DEVELOPER__", checked(developerToolsEnabled) },
@@ -4161,9 +4209,15 @@ search.addEventListener('keydown',e=>{
         tabs.push_back(std::move(tab));
         size_t index = tabs.size() - 1;
 
-        if (loadInitialStartPage)
-            loadStartPage(*tabs[index]);
-        else {
+        if (loadInitialStartPage) {
+            const bool useHomepage = hasCreatedInitialTab
+                ? newTabsOpenWithHomepage : newWindowsOpenWithHomepage;
+            hasCreatedInitialTab = true;
+            if (useHomepage)
+                loadURL(*tabs[index], homePage);
+            else
+                loadStartPage(*tabs[index]);
+        } else {
             tabs[index]->title = L"New Tab";
             tabs[index]->activeUrl.clear();
             tabs[index]->lastRecordedUrl.clear();
@@ -6200,14 +6254,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
                 RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
                     tabRect.left + MulDiv(9, dpi, 96) + iconSize, iconTop + iconSize };
-                if (tabs[i]->favicon)
-                    DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-                else if (gAuroraAppIcon)
-                    DrawIconEx(dc, iconRect.left, iconRect.top, gAuroraAppIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-                else
-                    drawCompass(dc, iconRect);
+                if (showWebsiteIconsInTabs) {
+                    if (tabs[i]->favicon)
+                        DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                    else if (gAuroraAppIcon)
+                        DrawIconEx(dc, iconRect.left, iconRect.top, gAuroraAppIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                    else
+                        drawCompass(dc, iconRect);
+                }
                 RECT titleText = tabRect;
-                titleText.left = iconRect.right + MulDiv(6, dpi, 96);
+                titleText.left = showWebsiteIconsInTabs
+                    ? iconRect.right + MulDiv(6, dpi, 96)
+                    : tabRect.left + MulDiv(10, dpi, 96);
                 titleText.right -= MulDiv(31, dpi, 96);
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
@@ -6339,6 +6397,12 @@ bool openNewBrowserWindow(BrowserState* source, bool privateMode)
         browser->showStartPageFrequentlyVisited = source->showStartPageFrequentlyVisited;
         browser->showStartPageReadingList = source->showStartPageReadingList;
         browser->openLinksInBackground = source->openLinksInBackground;
+        browser->searchSuggestionsEnabled = source->searchSuggestionsEnabled;
+        browser->showFullWebsiteAddress = source->showFullWebsiteAddress;
+        browser->newTabsOpenWithHomepage = source->newTabsOpenWithHomepage;
+        browser->newWindowsOpenWithHomepage = source->newWindowsOpenWithHomepage;
+        browser->showWebsiteIconsInTabs = source->showWebsiteIconsInTabs;
+        browser->alwaysShowTabBar = source->alwaysShowTabBar;
     }
     HWND window = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -7414,6 +7478,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     std::wstring theme, engine, home, folder, javascript, images, popups, storage, developer, section;
     std::wstring backgroundTabs, showFavorites, showFrequentlyVisited, showReadingList;
     std::wstring searchSuggestions, fullWebsiteAddress;
+    std::wstring newTabsOpenWith, newWindowsOpenWith, websiteIcons, alwaysShowTabBar;
     std::wstring query = url.substr(queryStart + 1);
     size_t position = 0;
     while (position <= query.size()) {
@@ -7438,6 +7503,10 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         else if (key == L"showReadingList") showReadingList = value;
         else if (key == L"searchSuggestions") searchSuggestions = value;
         else if (key == L"fullWebsiteAddress") fullWebsiteAddress = value;
+        else if (key == L"newTabsOpenWith") newTabsOpenWith = value;
+        else if (key == L"newWindowsOpenWith") newWindowsOpenWith = value;
+        else if (key == L"websiteIcons") websiteIcons = value;
+        else if (key == L"alwaysShowTabBar") alwaysShowTabBar = value;
         else if (key == L"section") section = value;
         if (amp == std::wstring::npos) break;
         position = amp + 1;
@@ -7466,7 +7535,8 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     if (theme == L"light") browser->themeMode = ThemeMode::Light;
     else if (theme == L"dark") browser->themeMode = ThemeMode::Dark;
     else browser->themeMode = ThemeMode::System;
-    if (engine == L"Bing" || engine == L"DuckDuckGo" || engine == L"Google")
+    if (engine == L"Bing" || engine == L"DuckDuckGo" || engine == L"Google"
+        || engine == L"Yahoo" || engine == L"Ecosia")
         browser->searchEngine = engine;
 
     while (!home.empty() && iswspace(home.front())) home.erase(home.begin());
@@ -7497,6 +7567,10 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->showStartPageReadingList = showReadingList == L"1";
     browser->searchSuggestionsEnabled = searchSuggestions == L"1";
     browser->showFullWebsiteAddress = fullWebsiteAddress == L"1";
+    browser->newTabsOpenWithHomepage = newTabsOpenWith == L"homepage";
+    browser->newWindowsOpenWithHomepage = newWindowsOpenWith == L"homepage";
+    browser->showWebsiteIconsInTabs = websiteIcons == L"1";
+    browser->alwaysShowTabBar = alwaysShowTabBar == L"1";
     browser->savePreferences();
     browser->applyEnginePreferences();
     browser->applyTheme();
