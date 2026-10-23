@@ -3435,6 +3435,12 @@ search.addEventListener('keydown',e=>{
         const size_t previouslyActive = activeTab;
         if (addressEditing)
             endAddressEditing();
+        if (index == activeTab && !tabOverviewVisible) {
+            if (HWND currentView = WKViewGetWindow(tabs[index]->view.get()))
+                SetFocus(currentView);
+            invalidateTabChrome(tabs[index].get());
+            return;
+        }
         tabOverviewVisible = false;
         activeTab = index;
         tabSwitchAnimating = false;
@@ -3458,16 +3464,15 @@ search.addEventListener('keydown',e=>{
         if (!tab)
             return;
 
-        if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
-            SetWindowTextW(addressBar, L"");
-        else
-            SetWindowTextW(addressBar, tab->activeUrl.c_str());
+        const wchar_t* addressText = (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
+            ? L"" : tab->activeUrl.c_str();
+        setWindowTextIfChanged(addressBar, addressText);
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        // Size every WebKit view before changing sibling z-order. Promoting the selected
-        // view first lets later MoveWindow calls for background views overlap the selected
-        // surface during a tab switch, briefly exposing a black renderer frame.
-        resize();
+        // Keep the selected surface's geometry stable across tab changes; resize only
+        // when its measured bounds actually differ. This avoids needlessly resetting the
+        // native WebKit child frame on every selection.
+        resize(false);
         if (selectedView) {
             SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -4317,7 +4322,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
-    void resize()
+    void resize(bool invalidateChrome = true)
     {
         if (!window)
             return;
@@ -4327,40 +4332,67 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         RECT pill = addressPillRect();
-        MoveWindow(
-            addressBar,
-            pill.left + scaleForDpi(window, 30),
-            pill.top + scaleForDpi(window, 2),
-            std::max<int>(scaleForDpi(window, 140), static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62))),
-            std::max<int>(scaleForDpi(window, 24), static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4))),
-            TRUE
-        );
+        const int addressX = pill.left + scaleForDpi(window, 30);
+        const int addressY = pill.top + scaleForDpi(window, 2);
+        const int addressWidth = std::max<int>(scaleForDpi(window, 140),
+            static_cast<int>(pill.right - pill.left - scaleForDpi(window, 62)));
+        const int addressHeight = std::max<int>(scaleForDpi(window, 24),
+            static_cast<int>(pill.bottom - pill.top - scaleForDpi(window, 4)));
+        RECT currentAddress { };
+        bool addressGeometryChanged = true;
+        if (addressBar && GetWindowRect(addressBar, &currentAddress)) {
+            POINT corners[2] = {
+                { currentAddress.left, currentAddress.top },
+                { currentAddress.right, currentAddress.bottom }
+            };
+            MapWindowPoints(nullptr, window, corners, 2);
+            addressGeometryChanged = corners[0].x != addressX || corners[0].y != addressY
+                || corners[1].x - corners[0].x != addressWidth
+                || corners[1].y - corners[0].y != addressHeight;
+        }
+        if (addressGeometryChanged) {
+            SetWindowPos(addressBar, nullptr, addressX, addressY, addressWidth, addressHeight,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+            if (addressEditing)
+                InvalidateRect(addressBar, nullptr, FALSE);
+        }
 
-        int contentTop = this->contentTop();
-        int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
+        const int contentTop = this->contentTop();
+        const int contentLeft = webFullscreen ? 0 : (sidebarOpen ? scaleForDpi(window, 300) : 0);
+        const int contentWidth = std::max<int>(0, static_cast<int>(client.right - contentLeft));
+        const int contentHeight = std::max<int>(0, static_cast<int>(client.bottom - contentTop));
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
 
-            // Repaint the WebKit child after changing the sidebar offset. Without
-            // repainting here, the old viewport can remain visible over the sidebar
-            // until another WebKit paint or window event occurs.
-            MoveWindow(
-                viewWindow,
-                contentLeft,
-                contentTop,
-                std::max<int>(0, static_cast<int>(client.right - contentLeft)),
-                std::max<int>(0, static_cast<int>(client.bottom - contentTop)),
-                FALSE
-            );
-            if (tab.get() == active() && IsWindowVisible(viewWindow))
-                InvalidateRect(viewWindow, nullptr, FALSE);
+            RECT currentView { };
+            bool geometryChanged = true;
+            if (GetWindowRect(viewWindow, &currentView)) {
+                POINT corners[2] = {
+                    { currentView.left, currentView.top },
+                    { currentView.right, currentView.bottom }
+                };
+                MapWindowPoints(nullptr, window, corners, 2);
+                geometryChanged = corners[0].x != contentLeft || corners[0].y != contentTop
+                    || corners[1].x - corners[0].x != contentWidth
+                    || corners[1].y - corners[0].y != contentHeight;
+            }
+
+            // Moving a WebKit child even when its geometry is unchanged can disturb
+            // its composited surface during tab changes. Only relayout real geometry
+            // changes, then invalidate the active view once after the new size is set.
+            if (geometryChanged) {
+                MoveWindow(viewWindow, contentLeft, contentTop, contentWidth, contentHeight, FALSE);
+                if (tab.get() == active() && IsWindowVisible(viewWindow))
+                    InvalidateRect(viewWindow, nullptr, FALSE);
+            }
         }
 
         if (findBarVisible)
             positionFindBar();
-        InvalidateRect(window, nullptr, FALSE);
+        if (invalidateChrome)
+            InvalidateRect(window, nullptr, FALSE);
     }
 
     void toggleMaximizeWindow()
