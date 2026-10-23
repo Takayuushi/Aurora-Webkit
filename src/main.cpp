@@ -1204,6 +1204,10 @@ struct BrowserState {
     bool allowPopups { false };
     bool localStorageEnabled { true };
     bool developerToolsEnabled { false };
+    bool showStartPageFavorites { true };
+    bool showStartPageFrequentlyVisited { true };
+    bool showStartPageReadingList { true };
+    bool openLinksInBackground { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -1228,6 +1232,14 @@ struct BrowserState {
                 downloadLocation = value;
             else if (key == "startPageBackground")
                 startPageBackground = value;
+            else if (key == "showStartPageFavorites")
+                showStartPageFavorites = value == L"1" || value == L"true";
+            else if (key == "showStartPageFrequentlyVisited")
+                showStartPageFrequentlyVisited = value == L"1" || value == L"true";
+            else if (key == "showStartPageReadingList")
+                showStartPageReadingList = value == L"1" || value == L"true";
+            else if (key == "openLinksInBackground")
+                openLinksInBackground = value == L"1" || value == L"true";
             else if (key == "javascript")
                 javascriptEnabled = value == L"1" || value == L"true";
             else if (key == "images")
@@ -1261,6 +1273,10 @@ struct BrowserState {
              << "search\t" << toUTF8(safeSearch) << '\n'
              << "downloads\t" << toUTF8(safeDownloads) << '\n'
              << "startPageBackground\t" << toUTF8(safeStartPageBackground) << '\n'
+             << "showStartPageFavorites\t" << (showStartPageFavorites ? "1" : "0") << '\n'
+             << "showStartPageFrequentlyVisited\t" << (showStartPageFrequentlyVisited ? "1" : "0") << '\n'
+             << "showStartPageReadingList\t" << (showStartPageReadingList ? "1" : "0") << '\n'
+             << "openLinksInBackground\t" << (openLinksInBackground ? "1" : "0") << '\n'
              << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
              << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
              << "popups\t" << (allowPopups ? "1" : "0") << '\n'
@@ -3392,7 +3408,7 @@ struct BrowserState {
     void loadSettingsPage(TabState& tab, int requestedSection = -1)
     {
         if (requestedSection >= 0)
-            tab.settingsSection = std::clamp(requestedSection, 0, 6);
+            tab.settingsSection = std::clamp(requestedSection, 0, 7);
         tab.internalPage = L"settings";
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
@@ -3411,11 +3427,12 @@ struct BrowserState {
         const std::string duckSelected = engine == "DuckDuckGo" ? " selected" : "";
         const std::string activeGeneral = tab.settingsSection == 0 ? " active" : "";
         const std::string activeTabs = tab.settingsSection == 1 ? " active" : "";
-        const std::string activeSearch = tab.settingsSection == 2 ? " active" : "";
-        const std::string activeWebsites = tab.settingsSection == 3 ? " active" : "";
-        const std::string activePrivacy = tab.settingsSection == 4 ? " active" : "";
-        const std::string activeAdvanced = tab.settingsSection == 5 ? " active" : "";
-        const std::string activeAbout = tab.settingsSection == 6 ? " active" : "";
+        const std::string activeAppearance = tab.settingsSection == 2 ? " active" : "";
+        const std::string activeSearch = tab.settingsSection == 3 ? " active" : "";
+        const std::string activeWebsites = tab.settingsSection == 4 ? " active" : "";
+        const std::string activePrivacy = tab.settingsSection == 5 ? " active" : "";
+        const std::string activeAdvanced = tab.settingsSection == 6 ? " active" : "";
+        const std::string activeAbout = tab.settingsSection == 7 ? " active" : "";
         auto checked = [](bool value) { return value ? " checked" : ""; };
 
         std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8">
@@ -3440,7 +3457,17 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .done{display:inline-block;text-decoration:none;border:1px solid transparent;border-radius:8px;padding:7px 13px;background:var(--selected);color:var(--text);font:inherit;line-height:1.35;cursor:pointer}
 .categories{display:flex;align-items:stretch;justify-content:center;gap:4px;overflow-x:auto;padding-bottom:10px}
 .category{appearance:none;flex:1 1 0;min-width:72px;max-width:108px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit;line-height:1.3;transition:background .2s cubic-bezier(.2,.7,.2,1),color .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s ease}
-.category svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.category svg{width:20px;height:20px;padding:5px;box-sizing:content-box;border-radius:9px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;background:var(--icon-bg,transparent)}
+/* Safari-inspired individually coloured category glyphs. */
+.category:nth-child(1) svg{color:#85858b;--icon-bg:rgba(142,142,147,.15)}
+.category:nth-child(2) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(3) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
+.category:nth-child(4) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(5) svg{color:#30a46c;--icon-bg:rgba(48,164,108,.14)}
+.category:nth-child(6) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.14)}
+.category:nth-child(7) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
+.category:nth-child(8) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
+.category.active svg{filter:saturate(1.08)}
 .category span{font-size:11px;line-height:1.3;white-space:nowrap}
 .category:hover{background:rgba(128,128,140,.12);border-color:rgba(128,128,140,.12);transform:translateY(-1px)}.category:active{transform:scale(.975)}.category:focus-visible{outline:2px solid var(--blue);outline-offset:2px}.category.active{background:var(--selected);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
 .content{max-width:790px;margin:0 auto;padding:30px 34px 34px}
@@ -3482,18 +3509,22 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
 <button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.2"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5"/></svg><span>General</span></button>
-<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Appearance</span></button>
-<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
-<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
-<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Privacy</span></button>
-<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
-<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
+<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Tabs</span></button>
+<button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg><span>Appearance</span></button>
+<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
+<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0-18"/></svg><span>Websites</span></button>
+<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Privacy</span></button>
+<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
+<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
 </nav></header><main class="content">
 <section class="panel__ACTIVE_SECTION_GENERAL__" data-section="general"><h1>General</h1><p class="sub">Choose your homepage and where downloads are saved.</p>
 <div class="field"><label for="home">Homepage</label><input id="home" type="text" name="home" value="__HOME__"></div>
 <div class="field"><label for="downloads">Downloads location</label><input id="downloads" type="text" name="downloads" value="__DOWNLOADS__"></div>
 <p class="help">Enter a folder path that already exists on this PC. Leave the location blank to use the Windows Downloads folder.</p>
 </section>
+<section class="panel__ACTIVE_SECTION_TABS__" data-section="tabs"><h1>Tabs</h1><p class="sub">Control how links opened by websites behave.</p>
+<div class="checks"><label class="checkrow"><input type="hidden" name="backgroundTabs" value="0"><input id="backgroundTabs" type="checkbox" name="backgroundTabs" value="1"__BACKGROUND_TABS__>Open links in new tabs in the background</label></div>
+<p class="help">When enabled, links requesting a new tab open without switching away from the page you are reading.</p></section>
 <section class="panel__ACTIVE_SECTION_ABOUT__" data-section="about">
  <img class="about-cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
  <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
@@ -3505,10 +3536,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
  </div>
  <div class="about-links"><span>Powered by WebKit</span><a href="https://github.com/Takayuushi/Aurora-Webkit">Aurora on GitHub ↗</a></div>
 </section>
-<section class="panel__ACTIVE_SECTION_TABS__" data-section="appearance"><h1>Appearance</h1><p class="sub">Choose how Aurora looks, including the Start Page wallpaper.</p>
+<section class="panel__ACTIVE_SECTION_APPEARANCE__" data-section="appearance"><h1>Appearance</h1><p class="sub">Choose how Aurora looks, including the Start Page wallpaper.</p>
 <div class="field"><label for="theme">Browser appearance</label><select id="theme" name="theme"><option value="system"__THEME_SYSTEM__>Automatic (follow Windows)</option><option value="light"__THEME_LIGHT__>Light</option><option value="dark"__THEME_DARK__>Dark</option></select></div>
 <div class="field"><div class="fieldname">Start Page background</div><div class="image-actions"><span class="image-path">__START_PAGE_BACKGROUND__</span><a class="action" href="aurora-settings://browse-background">Choose Image…</a><a class="action" href="aurora-settings://clear-background">Use Default</a></div></div>
-<p class="help">Choose a PNG, JPEG, WebP, GIF, or BMP image from this PC (up to 24 MB). Leave it unset to use Aurora’s built-in aurora wallpaper.</p></section>
+<p class="help">Choose a PNG, JPEG, WebP, GIF, or BMP image from this PC (up to 24 MB). Leave it unset to use Aurora’s built-in aurora wallpaper.</p>
+<div class="checks" aria-label="Start Page sections">
+<label class="checkrow"><input type="hidden" name="showFavorites" value="0"><input id="showFavorites" type="checkbox" name="showFavorites" value="1"__SHOW_FAVORITES__>Show Favorites</label>
+<label class="checkrow"><input type="hidden" name="showFrequentlyVisited" value="0"><input id="showFrequentlyVisited" type="checkbox" name="showFrequentlyVisited" value="1"__SHOW_FREQUENTLY_VISITED__>Show Frequently Visited</label>
+<label class="checkrow"><input type="hidden" name="showReadingList" value="0"><input id="showReadingList" type="checkbox" name="showReadingList" value="1"__SHOW_READING_LIST__>Show Reading List</label>
+</div></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
 <div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option></select></div></section>
 <section class="panel__ACTIVE_SECTION_WEBSITES__" data-section="websites"><h1>Websites</h1><p class="sub">Choose the default permissions used for websites.</p>
@@ -3527,7 +3563,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 </main>
 <script>
 (() => {
-    const sectionNames = ['general', 'appearance', 'search', 'websites', 'privacy', 'advanced', 'about'];
+    const sectionNames = ['general', 'tabs', 'appearance', 'search', 'websites', 'privacy', 'advanced', 'about'];
     const categories = Array.from(document.querySelectorAll('.categories .category'));
     const panels = Array.from(document.querySelectorAll('.panel'));
     categories.forEach((button, index) => {
@@ -3553,12 +3589,18 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             { "__JAVASCRIPT__", checked(javascriptEnabled) }, { "__IMAGES__", checked(imagesEnabled) },
             { "__POPUPS__", checked(allowPopups) }, { "__STORAGE__", checked(localStorageEnabled) },
             { "__DEVELOPER__", checked(developerToolsEnabled) },
+            { "__BACKGROUND_TABS__", checked(openLinksInBackground) },
+            { "__SHOW_FAVORITES__", checked(showStartPageFavorites) },
+            { "__SHOW_FREQUENTLY_VISITED__", checked(showStartPageFrequentlyVisited) },
+            { "__SHOW_READING_LIST__", checked(showStartPageReadingList) },
             { "__ACTIVE_GENERAL__", activeGeneral }, { "__ACTIVE_TABS__", activeTabs },
-            { "__ACTIVE_SEARCH__", activeSearch }, { "__ACTIVE_WEBSITES__", activeWebsites },
-            { "__ACTIVE_PRIVACY__", activePrivacy }, { "__ACTIVE_ADVANCED__", activeAdvanced },
+            { "__ACTIVE_APPEARANCE__", activeAppearance }, { "__ACTIVE_SEARCH__", activeSearch },
+            { "__ACTIVE_WEBSITES__", activeWebsites }, { "__ACTIVE_PRIVACY__", activePrivacy },
+            { "__ACTIVE_ADVANCED__", activeAdvanced },
             { "__ACTIVE_SECTION_GENERAL__", activeGeneral }, { "__ACTIVE_SECTION_TABS__", activeTabs },
-            { "__ACTIVE_SECTION_SEARCH__", activeSearch }, { "__ACTIVE_SECTION_WEBSITES__", activeWebsites },
-            { "__ACTIVE_SECTION_PRIVACY__", activePrivacy }, { "__ACTIVE_SECTION_ADVANCED__", activeAdvanced },
+            { "__ACTIVE_SECTION_APPEARANCE__", activeAppearance }, { "__ACTIVE_SECTION_SEARCH__", activeSearch },
+            { "__ACTIVE_SECTION_WEBSITES__", activeWebsites }, { "__ACTIVE_SECTION_PRIVACY__", activePrivacy },
+            { "__ACTIVE_SECTION_ADVANCED__", activeAdvanced },
             { "__ACTIVE_ABOUT__", activeAbout }, { "__ACTIVE_SECTION_ABOUT__", activeAbout },
             { "__AURORA_ABOUT_COVER__", imageDataUrl(L"aurora-about-cover.jpg", "image/jpeg") }
         };
@@ -3645,11 +3687,10 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 <div class="brand-mark"><img src="__AURORA_LOGO_IMAGE__" alt="Aurora logo"></div>
 <h1>Aurora</h1><p>BROWSE BEYOND</p>
 </div>
-<div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>
-<div class="section">)HTML";
+<div class="search-wrap"><svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.2 4.2"/></svg><input id="search" class="search" autofocus placeholder="Search the web or enter an address"></div>)HTML";
 
-        html += "Favorites";
-        html += R"HTML(</div><div class="tiles">)HTML";
+        if (showStartPageFavorites)
+            html += R"HTML(<div class="section">Favorites</div><div class="tiles">)HTML";
 
         auto addTile = [&](const std::wstring& name, const std::wstring& url, const std::wstring& host) {
             std::string safeName = toUTF8(htmlEscape(name));
@@ -3720,32 +3761,34 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
         for (const auto& entry : starterFavorites)
             appendUniqueTile(entry.url, entry.title);
 
-        for (const auto& entry : startPageTiles) {
-            std::wstring host = entry.url;
-            const size_t scheme = host.find(L"://");
-            if (scheme != std::wstring::npos)
-                host.erase(0, scheme + 3);
-            const size_t slash = host.find_first_of(L"/?#");
-            if (slash != std::wstring::npos)
-                host.erase(slash);
-            addTile(entry.title.empty() ? host : entry.title, entry.url, host);
-        }
+        if (showStartPageFavorites) {
+            for (const auto& entry : startPageTiles) {
+                std::wstring host = entry.url;
+                const size_t scheme = host.find(L"://");
+                if (scheme != std::wstring::npos)
+                    host.erase(0, scheme + 3);
+                const size_t slash = host.find_first_of(L"/?#");
+                if (slash != std::wstring::npos)
+                    host.erase(slash);
+                addTile(entry.title.empty() ? host : entry.title, entry.url, host);
+            }
 
-        html += R"HTML(
+            html += R"HTML(
 </div>
 )HTML";
+        }
         std::vector<VisitEntry> recentTiles;
         for (const auto& entry : frequent) {
             if (entry.url.empty())
                 continue;
             const auto duplicate = std::find_if(startPageTiles.begin(), startPageTiles.end(),
                 [&](const SavedPage& item) { return item.url == entry.url; });
-            if (duplicate == startPageTiles.end())
+            if (!showStartPageFavorites || duplicate == startPageTiles.end())
                 recentTiles.push_back(entry);
             if (recentTiles.size() >= 6)
                 break;
         }
-        if (!recentTiles.empty()) {
+        if (showStartPageFrequentlyVisited && !recentTiles.empty()) {
             html += R"HTML(<div class="section section-spaced">Frequently Visited</div><div class="tiles">)HTML";
             for (const auto& entry : recentTiles) {
                 std::wstring host = entry.url;
@@ -3759,7 +3802,7 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
             }
             html += "</div>";
         }
-        if (!readingList.empty()) {
+        if (showStartPageReadingList && !readingList.empty()) {
             html += R"HTML(<div class="section section-spaced">Reading List</div><div class="reading-list">)HTML";
             size_t shownReadingItems = 0;
             for (auto entry = readingList.rbegin(); entry != readingList.rend() && shownReadingItems < 4; ++entry, ++shownReadingItems) {
@@ -5226,7 +5269,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             clearHistory();
             break;
         case kPrivacyWebsiteSettings:
-            openBrowserSettings(this, 3);
+            openBrowserSettings(this, 4);
             break;
         case kCommandDownloads:
             showDownloadsMenu();
@@ -5340,7 +5383,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openBrowserSettings(this);
             break;
         case kMenuAbout:
-            openBrowserSettings(this, 6);
+            openBrowserSettings(this, 7);
             break;
         case 5997: {
             std::wstring folder = downloadsDirectory();
@@ -6151,6 +6194,10 @@ bool openNewBrowserWindow(BrowserState* source, bool privateMode)
         browser->homePage = source->homePage;
         browser->searchEngine = source->searchEngine;
         browser->downloadLocation = source->downloadLocation;
+        browser->showStartPageFavorites = source->showStartPageFavorites;
+        browser->showStartPageFrequentlyVisited = source->showStartPageFrequentlyVisited;
+        browser->showStartPageReadingList = source->showStartPageReadingList;
+        browser->openLinksInBackground = source->openLinksInBackground;
     }
     HWND window = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -7042,7 +7089,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     BrowserState* browser = tab->browser;
     if (url == L"about:aurora") {
         WKFramePolicyListenerIgnore(listener);
-        openBrowserSettings(browser, 6);
+        openBrowserSettings(browser, 7);
         return;
     }
     if (url.rfind(L"aurora-download:", 0) == 0) {
@@ -7161,12 +7208,12 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         command.pop_back();
     if (command == L"aurora-settings://browse-background") {
         browser->chooseStartPageBackground(browser->window);
-        browser->loadSettingsPage(*tab, 1);
+        browser->loadSettingsPage(*tab, 2);
         return;
     }
     if (command == L"aurora-settings://clear-background") {
         browser->clearStartPageBackground();
-        browser->loadSettingsPage(*tab, 1);
+        browser->loadSettingsPage(*tab, 2);
         return;
     }
     if (command == L"aurora-settings://close") {
@@ -7224,6 +7271,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         return fromUTF8(bytes);
     };
     std::wstring theme, engine, home, folder, javascript, images, popups, storage, developer, section;
+    std::wstring backgroundTabs, showFavorites, showFrequentlyVisited, showReadingList;
     std::wstring query = url.substr(queryStart + 1);
     size_t position = 0;
     while (position <= query.size()) {
@@ -7242,13 +7290,17 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         else if (key == L"popups") popups = value;
         else if (key == L"storage") storage = value;
         else if (key == L"developer") developer = value;
+        else if (key == L"backgroundTabs") backgroundTabs = value;
+        else if (key == L"showFavorites") showFavorites = value;
+        else if (key == L"showFrequentlyVisited") showFrequentlyVisited = value;
+        else if (key == L"showReadingList") showReadingList = value;
         else if (key == L"section") section = value;
         if (amp == std::wstring::npos) break;
         position = amp + 1;
     }
 
     if (command == L"aurora-settings://navigate" && section.size() == 1
-        && section[0] >= L'0' && section[0] <= L'6') {
+        && section[0] >= L'0' && section[0] <= L'7') {
         tab->settingsSection = section[0] - L'0';
         return;
     }
@@ -7281,6 +7333,10 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->allowPopups = popups == L"1";
     browser->localStorageEnabled = storage == L"1";
     browser->developerToolsEnabled = developer == L"1";
+    browser->openLinksInBackground = backgroundTabs == L"1";
+    browser->showStartPageFavorites = showFavorites == L"1";
+    browser->showStartPageFrequentlyVisited = showFrequentlyVisited == L"1";
+    browser->showStartPageReadingList = showReadingList == L"1";
     browser->savePreferences();
     browser->applyEnginePreferences();
     browser->applyTheme();
@@ -8799,15 +8855,26 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
 WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationActionRef, WKWindowFeaturesRef, const void* clientInfo)
 {
     auto* browser = const_cast<BrowserState*>(static_cast<const BrowserState*>(clientInfo));
-    if (!browser || !browser->addTab(true, false))
+    if (!browser)
+        return nullptr;
+
+    const size_t previouslyActive = browser->activeTab;
+    if (!browser->addTab(true, false))
         return nullptr;
 
     auto* newTab = browser->active();
     if (!newTab)
         return nullptr;
 
-    // WebKit expects the returned WKPageRef to carry a retained reference.
+    // Retain the returned page before optionally restoring the previous active tab.
     WKRetainPtr<WKPageRef> newPage = WKViewGetPage(newTab->view.get());
+    if (!newPage)
+        return nullptr;
+
+    if (browser->openLinksInBackground && previouslyActive < browser->tabs.size() - 1)
+        browser->activateTab(previouslyActive);
+
+    // WebKit expects the returned WKPageRef to carry a retained reference.
     return newPage.leakRef();
 }
 
