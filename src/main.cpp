@@ -1793,8 +1793,6 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 const float openProgress = tabOverviewAnimating ? tabOverviewEase() : 1.0f;
-                const ULONGLONG closeElapsed = tabOverviewClosing
-                    ? GetTickCount64() - tabOverviewClosingStart : 0;
                 const int slideOffset = tabOverviewClosing
                     ? 0
                     : tabOverviewAnimating
