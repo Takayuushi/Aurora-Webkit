@@ -2157,9 +2157,16 @@ struct BrowserState {
                             scaleForDpi(window, 300), static_cast<int>(client.right));
                         RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
                         InvalidateRect(window, &exposedParent, FALSE);
-                        // The active WKView keeps its viewport and existing frame
-                        // while the drawer moves over it. Do not invalidate it here:
-                        // a forced repaint can produce the white flash seen on close.
+                        // The sidebar is a sibling HWND. Invalidating only the parent
+                        // does not refresh the WebKit child region previously hidden by it.
+                        // Queue an asynchronous child repaint after the overlay is hidden.
+                        if (auto* selected = active()) {
+                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
+                                RECT exposedView { 0, 0, exposedWidth,
+                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
+                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                            }
+                        }
                     }
                 }
             }
@@ -2236,7 +2243,7 @@ struct BrowserState {
     {
         // Never capture through an overlay: PrintWindow/BitBlt can include the
         // sidebar or Tab Overview itself in the returned pixels on accelerated WKViews.
-        if (!tab.browser || tab.browser->sidebarOpen || tab.browser->sidebarAnimating
+        if (!tab.browser || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
             || tab.browser->tabOverviewClosing)
             return;
@@ -4914,18 +4921,21 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (addressEditing)
             endAddressEditing();
 
-        // Populate a missing/stale active-site preview before the overview HWND is
-        // shown. Capturing after it opens risks saving the overview or a transient
-        // compositor frame as the page thumbnail. Reuse existing URL-matched
-        // previews so normal entry does not recapture pages unnecessarily.
-        if (auto* selected = active(); selected
-            && selected->internalPage != L"start"
-            && selected->internalPage != L"settings"
-            && selected->internalPage != L"extensions"
-            && (!selected->previewBitmap || selected->previewURL != selected->activeUrl)) {
-            auto page = WKViewGetPage(selected->view.get());
+        // Capture stale thumbnails while the overview remains hidden. Each WKView
+        // keeps its own child HWND and live viewport, even when another tab is raised.
+        // Skipping pages that are still loading avoids capturing transient blank frames.
+        for (const auto& candidate : tabs) {
+            TabState* candidateTab = candidate.get();
+            if (!candidateTab || candidateTab->activeUrl.empty()
+                || candidateTab->internalPage == L"start"
+                || candidateTab->internalPage == L"settings"
+                || candidateTab->internalPage == L"extensions")
+                continue;
+            if (candidateTab->previewBitmap && candidateTab->previewURL == candidateTab->activeUrl)
+                continue;
+            auto page = WKViewGetPage(candidateTab->view.get());
             if (page && WKPageGetEstimatedProgress(page) >= 1.0)
-                captureTabThumbnail(*selected);
+                captureTabThumbnail(*candidateTab);
         }
 
         tabOverviewClosing = false;
