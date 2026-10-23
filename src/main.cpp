@@ -1209,6 +1209,8 @@ struct BrowserState {
     bool showStartPageFrequentlyVisited { true };
     bool showStartPageReadingList { true };
     bool openLinksInBackground { false };
+    bool searchSuggestionsEnabled { true };
+    bool showFullWebsiteAddress { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -1241,6 +1243,10 @@ struct BrowserState {
                 showStartPageReadingList = value == L"1" || value == L"true";
             else if (key == "openLinksInBackground")
                 openLinksInBackground = value == L"1" || value == L"true";
+            else if (key == "searchSuggestionsEnabled")
+                searchSuggestionsEnabled = value == L"1" || value == L"true";
+            else if (key == "showFullWebsiteAddress")
+                showFullWebsiteAddress = value == L"1" || value == L"true";
             else if (key == "javascript")
                 javascriptEnabled = value == L"1" || value == L"true";
             else if (key == "images")
@@ -1278,6 +1284,8 @@ struct BrowserState {
              << "showStartPageFrequentlyVisited\t" << (showStartPageFrequentlyVisited ? "1" : "0") << '\n'
              << "showStartPageReadingList\t" << (showStartPageReadingList ? "1" : "0") << '\n'
              << "openLinksInBackground\t" << (openLinksInBackground ? "1" : "0") << '\n'
+             << "searchSuggestionsEnabled\t" << (searchSuggestionsEnabled ? "1" : "0") << '\n'
+             << "showFullWebsiteAddress\t" << (showFullWebsiteAddress ? "1" : "0") << '\n'
              << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
              << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
              << "popups\t" << (allowPopups ? "1" : "0") << '\n'
@@ -2843,6 +2851,18 @@ struct BrowserState {
             return {};
 
         const size_t scheme = url.find(L"://");
+        if (showFullWebsiteAddress) {
+            std::wstring full = url;
+            if (scheme != std::wstring::npos) {
+                const size_t authorityStart = scheme + 3;
+                const size_t authorityEnd = full.find_first_of(L"/?#", authorityStart);
+                const size_t credentials = full.find(L'@', authorityStart);
+                if (credentials != std::wstring::npos
+                    && (authorityEnd == std::wstring::npos || credentials < authorityEnd))
+                    full.erase(authorityStart, credentials - authorityStart + 1);
+            }
+            return full.rfind(L"file:", 0) == 0 ? L"Local File" : full;
+        }
         if (scheme == std::wstring::npos)
             return url.rfind(L"file:", 0) == 0 ? L"Local File" : url;
 
@@ -2923,7 +2943,7 @@ struct BrowserState {
 
     void updateAddressSuggestions(const std::wstring& queryText)
     {
-        if (!addressEditing || !addressBar || privateBrowsing) {
+        if (!addressEditing || !addressBar || privateBrowsing || !searchSuggestionsEnabled) {
             hideAddressSuggestions();
             return;
         }
@@ -3458,7 +3478,7 @@ struct BrowserState {
     void loadSettingsPage(TabState& tab, int requestedSection = -1)
     {
         if (requestedSection >= 0)
-            tab.settingsSection = std::clamp(requestedSection, 0, 7);
+            tab.settingsSection = std::clamp(requestedSection, 0, 12);
         tab.internalPage = L"settings";
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
@@ -3478,12 +3498,26 @@ struct BrowserState {
         const std::string activeGeneral = tab.settingsSection == 0 ? " active" : "";
         const std::string activeTabs = tab.settingsSection == 1 ? " active" : "";
         const std::string activeAppearance = tab.settingsSection == 2 ? " active" : "";
-        const std::string activeSearch = tab.settingsSection == 3 ? " active" : "";
-        const std::string activeWebsites = tab.settingsSection == 4 ? " active" : "";
-        const std::string activePrivacy = tab.settingsSection == 5 ? " active" : "";
-        const std::string activeAdvanced = tab.settingsSection == 6 ? " active" : "";
-        const std::string activeAbout = tab.settingsSection == 7 ? " active" : "";
+        const std::string activeAutoFill = tab.settingsSection == 3 ? " active" : "";
+        const std::string activePasswords = tab.settingsSection == 4 ? " active" : "";
+        const std::string activeSearch = tab.settingsSection == 5 ? " active" : "";
+        const std::string activeSecurity = tab.settingsSection == 6 ? " active" : "";
+        const std::string activePrivacy = tab.settingsSection == 7 ? " active" : "";
+        const std::string activeWebsites = tab.settingsSection == 8 ? " active" : "";
+        const std::string activeProfiles = tab.settingsSection == 9 ? " active" : "";
+        const std::string activeExtensions = tab.settingsSection == 10 ? " active" : "";
+        const std::string activeAdvanced = tab.settingsSection == 11 ? " active" : "";
+        const std::string activeAbout = tab.settingsSection == 12 ? " active" : "";
         auto checked = [](bool value) { return value ? " checked" : ""; };
+        std::string extensionItems;
+        if (extensionScripts.empty()) {
+            extensionItems = "<div class=\"checkrow\"><span>No user scripts installed</span><span class=\"muted\">0 items</span></div>";
+        } else {
+            for (const auto& extension : extensionScripts) {
+                extensionItems += "<div class=\"checkrow\"><span>" + toUTF8(htmlEscape(extension.filename))
+                    + "</span><span class=\"muted\">Enabled</span></div>";
+            }
+        }
 
         std::string html = R"HTML(<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3500,7 +3534,7 @@ struct BrowserState {
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
 form{margin:0}
 button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
-.shell{width:min(1040px,calc(100% - 48px));margin:24px auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
+.shell{width:min(1040px,calc(100% - 48px));margin:0 auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
 .top{padding:13px 22px 0;background:var(--glass-bar);backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);border-bottom:1px solid var(--line)}
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
@@ -3517,6 +3551,13 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .category:nth-child(6) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.14)}
 .category:nth-child(7) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
 .category:nth-child(8) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
+.category:nth-child(9) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
+.category:nth-child(10) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
+.category:nth-child(11) svg{color:#ff453a;--icon-bg:rgba(255,69,58,.13)}
+.category:nth-child(12) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
+.category:nth-child(13) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
+.checkrow input:disabled{opacity:.5;cursor:not-allowed}
+.checkrow .muted{color:var(--muted);font-size:12px}
 .category.active svg{filter:saturate(1.08)}
 .category span{font-size:11px;line-height:1.3;white-space:nowrap}
 .category:hover{background:rgba(128,128,140,.12);border-color:rgba(128,128,140,.12);transform:translateY(-1px)}.category:active{transform:scale(.975)}.category:focus-visible{outline:2px solid var(--blue);outline-offset:2px}.category.active{background:var(--selected);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
@@ -3554,18 +3595,23 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 .about-version-row strong{font-weight:500;text-align:right}
 .about-links{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:16px;margin-top:18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .about-links a{color:var(--blue);text-decoration:none}.about-links a:hover{text-decoration:underline}
-@media(max-width:720px){.shell{width:calc(100% - 16px);margin:8px auto;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}.about-cover{aspect-ratio:2.2/1;min-height:140px}.about-links{align-items:flex-start;flex-direction:column}.about-version-row{padding:11px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+@media(max-width:720px){.shell{width:calc(100% - 16px);margin:0 auto 12px;border-radius:14px}.top{padding:10px 8px 0}.category{min-width:66px}.content{padding:24px 18px}.field{grid-template-columns:1fr;gap:8px}.about-cover{aspect-ratio:2.2/1;min-height:140px}.about-links{align-items:flex-start;flex-direction:column}.about-version-row{padding:11px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 </style></head><body>
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
 <button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.2"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5"/></svg><span>General</span></button>
 <button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Tabs</span></button>
 <button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg><span>Appearance</span></button>
-<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
-<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
-<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Privacy</span></button>
-<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
-<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
+<button class="category__ACTIVE_AUTOFILL__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.1 2.8-5.2 7-5.2s7 2.1 7 5.2"/></svg><span>AutoFill</span></button>
+<button class="category__ACTIVE_PASSWORDS__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 3 3-2 2 2 2-3 3-2-2-3 3"/></svg><span>Passwords</span></button>
+<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
+<button class="category__ACTIVE_SECURITY__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Security</span></button>
+<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-4l2 2M20 5v4h-4M20 15a8 8 0 0 1-14 4l-2-2M4 19v-4h4"/></svg><span>Privacy</span></button>
+<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="8"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
+<button class="category__ACTIVE_PROFILES__" type="submit" formaction="aurora-settings://navigate" name="section" value="9"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.1 2.3-5 6-5s6 1.9 6 5M17 8h4M19 6v4"/></svg><span>Profiles</span></button>
+<button class="category__ACTIVE_EXTENSIONS__" type="submit" formaction="aurora-settings://navigate" name="section" value="10"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2.5 2.5 0 1 1 0 5H3v3a2 2 0 0 0 2 2h4v-3a2.5 2.5 0 1 1 5 0v3h5a2 2 0 0 0 2-2v-4h-3a2.5 2.5 0 1 1 0-5h3V5a2 2 0 0 0-2-2h-4v3a2.5 2.5 0 1 1-5 0z"/></svg><span>Extensions</span></button>
+<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="11"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
+<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="12"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
 </nav></header><main class="content">
 <section class="panel__ACTIVE_SECTION_GENERAL__" data-section="general"><h1>General</h1><p class="sub">Choose your homepage and where downloads are saved.</p>
 <div class="field"><label for="home">Homepage</label><input id="home" type="text" name="home" value="__HOME__"></div>
@@ -3595,8 +3641,27 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="hidden" name="showFrequentlyVisited" value="0"><input id="showFrequentlyVisited" type="checkbox" name="showFrequentlyVisited" value="1"__SHOW_FREQUENTLY_VISITED__>Show Frequently Visited</label>
 <label class="checkrow"><input type="hidden" name="showReadingList" value="0"><input id="showReadingList" type="checkbox" name="showReadingList" value="1"__SHOW_READING_LIST__>Show Reading List</label>
 </div></section>
+<section class="panel__ACTIVE_SECTION_AUTOFILL__" data-section="autofill"><h1>AutoFill</h1><p class="sub">Choose what Aurora may fill in website forms.</p>
+<div class="checks">
+<label class="checkrow"><input type="checkbox" disabled>Use information from contacts</label>
+<label class="checkrow"><input type="checkbox" disabled>Use usernames and passwords</label>
+<label class="checkrow"><input type="checkbox" disabled>Use credit cards</label>
+<label class="checkrow"><input type="checkbox" disabled>Use other form information</label>
+</div><p class="help">AutoFill depends on contact, credential, and payment stores that this Windows WebKit port does not currently expose. These options are unavailable and Aurora does not collect this information.</p></section>
+<section class="panel__ACTIVE_SECTION_PASSWORDS__" data-section="passwords"><h1>Passwords</h1><p class="sub">Manage saved passwords and passkeys.</p>
+<div class="checks">
+<label class="checkrow"><input type="checkbox" disabled>AutoFill passwords and passkeys</label>
+<label class="checkrow"><input type="checkbox" disabled>Suggest strong passwords</label>
+<label class="checkrow"><input type="checkbox" disabled>Detect compromised passwords</label>
+</div><p class="help">A password manager and secure credential store are not implemented in this experimental browser port. Aurora does not save website passwords.</p></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
-<div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option></select></div></section>
+<div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option></select></div>
+<div class="checks"><label class="checkrow"><input type="hidden" name="searchSuggestions" value="0"><input id="searchSuggestions" type="checkbox" name="searchSuggestions" value="1"__SEARCH_SUGGESTIONS__>Show browsing history suggestions in Smart Search</label></div><p class="help">Suggestions come from local browsing history, not an external search-suggestions service.</p></section>
+<section class="panel__ACTIVE_SECTION_SECURITY__" data-section="security"><h1>Security</h1><p class="sub">Review site security protections provided by the current engine.</p>
+<div class="checks">
+<label class="checkrow"><input type="checkbox" disabled>Warn when visiting fraudulent websites</label>
+<label class="checkrow"><input type="checkbox" disabled>Use a built-in malicious-site database</label>
+</div><p class="help">This WebKit port has no Safe Browsing service configured, so Aurora cannot provide Safari's fraudulent-site warnings. HTTPS connection details remain available from the site information control.</p></section>
 <section class="panel__ACTIVE_SECTION_WEBSITES__" data-section="websites"><h1>Websites</h1><p class="sub">Choose the default permissions used for websites.</p>
 <div class="checks">
 <label class="checkrow"><input type="hidden" name="javascript" value="0"><input id="javascript" type="checkbox" name="javascript" value="1"__JAVASCRIPT__>Enable JavaScript</label>
@@ -3604,16 +3669,31 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="hidden" name="popups" value="0"><input id="popups" type="checkbox" name="popups" value="1"__POPUPS__>Allow pop-up windows</label>
 <label class="checkrow"><input type="hidden" name="storage" value="0"><input id="storage" type="checkbox" name="storage" value="1"__STORAGE__>Allow website storage</label></div></section>
 <section class="panel__ACTIVE_SECTION_PRIVACY__" data-section="privacy"><h1>Privacy</h1><p class="sub">Manage the local data Aurora stores while you browse.</p>
-<div class="actions"><a class="action" href="aurora-settings://clear-history">Clear History…</a><a class="action" href="aurora-settings://clear-data">Clear Website Data…</a></div>
+<div class="checks">
+<label class="checkrow"><input type="checkbox" disabled>Prevent cross-site tracking</label>
+<label class="checkrow"><input type="checkbox" disabled>Hide IP address from trackers</label>
+<label class="checkrow"><input type="checkbox" disabled>Block all cookies</label>
+</div><p class="help">These protections require cookie and tracking controls not exposed by the current Windows WebKit integration. They are disabled rather than pretending to change browser behavior.</p>
+<div class="actions"><a class="action" href="aurora-settings://clear-history">Clear History…</a><a class="action" href="aurora-settings://clear-data">Manage / Clear Website Data…</a></div>
 <p class="help">Clearing website data may sign you out of websites.</p></section>
+<section class="panel__ACTIVE_SECTION_PROFILES__" data-section="profiles"><h1>Profiles</h1><p class="sub">Keep browsing data separated for different uses.</p>
+<div class="field"><div class="fieldname">Current profile</div><div class="profile-card"><strong>Default</strong><p class="help">Standard browsing data for this browser window.</p></div></div>
+<div class="checks"><label class="checkrow"><input type="checkbox" disabled>Use separate profiles for work and personal browsing</label><label class="checkrow"><input type="checkbox" disabled>Choose a profile when a new window opens</label></div>
+<p class="help">Regular and private windows are available, but named profile containers and independent cookie stores have not been implemented.</p></section>
+<section class="panel__ACTIVE_SECTION_EXTENSIONS__" data-section="extensions"><h1>Extensions</h1><p class="sub">Review user scripts installed for Aurora.</p>
+<div class="checks">__EXTENSION_ITEMS__</div>
+<p class="help">This port currently supports local JavaScript user scripts, not Safari App Extensions or browser extensions with a full extension API. Place trusted .js files in Aurora's Extensions folder, then reload a web page.</p></section>
 <section class="panel__ACTIVE_SECTION_ADVANCED__" data-section="advanced"><h1>Advanced</h1><p class="sub">Options for development and diagnostics.</p>
-<div class="checks"><label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label></div>
-<p class="help">Some inspector functions depend on the pinned Windows WebKit build.</p></section>
+<div class="checks">
+<label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label>
+<label class="checkrow"><input type="hidden" name="fullWebsiteAddress" value="0"><input id="fullWebsiteAddress" type="checkbox" name="fullWebsiteAddress" value="1"__FULL_WEBSITE_ADDRESS__>Show full website addresses in the Smart Search field</label>
+</div>
+<p class="help">Some inspector functions depend on the pinned Windows WebKit build. Full website addresses are shown only when this option is enabled.</p></section>
 <div class="actions"><button class="action primary" type="submit">Save Changes</button></div>
 </main>
 <script>
 (() => {
-    const sectionNames = ['general', 'tabs', 'appearance', 'search', 'websites', 'privacy', 'advanced', 'about'];
+    const sectionNames = ['general', 'tabs', 'appearance', 'autofill', 'passwords', 'search', 'security', 'privacy', 'websites', 'profiles', 'extensions', 'advanced', 'about'];
     const categories = Array.from(document.querySelectorAll('.categories .category'));
     const panels = Array.from(document.querySelectorAll('.panel'));
     categories.forEach((button, index) => {
@@ -3639,18 +3719,25 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             { "__JAVASCRIPT__", checked(javascriptEnabled) }, { "__IMAGES__", checked(imagesEnabled) },
             { "__POPUPS__", checked(allowPopups) }, { "__STORAGE__", checked(localStorageEnabled) },
             { "__DEVELOPER__", checked(developerToolsEnabled) },
+            { "__SEARCH_SUGGESTIONS__", checked(searchSuggestionsEnabled) },
+            { "__FULL_WEBSITE_ADDRESS__", checked(showFullWebsiteAddress) },
+            { "__EXTENSION_ITEMS__", extensionItems },
             { "__BACKGROUND_TABS__", checked(openLinksInBackground) },
             { "__SHOW_FAVORITES__", checked(showStartPageFavorites) },
             { "__SHOW_FREQUENTLY_VISITED__", checked(showStartPageFrequentlyVisited) },
             { "__SHOW_READING_LIST__", checked(showStartPageReadingList) },
             { "__ACTIVE_GENERAL__", activeGeneral }, { "__ACTIVE_TABS__", activeTabs },
-            { "__ACTIVE_APPEARANCE__", activeAppearance }, { "__ACTIVE_SEARCH__", activeSearch },
-            { "__ACTIVE_WEBSITES__", activeWebsites }, { "__ACTIVE_PRIVACY__", activePrivacy },
-            { "__ACTIVE_ADVANCED__", activeAdvanced },
+            { "__ACTIVE_APPEARANCE__", activeAppearance }, { "__ACTIVE_AUTOFILL__", activeAutoFill },
+            { "__ACTIVE_PASSWORDS__", activePasswords }, { "__ACTIVE_SEARCH__", activeSearch },
+            { "__ACTIVE_SECURITY__", activeSecurity }, { "__ACTIVE_WEBSITES__", activeWebsites },
+            { "__ACTIVE_PRIVACY__", activePrivacy }, { "__ACTIVE_PROFILES__", activeProfiles },
+            { "__ACTIVE_EXTENSIONS__", activeExtensions }, { "__ACTIVE_ADVANCED__", activeAdvanced },
             { "__ACTIVE_SECTION_GENERAL__", activeGeneral }, { "__ACTIVE_SECTION_TABS__", activeTabs },
-            { "__ACTIVE_SECTION_APPEARANCE__", activeAppearance }, { "__ACTIVE_SECTION_SEARCH__", activeSearch },
-            { "__ACTIVE_SECTION_WEBSITES__", activeWebsites }, { "__ACTIVE_SECTION_PRIVACY__", activePrivacy },
-            { "__ACTIVE_SECTION_ADVANCED__", activeAdvanced },
+            { "__ACTIVE_SECTION_APPEARANCE__", activeAppearance }, { "__ACTIVE_SECTION_AUTOFILL__", activeAutoFill },
+            { "__ACTIVE_SECTION_PASSWORDS__", activePasswords }, { "__ACTIVE_SECTION_SEARCH__", activeSearch },
+            { "__ACTIVE_SECTION_SECURITY__", activeSecurity }, { "__ACTIVE_SECTION_WEBSITES__", activeWebsites },
+            { "__ACTIVE_SECTION_PRIVACY__", activePrivacy }, { "__ACTIVE_SECTION_PROFILES__", activeProfiles },
+            { "__ACTIVE_SECTION_EXTENSIONS__", activeExtensions }, { "__ACTIVE_SECTION_ADVANCED__", activeAdvanced },
             { "__ACTIVE_ABOUT__", activeAbout }, { "__ACTIVE_SECTION_ABOUT__", activeAbout },
             { "__AURORA_ABOUT_COVER__", imageDataUrl(L"aurora-about-cover.jpg", "image/jpeg") }
         };
@@ -5325,7 +5412,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             clearHistory();
             break;
         case kPrivacyWebsiteSettings:
-            openBrowserSettings(this, 4);
+            openBrowserSettings(this, 8);
             break;
         case kCommandDownloads:
             showDownloadsMenu();
@@ -5439,7 +5526,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             openBrowserSettings(this);
             break;
         case kMenuAbout:
-            openBrowserSettings(this, 7);
+            openBrowserSettings(this, 12);
             break;
         case 5997: {
             std::wstring folder = downloadsDirectory();
@@ -6726,7 +6813,7 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
                 browser->activateTab(i);
             if (auto* tab = browser->tabs[i].get()) {
                 if (requestedSection >= 0) {
-                    const int targetSection = std::clamp(requestedSection, 0, 6);
+                    const int targetSection = std::clamp(requestedSection, 0, 12);
                     if (tab->settingsSection != targetSection)
                         browser->loadSettingsPage(*tab, targetSection);
                 }
@@ -7145,7 +7232,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     BrowserState* browser = tab->browser;
     if (url == L"about:aurora") {
         WKFramePolicyListenerIgnore(listener);
-        openBrowserSettings(browser, 7);
+        openBrowserSettings(browser, 12);
         return;
     }
     if (url.rfind(L"aurora-download:", 0) == 0) {
@@ -7328,6 +7415,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     };
     std::wstring theme, engine, home, folder, javascript, images, popups, storage, developer, section;
     std::wstring backgroundTabs, showFavorites, showFrequentlyVisited, showReadingList;
+    std::wstring searchSuggestions, fullWebsiteAddress;
     std::wstring query = url.substr(queryStart + 1);
     size_t position = 0;
     while (position <= query.size()) {
@@ -7350,15 +7438,31 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         else if (key == L"showFavorites") showFavorites = value;
         else if (key == L"showFrequentlyVisited") showFrequentlyVisited = value;
         else if (key == L"showReadingList") showReadingList = value;
+        else if (key == L"searchSuggestions") searchSuggestions = value;
+        else if (key == L"fullWebsiteAddress") fullWebsiteAddress = value;
         else if (key == L"section") section = value;
         if (amp == std::wstring::npos) break;
         position = amp + 1;
     }
 
-    if (command == L"aurora-settings://navigate" && section.size() == 1
-        && section[0] >= L'0' && section[0] <= L'7') {
-        tab->settingsSection = section[0] - L'0';
-        return;
+    if (command == L"aurora-settings://navigate" && !section.empty()) {
+        int requested = 0;
+        bool validSection = true;
+        for (wchar_t ch : section) {
+            if (ch < L'0' || ch > L'9') {
+                validSection = false;
+                break;
+            }
+            requested = requested * 10 + static_cast<int>(ch - L'0');
+            if (requested > 12) {
+                validSection = false;
+                break;
+            }
+        }
+        if (validSection && requested <= 12) {
+            tab->settingsSection = requested;
+            return;
+        }
     }
 
     if (theme == L"light") browser->themeMode = ThemeMode::Light;
@@ -7393,6 +7497,8 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->showStartPageFavorites = showFavorites == L"1";
     browser->showStartPageFrequentlyVisited = showFrequentlyVisited == L"1";
     browser->showStartPageReadingList = showReadingList == L"1";
+    browser->searchSuggestionsEnabled = searchSuggestions == L"1";
+    browser->showFullWebsiteAddress = fullWebsiteAddress == L"1";
     browser->savePreferences();
     browser->applyEnginePreferences();
     browser->applyTheme();
