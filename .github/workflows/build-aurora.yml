@@ -363,33 +363,13 @@ jobs:
           $allowIncremental = $false
           if ($metadata.ContainsKey("fingerprint") -and $metadata.ContainsKey("cmake_hash")) {
             $allowIncremental = $metadata["fingerprint"] -eq $env:CURRENT_BUILD_FINGERPRINT -and $metadata["cmake_hash"] -eq $env:CURRENT_CMAKE_HASH
+            Write-Host "Saved cache metadata present; toolchain and CMake integration compatibility: $allowIncremental"
           } else {
-            # Migrate the legacy cache only after confirming its compiler is still compatible.
-            $compilerMetadata = Get-ChildItem -LiteralPath (Join-Path $buildDir "CMakeFiles") -Filter "CMakeCXXCompiler.cmake" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            $cachedCompilerVersion = $null
-            if ($compilerMetadata) {
-              $compilerText = Get-Content -LiteralPath $compilerMetadata.FullName -Raw
-              if ($compilerText -match 'set\(CMAKE_CXX_COMPILER_VERSION "([^"]+)"\)') { $cachedCompilerVersion = $Matches[1] }
-            }
-            $cacheText = Get-Content -LiteralPath $cacheFile -Raw
-            $cachedCompilerPath = $null
-            if ($cacheText -match '(?m)^CMAKE_CXX_COMPILER:(?:FILEPATH|STRING|UNINITIALIZED)=(.+)$') { $cachedCompilerPath = $Matches[1].Trim().Replace('/', '\') }
-            $currentCompilerPath = (Join-Path $env:ProgramFiles "LLVM\bin\clang-cl.exe").Replace('/', '\')
-            $cachedSystemVersion = $null
-            if ($cacheText -match '(?m)^CMAKE_SYSTEM_VERSION:(?:INTERNAL|STRING)=(.+)$') { $cachedSystemVersion = $Matches[1].Trim() }
-
-            $sdkCompatible = $true
-            if ($cachedSystemVersion -match '^10\.0\.\d+(?:\.\d+)?$' -and $cachedSystemVersion -ne '10.0') {
-              $sdkCompatible = $cachedSystemVersion -eq $env:CURRENT_SDK_VERSION -or
-                "$cachedSystemVersion.0" -eq $env:CURRENT_SDK_VERSION -or
-                $cachedSystemVersion -eq ($env:CURRENT_SDK_VERSION -replace '\.0$', '')
-            }
-
-            $allowIncremental = $compilerMetadata -and
-              $cachedCompilerVersion -eq $env:CURRENT_CLANG_VERSION -and
-              $cachedCompilerPath -and
-              ([System.IO.Path]::GetFullPath($cachedCompilerPath) -ieq [System.IO.Path]::GetFullPath($currentCompilerPath)) -and
-              $sdkCompatible
+            # Compiler compatibility alone cannot prove that the cached build graph was
+            # configured with this exact Aurora hook. Do not upgrade an unverifiable
+            # legacy snapshot to trusted metadata during a normal UI-only build.
+            Write-Host "Saved WebKit cache has no Aurora compatibility metadata."
+            Write-Host "A normal build will not trust this legacy cache; explicitly rebuild WebKit to create a verified snapshot."
           }
 
           # Never silently turn a normal Aurora/UI build into an engine rebuild.
