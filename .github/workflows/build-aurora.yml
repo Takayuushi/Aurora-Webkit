@@ -417,40 +417,57 @@ jobs:
               [System.IO.File]::SetLastWriteTimeUtc($inputPath, $safeStamp)
             }
 
-            # WebKit's Ninja manifest tracks many CMakeLists.txt and .cmake files
-            # inside Source/ and Tools/ as configure dependencies. Cache extraction
-            # can make those source timestamps newer than build.ninja even though the
-            # pinned WebKit SHA and the integration CMake hash are unchanged. CMake
-            # then silently reconfigures, reruns vcpkg, and invalidates thousands of
-            # cached objects. Keep the verified, unchanged WebKit CMake inputs older
-            # than the existing manifest so a UI-only build stays incremental.
-            $webkitCmakeInputs = @()
-            $topLevelCmake = Get-ChildItem -LiteralPath $env:WEBKIT_DIR -File -ErrorAction Stop |
-              Where-Object { $_.Name -eq "CMakeLists.txt" -or $_.Extension -eq ".cmake" }
-            $webkitCmakeInputs += $topLevelCmake
-            foreach ($sourceRootName in @("Source", "Tools", "PerformanceTests")) {
-              $sourceRoot = Join-Path $env:WEBKIT_DIR $sourceRootName
-              if (Test-Path -LiteralPath $sourceRoot -PathType Container) {
-                $webkitCmakeInputs += Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Include CMakeLists.txt,*.cmake -ErrorAction Stop
-              }
+            # Ninja's CMake regeneration edge tracks the WebKit CMake inputs and
+          # the Visual Studio vcpkg toolchain file. On hosted runners that toolchain
+          # file can have a timestamp ahead of the cached manifest, which causes
+          # "Re-running CMake..." and invalidates thousands of engine objects.
+          # The pinned WebKit SHA, compiler/SDK fingerprint, and Aurora CMake hash
+          # were validated above; preserve the graph by placing its manifest after
+          # the newest relevant input timestamp instead of guessing a fixed offset.
+          $webkitCmakeInputs = @()
+          $topLevelCmake = Get-ChildItem -LiteralPath $env:WEBKIT_DIR -File -ErrorAction Stop |
+            Where-Object { $_.Name -eq "CMakeLists.txt" -or $_.Extension -eq ".cmake" }
+          $webkitCmakeInputs += $topLevelCmake
+          foreach ($sourceRootName in @("Source", "Tools", "PerformanceTests")) {
+            $sourceRoot = Join-Path $env:WEBKIT_DIR $sourceRootName
+            if (Test-Path -LiteralPath $sourceRoot -PathType Container) {
+              $webkitCmakeInputs += Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Include CMakeLists.txt,*.cmake -ErrorAction Stop
             }
-            foreach ($inputFile in $webkitCmakeInputs) {
-              if ($inputFile.LastWriteTimeUtc -gt $safeStamp) {
-                [System.IO.File]::SetLastWriteTimeUtc($inputFile.FullName, $safeStamp)
-              }
+          }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio C++ toolchain was not found while preparing the cached CMake graph." }
+          $vcpkgCmake = Join-Path $vsInstall "VC\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          if (-not (Test-Path -LiteralPath $vcpkgCmake -PathType Leaf)) {
+            throw "The active Visual Studio vcpkg toolchain file was not found at $vcpkgCmake."
+          }
+
+          $configureInputs = @($webkitCmakeInputs)
+          foreach ($candidate in @(
+              $cacheFile,
+              (Join-Path $buildDir "CMakeFiles\cmake.check_cache"),
+              $vcpkgCmake)) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              $configureInputs += Get-Item -LiteralPath $candidate
             }
-            # Ninja's CMake regeneration edge may still see a newer non-source
-            # dependency from cache extraction (for example CMakeCache.txt or a
-            # generated glob-verification file). The pinned source revision, toolchain,
-            # and integration CMake hash were validated above, so stamp the manifest
-            # after the restored inputs to prevent timestamp-only reconfiguration.
-            # The timestamp is deliberately only a few minutes ahead and will be in
-            # the past by the end of a full build, including in a saved cache.
-            $manifestStamp = [DateTime]::UtcNow.AddMinutes(5)
-            [System.IO.File]::SetLastWriteTimeUtc($buildNinja, $manifestStamp)
-            Write-Host "Preserved the cached CMake graph; normalized $($webkitCmakeInputs.Count) pinned WebKit CMake input timestamps."
-            Write-Host "Set cached Ninja manifest timestamp to $manifestStamp after validating the source/toolchain hashes."
-            Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
+          }
+
+          $latestInputStamp = [DateTime]::UtcNow
+          foreach ($inputFile in $configureInputs) {
+            if ($inputFile.LastWriteTimeUtc -gt $latestInputStamp) {
+              $latestInputStamp = $inputFile.LastWriteTimeUtc
+            }
+          }
+          $manifestStamp = $latestInputStamp.AddMinutes(2)
+          [System.IO.File]::SetLastWriteTimeUtc($buildNinja, $manifestStamp)
+          $verifiedManifestStamp = (Get-Item -LiteralPath $buildNinja).LastWriteTimeUtc
+          if ($verifiedManifestStamp -le $latestInputStamp) {
+            throw "Could not preserve the cached Ninja graph: build.ninja is not newer than its newest configure input."
+          }
+          Write-Host "Preserved the cached CMake graph and $($webkitCmakeInputs.Count) pinned WebKit CMake input paths."
+          Write-Host "Newest configure input: $latestInputStamp; verified manifest timestamp: $verifiedManifestStamp."
+          Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
@@ -472,7 +489,9 @@ jobs:
           }
 
           # Inspect the exact work Ninja plans to do, without compiling anything.
-          $plan = @(& $ninja -C $buildDir -d explain -n Aurora 2>&1)
+          # Merge standard output/error without PowerShell treating Ninja's
+          # diagnostic stderr as a terminating NativeCommandError.
+          $plan = @(& $ninja -C $buildDir -n Aurora 2>&1)
           if ($LASTEXITCODE -ne 0) {
             throw "Could not inspect the incremental build plan (exit code $LASTEXITCODE). Refusing to proceed."
           }
@@ -485,9 +504,8 @@ jobs:
             $_.ToString() -match '(?i)(Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)'
           })
           if ($cmakeRegeneration.Count -gt 0) {
-            Write-Host "Ninja would regenerate the cached CMake graph before compiling. Dry-run diagnostics:"
-            $plan | Where-Object { $_.ToString() -match '(?i)(ninja explain:|Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)' } |
-              Select-Object -First 20 | ForEach-Object { Write-Host $_.ToString() }
+            Write-Host "Ninja would regenerate the cached CMake graph before compiling:"
+            $cmakeRegeneration | Select-Object -First 8 | ForEach-Object { Write-Host $_.ToString() }
             throw "Refusing this normal Aurora build because CMake regeneration can invalidate the cached WebKit objects and trigger a full engine rebuild."
           }
 
