@@ -3695,7 +3695,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 </div></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
 <div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option><option value="Yahoo"__ENGINE_YAHOO__>Yahoo</option><option value="Ecosia"__ENGINE_ECOSIA__>Ecosia</option></select></div>
-<div class="checks"><label class="checkrow"><input type="hidden" name="searchSuggestions" value="0"><input id="searchSuggestions" type="checkbox" name="searchSuggestions" value="1"__SEARCH_SUGGESTIONS__>Show browsing history suggestions in Smart Search</label></div><p class="help">Suggestions come from local browsing history, not an external search-suggestions service.</p></section>
+<div class="checks"><label class="checkrow"><input type="hidden" name="searchSuggestions" value="0"><input id="searchSuggestions" type="checkbox" name="searchSuggestions" value="1"__SEARCH_SUGGESTIONS__>Show browsing history suggestions in Smart Search</label></div></section>
 <section class="panel__ACTIVE_SECTION_SECURITY__" data-section="security"><h1>Security</h1><p class="sub">Review site security protections provided by the current engine.</p>
 <div class="checks">
 <label class="checkrow"><input type="checkbox" disabled>Warn when visiting fraudulent websites</label>
@@ -3726,7 +3726,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label>
 <label class="checkrow"><input type="hidden" name="fullWebsiteAddress" value="0"><input id="fullWebsiteAddress" type="checkbox" name="fullWebsiteAddress" value="1"__FULL_WEBSITE_ADDRESS__>Show full website addresses in the Smart Search field</label>
 </div>
-<p class="help">Some inspector functions depend on the pinned Windows WebKit build. Full website addresses are shown only when this option is enabled.</p></section>
+</section>
 <div class="actions"><button class="action primary" type="submit">Save Changes</button></div>
 </main>
 <script>
