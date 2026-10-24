@@ -411,131 +411,56 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache") | Out-Null
 
           if ($allowIncremental) {
-            # Avoid timestamp-only CMake regeneration caused by checking out identical integration files.
-            # Query the exact RERUN_CMAKE dependency list from Ninja rather than
-          # scanning the repository with -Include (which can match far too broadly
-          # under Windows PowerShell and rewrite timestamps on thousands of sources).
-          $ninja = Join-Path $env:ProgramFiles "Ninja\ninja.exe"
-          if (-not (Test-Path -LiteralPath $ninja)) {
-            $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
-            if ($ninjaCommand) { $ninja = $ninjaCommand.Source }
-            else { throw "Ninja was not found while inspecting the cached CMake graph." }
-          }
-
-          $queryOut = Join-Path $env:RUNNER_TEMP "aurora-build-ninja-query.out"
-          $queryErr = Join-Path $env:RUNNER_TEMP "aurora-build-ninja-query.err"
-          Remove-Item -LiteralPath $queryOut, $queryErr -Force -ErrorAction SilentlyContinue
-          $queryArgs = '-C "' + $buildDir + '" -t query build.ninja'
-          $queryProcess = Start-Process -FilePath $ninja -ArgumentList $queryArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $queryOut -RedirectStandardError $queryErr
-          $queryLines = @()
-          if (Test-Path -LiteralPath $queryOut) { $queryLines += Get-Content -LiteralPath $queryOut }
-          if (Test-Path -LiteralPath $queryErr) { $queryLines += Get-Content -LiteralPath $queryErr }
-          if ($queryProcess.ExitCode -ne 0) {
-            Write-Host ($queryLines -join "`n")
-            throw "Ninja could not report the cached build.ninja regeneration dependencies (exit code $($queryProcess.ExitCode))."
-          }
-
-          $inInputSection = $false
-          $configureInputs = @()
-          foreach ($queryLine in $queryLines) {
-            if ($queryLine -match '^\s*input:') {
-              $inInputSection = $true
-              continue
-            }
-            if ($queryLine -match '^\s*outputs:') {
-              $inInputSection = $false
-              continue
-            }
-            if (-not $inInputSection -or $queryLine -notmatch '^\s{4}(.+?)\s*$') {
-              continue
+            # Cache metadata already verified the pinned engine SHA, compiler fingerprint,
+            # and Aurora CMake integration hash. The fresh checkout can make the identical
+            # hook appear newer by timestamp, causing a redundant CMake/vcpkg rerun.
+            # Disable only the generated manifest's auto-regeneration edge for this
+            # exact-compatible cache; the dry-run guard below still rejects stale objects.
+            $manifestText = [System.IO.File]::ReadAllText($buildNinja)
+            $newline = [Environment]::NewLine
+            $manifestLines = [regex]::Split($manifestText, '\r\n|\n|\r')
+            $targetRules = @()
+            for ($lineIndex = 0; $lineIndex -lt $manifestLines.Length; $lineIndex++) {
+              if ($manifestLines[$lineIndex] -match '^\s*build\s+build\.ninja:\s*(\S+)') {
+                $targetRules += [pscustomobject]@{
+                  Index = $lineIndex
+                  Rule = $Matches[1]
+                  Line = $manifestLines[$lineIndex]
+                }
+              }
             }
 
-            # Ninja marks implicit/order-only inputs with leading pipe tokens
-            # (for example: "| C:/Program Files/CMake/.../CMakeCInformation.cmake").
-            # Strip those graph markers before resolving the actual dependency path.
-            $dependency = ($Matches[1].Trim() -replace '^\|+\s*', '').Trim('"')
-            if ([string]::IsNullOrWhiteSpace($dependency)) { continue }
-
-            # Do not call System.IO.Path.IsPathRooted on raw Ninja output: some
-            # Windows PowerShell/.NET combinations throw on escaped/special Ninja
-            # dependency spellings before we can report the offending entry.
-            # Classify only recognized absolute prefixes, and resolve all other
-            # entries relative to the WebKit build directory.
-            if ($dependency -match '^[A-Za-z]:[\\/]' -or $dependency -match '^\\\\' -or $dependency -match '^/') {
-              $dependencyPath = $dependency
+            if ($targetRules.Count -eq 1 -and $targetRules[0].Rule -eq "RERUN_CMAKE") {
+              $edgeIndex = $targetRules[0].Index
+              $manifestLines[$edgeIndex] = 'build build.ninja: phony'
+              # Remove edge-specific assignments (typically pool/restat) that belonged
+              # to RERUN_CMAKE; they are not needed for a phony edge.
+              for ($nextLine = $edgeIndex + 1; $nextLine -lt $manifestLines.Length; $nextLine++) {
+                if ($manifestLines[$nextLine] -match '^\s+[A-Za-z0-9_]+\s*=') {
+                  $manifestLines[$nextLine] = ""
+                } else {
+                  break
+                }
+              }
+              $manifestText = [string]::Join($newline, $manifestLines)
+              [System.IO.File]::WriteAllText($buildNinja, $manifestText, [System.Text.UTF8Encoding]::new($false))
+              Write-Host "Disabled timestamp-only CMake regeneration for the verified compatible cache."
+            } elseif ($targetRules.Count -eq 1 -and $targetRules[0].Rule -eq "phony") {
+              Write-Host "Timestamp-only CMake regeneration is already disabled in this cached graph."
             } else {
-              $dependencyPath = Join-Path $buildDir $dependency
+              $edgeDiagnostics = @($manifestLines | Where-Object {
+                $_ -match '(?i)build.*build\.ninja:|RERUN_CMAKE'
+              } | Select-Object -First 12)
+              Write-Host "Could not identify exactly one expected build.ninja regeneration edge."
+              $edgeDiagnostics | ForEach-Object { Write-Host "  $_" }
+              throw "Could not safely identify the cached build.ninja regeneration edge. Refusing to risk an implicit WebKit rebuild."
             }
 
-            try {
-              $dependencyItem = Get-Item -LiteralPath $dependencyPath -ErrorAction Stop
-            } catch {
-              Write-Host "Unresolved Ninja regeneration dependency: [$dependency]"
-              Write-Host "Resolved candidate path: [$dependencyPath]"
-              throw "Cached Ninja graph has an unresolved CMake regeneration input; refusing to risk a full WebKit rebuild."
+            $verifiedManifest = [System.IO.File]::ReadAllText($buildNinja)
+            if ($verifiedManifest -match '(?m)^\s*build\s+build\.ninja:\s*RERUN_CMAKE') {
+              throw "The cached build.ninja regeneration edge remains enabled. Refusing to risk an implicit WebKit rebuild."
             }
-            if ($dependencyItem.PSIsContainer) {
-              Write-Host "Ninja regeneration dependency is a directory, not a file: [$dependencyPath]"
-              throw "Cached Ninja graph has an invalid CMake regeneration input; refusing to risk a full WebKit rebuild."
-            }
-            $configureInputs += $dependencyItem
-          }
-
-          if ($configureInputs.Count -eq 0) {
-            Write-Host ($queryLines -join "`n")
-            throw "Could not parse Ninja's RERUN_CMAKE dependency list; refusing to risk an implicit WebKit rebuild."
-          }
-
-          $latestInput = $configureInputs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-          $latestInputStamp = $latestInput.LastWriteTimeUtc
-
-          # Cache metadata verified the pinned WebKit SHA, compiler/toolchain fingerprint,
-          # and Aurora CMake integration hash. For this exact-compatible cache, the
-          # CMake/Ninja graph is still valid; automatic regeneration is timestamp-driven
-          # by the fresh checkout of the identical Aurora hook. Re-running CMake here
-          # reruns vcpkg and makes many otherwise-valid engine objects appear stale.
-          #
-          # Disable only the generated build.ninja auto-regeneration edge in the cached
-          # graph. Cache keys change when engine/toolchain/integration inputs change, and
-          # those caches are not accepted as exact incremental caches.
-          $manifestText = [System.IO.File]::ReadAllText($buildNinja)
-          $manifestLines = [regex]::Split($manifestText, '\r\n|\n|\r')
-          $regenerationIndexes = @()
-          for ($lineIndex = 0; $lineIndex -lt $manifestLines.Length; $lineIndex++) {
-            # Match the generated statement by target/rule, allowing extra spacing.
-            if ($manifestLines[$lineIndex] -match '^\s*build\s+build\.ninja:\s*RERUN_CMAKE(?:\s|$)') {
-              $regenerationIndexes += $lineIndex
-            }
-          }
-
-          if ($regenerationIndexes.Count -eq 1) {
-            # This edge triggers CMake/vcpkg solely because a checked-out copy of the
-            # same integration hook has a newer timestamp. The engine SHA, compiler
-            # fingerprint and integration-file hash were already validated above.
-            $manifestLines[$regenerationIndexes[0]] = 'build build.ninja: phony'
-            $manifestText = [string]::Join([Environment]::NewLine, $manifestLines)
-            [System.IO.File]::WriteAllText($buildNinja, $manifestText, [System.Text.UTF8Encoding]::new($false))
-            Write-Host "Disabled timestamp-only CMake regeneration for the verified compatible cache."
-          } elseif ($manifestText -match '(?m)^\s*build\s+build\.ninja:\s*phony\s*$') {
-            Write-Host "Timestamp-only CMake regeneration is already disabled in this cache."
-          } else {
-            $edgeDiagnostics = @($manifestLines | Where-Object {
-              $_ -match '(?i)build.*build\.ninja:|RERUN_CMAKE'
-            } | Select-Object -First 12)
-            Write-Host "Could not identify the expected generated Ninja edge. Candidate lines:"
-            $edgeDiagnostics | ForEach-Object { Write-Host "  $_" }
-            throw "Could not safely identify the cached build.ninja RERUN_CMAKE edge. Refusing to risk an implicit WebKit rebuild."
-          }
-
-          $verifiedManifest = [System.IO.File]::ReadAllText($buildNinja)
-          if ($verifiedManifest -match '(?m)^\s*build\s+build\.ninja:\s*RERUN_CMAKE') {
-            throw "The cached build.ninja regeneration edge remains enabled. Refusing to risk an implicit WebKit rebuild."
-          }
-
-          Write-Host "Ninja reports $($configureInputs.Count) CMake regeneration dependencies."
-          Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."
-          Write-Host "Cached compiler/configuration are compatible; reusing the cached graph."
-
+            Write-Host "Cached compiler/configuration are compatible; reusing the cached graph."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
