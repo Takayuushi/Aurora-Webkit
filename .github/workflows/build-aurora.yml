@@ -341,6 +341,7 @@ jobs:
           CURRENT_CLANG_VERSION: ${{ steps.build-fingerprint.outputs.clang_version }}
           CURRENT_SDK_VERSION: ${{ steps.build-fingerprint.outputs.sdk_version }}
           CURRENT_CMAKE_HASH: ${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
+          REBUILD_WEBKIT: ${{ inputs.rebuild_webkit }}
         shell: powershell
         run: |
           $buildDir = Join-Path $env:WEBKIT_DIR "WebKitBuild\Release"
@@ -390,6 +391,20 @@ jobs:
               $sdkCompatible
           }
 
+          # Never silently turn a normal Aurora/UI build into an engine rebuild.
+          # A fallback cache may have been built with a different compiler, SDK, or
+          # CMake graph; cmake --build can then regenerate the graph and compile thousands
+          # of JavaScriptCore/WebCore objects even when Rebuild WebKit was not requested.
+          if (-not $allowIncremental -and $env:REBUILD_WEBKIT -ne "true") {
+            $cachedFingerprint = if ($metadata.ContainsKey("fingerprint")) { $metadata["fingerprint"] } else { "legacy/missing" }
+            $cachedCMakeHash = if ($metadata.ContainsKey("cmake_hash")) { $metadata["cmake_hash"] } else { "legacy/missing" }
+            Write-Host "Cached toolchain fingerprint: $cachedFingerprint"
+            Write-Host "Current toolchain fingerprint: $env:CURRENT_BUILD_FINGERPRINT"
+            Write-Host "Cached CMake graph hash: $cachedCMakeHash"
+            Write-Host "Current CMake graph hash: $env:CURRENT_CMAKE_HASH"
+            throw "Refusing an implicit WebKit rebuild. This normal Aurora build needs an exact compatible WebKit cache. Select Rebuild WebKit only when you intentionally want to compile the engine."
+          }
+
           $metadataText = "fingerprint=$env:CURRENT_BUILD_FINGERPRINT$([Environment]::NewLine)cmake_hash=$env:CURRENT_CMAKE_HASH$([Environment]::NewLine)"
           [System.IO.File]::WriteAllText($metadataPath, $metadataText, [System.Text.UTF8Encoding]::new($false))
           New-Item -ItemType Directory -Force -Path (Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache") | Out-Null
@@ -428,12 +443,17 @@ jobs:
             throw "Could not inspect the incremental build plan (exit code $LASTEXITCODE). Refusing to proceed."
           }
 
-          $webkitCompiles = @($plan | Where-Object {
-            $_.ToString() -match '^\s*\[\d+/\d+\]\s+Building\s+(C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
-          })
+          # Join the dry-run output before matching. Ninja's output may be wrapped
+          # differently by PowerShell/Actions; any planned engine-object compilation
+          # must block the normal build before cmake --build can execute it.
+          $planText = $plan -join "`n"
+          $webkitCompiles = [regex]::Matches(
+            $planText,
+            '(?im)^\s*\[\d+/\d+\]\s+Building\s+(?:C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](?:WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
+          )
           if ($webkitCompiles.Count -gt 0) {
             Write-Host "Ninja plans to rebuild $($webkitCompiles.Count) WebKit C/C++ objects:"
-            $webkitCompiles | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
+            $webkitCompiles | Select-Object -First 8 | ForEach-Object { Write-Host $_.Value }
             throw "Refusing this normal Aurora build because WebKit objects are stale or missing. Use 'Rebuild WebKit' only when an intentional full engine rebuild is wanted."
           }
 
