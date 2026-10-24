@@ -295,6 +295,7 @@ struct VisitEntry {
     std::wstring title;
     long long visits { 0 };
     long long lastVisited { 0 };
+    bool searchAction { false };
 };
 
 struct SavedPage {
@@ -1158,6 +1159,8 @@ struct BrowserState {
     HWND sharePopoverWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
+    HBITMAP chromePaintBitmap { nullptr };
+    SIZE chromePaintBitmapSize { 0, 0 };
     HBITMAP sidebarOverlayBitmap { nullptr };
     SIZE sidebarOverlayBitmapSize { 0, 0 };
     bool sidebarOverlayAnimationFrameReady { false };
@@ -1650,6 +1653,16 @@ struct BrowserState {
             width - inset, rowTop + (index + 1) * rowHeight - scaleForDpi(window, 1) };
     }
 
+    void invalidateSidebarOverlayRect(const RECT& parentRect)
+    {
+        if (!sidebarOverlayWindow || !IsWindow(sidebarOverlayWindow)
+            || !IsWindowVisible(sidebarOverlayWindow))
+            return;
+        RECT localRect = parentRect;
+        OffsetRect(&localRect, 0, -contentTop());
+        InvalidateRect(sidebarOverlayWindow, &localRect, FALSE);
+    }
+
     RECT navigationPillRect() const
     {
         RECT sidebar = sidebarButtonRect();
@@ -1969,11 +1982,11 @@ struct BrowserState {
             hoveredSidebarRow = nextSidebarRow;
             if (previous >= 0) {
                 const RECT rect = sidebarRowRect(previous);
-                InvalidateRect(window, &rect, FALSE);
+                invalidateSidebarOverlayRect(rect);
             }
             if (nextSidebarRow >= 0) {
                 const RECT rect = sidebarRowRect(nextSidebarRow);
-                InvalidateRect(window, &rect, FALSE);
+                invalidateSidebarOverlayRect(rect);
             }
         }
 
@@ -1981,7 +1994,7 @@ struct BrowserState {
         const bool nextSidebarSettings = sidebarOpen && !sidebarAnimating && PtInRect(&sidebarSettings, point);
         if (nextSidebarSettings != hoveredSidebarSettings) {
             hoveredSidebarSettings = nextSidebarSettings;
-            InvalidateRect(window, &sidebarSettings, FALSE);
+            invalidateSidebarOverlayRect(sidebarSettings);
         }
 
         int nextTrafficLight = -1;
@@ -2610,6 +2623,35 @@ struct BrowserState {
                 previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
             SelectObject(previewDC, oldPreview);
             DeleteDC(previewDC);
+        } else {
+            const bool placeholderDark = tab.hasInternalThemeSnapshot
+                ? tab.internalDarkTheme : chromeDarkTheme();
+            HBRUSH pageBrush = CreateSolidBrush(placeholderDark
+                ? RGB(35, 39, 45) : RGB(250, 251, 253));
+            FillRect(dc, &destination, pageBrush);
+            DeleteObject(pageBrush);
+            RECT fakeBar { destination.left, destination.top, destination.right,
+                std::min(destination.bottom, destination.top + scaleForDpi(window, 20)) };
+            HBRUSH barBrush = CreateSolidBrush(placeholderDark
+                ? RGB(48, 52, 59) : RGB(235, 238, 243));
+            FillRect(dc, &fakeBar, barBrush);
+            DeleteObject(barBrush);
+            if (destination.right - destination.left > scaleForDpi(window, 90)
+                && destination.bottom - destination.top > scaleForDpi(window, 70)) {
+                HBRUSH lineBrush = CreateSolidBrush(placeholderDark
+                    ? RGB(78, 83, 91) : RGB(222, 226, 232));
+                const int left = destination.left + scaleForDpi(window, 16);
+                const int lineWidth = std::max(scaleForDpi(window, 22),
+                    (destination.right - destination.left) * 2 / 3);
+                for (int row = 0; row < 3; ++row) {
+                    const int y = fakeBar.bottom + scaleForDpi(window, 13 + row * 17);
+                    RECT line { left, y, std::min(destination.right - scaleForDpi(window, 14), left + lineWidth),
+                        y + scaleForDpi(window, 4) };
+                    if (line.bottom < destination.bottom - scaleForDpi(window, 6))
+                        FillRect(dc, &line, lineBrush);
+                }
+                DeleteObject(lineBrush);
+            }
         }
     }
 
@@ -2988,7 +3030,7 @@ struct BrowserState {
 
         if (loweredQuery.empty()) {
             // With an empty field show the most frequently visited distinct sites.
-            const auto frequent = frequentVisits(32);
+            const auto frequent = frequentVisits(visits.size());
             std::vector<std::wstring> seenHosts;
             for (const auto& entry : frequent) {
                 const std::wstring host = lowercase(hostFor(entry.url));
@@ -3004,9 +3046,25 @@ struct BrowserState {
                 int rank { 99 };
                 VisitEntry entry;
             };
+            std::vector<VisitEntry> suggestionPool = visits;
+            auto appendSavedSuggestions = [&](const std::vector<SavedPage>& pages) {
+                for (const auto& page : pages) {
+                    if (page.url.empty())
+                        continue;
+                    auto existing = std::find_if(suggestionPool.begin(), suggestionPool.end(),
+                        [&](const VisitEntry& entry) { return entry.url == page.url; });
+                    if (existing == suggestionPool.end())
+                        suggestionPool.push_back({ page.url, page.title, 0, page.added });
+                    else if (existing->title.empty())
+                        existing->title = page.title;
+                }
+            };
+            appendSavedSuggestions(bookmarks);
+            appendSavedSuggestions(readingList);
+
             std::vector<RankedVisit> candidates;
-            candidates.reserve(visits.size());
-            for (const auto& entry : visits) {
+            candidates.reserve(suggestionPool.size());
+            for (const auto& entry : suggestionPool) {
                 const std::wstring url = lowercase(entry.url);
                 const std::wstring title = lowercase(entry.title);
                 const std::wstring host = lowercase(hostFor(entry.url));
@@ -3042,6 +3100,13 @@ struct BrowserState {
                 addressSuggestionEntries.push_back(candidate.entry);
                 if (addressSuggestionEntries.size() >= 6)
                     break;
+            }
+            if (addressSuggestionEntries.empty()) {
+                VisitEntry searchEntry;
+                searchEntry.url = searchURL(query);
+                searchEntry.title = L"Search for \"" + query + L"\"";
+                searchEntry.searchAction = true;
+                addressSuggestionEntries.push_back(std::move(searchEntry));
             }
         }
 
@@ -3210,10 +3275,32 @@ struct BrowserState {
             return a.lastVisited > b.lastVisited;
         });
 
-        if (sorted.size() > maximum)
-            sorted.resize(maximum);
+        auto normalizedHost = [](const std::wstring& url) {
+            const size_t scheme = url.find(L"://");
+            const size_t begin = scheme == std::wstring::npos ? 0 : scheme + 3;
+            const size_t end = url.find_first_of(L"/?#:", begin);
+            std::wstring host = url.substr(begin, end == std::wstring::npos ? end : end - begin);
+            if (host.rfind(L"www.", 0) == 0)
+                host.erase(0, 4);
+            std::transform(host.begin(), host.end(), host.begin(),
+                [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
+            return host;
+        };
 
-        return sorted;
+        std::vector<VisitEntry> distinctSites;
+        std::vector<std::wstring> seenHosts;
+        distinctSites.reserve(std::min(maximum, sorted.size()));
+        seenHosts.reserve(std::min(maximum, sorted.size()));
+        for (const auto& entry : sorted) {
+            const std::wstring host = normalizedHost(entry.url);
+            if (host.empty() || std::find(seenHosts.begin(), seenHosts.end(), host) != seenHosts.end())
+                continue;
+            seenHosts.push_back(host);
+            distinctSites.push_back(entry);
+            if (distinctSites.size() >= maximum)
+                break;
+        }
+        return distinctSites;
     }
 
     void loadSavedPages(const std::wstring& path, std::vector<SavedPage>& pages)
@@ -3561,8 +3648,21 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .categories::-webkit-scrollbar{display:none}
 .category{appearance:none;flex:1 1 0;min-width:58px;max-width:92px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text);padding:4px 3px 5px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;font:inherit;line-height:1.3;transition:color .12s ease}
 .category svg{width:24px;height:24px;padding:0;box-sizing:border-box;border-radius:0;stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round;background:transparent;color:var(--muted)}
-/* Safari-style settings toolbar: bare glyphs, graphite by default, accent blue only when selected. */
-.category.active svg{color:var(--blue);filter:none}
+/* Preserve the distinct, restrained colors of each settings category. */
+.categories .category:nth-child(1) svg{color:#858990}
+.categories .category:nth-child(2) svg{color:#4285dc}
+.categories .category:nth-child(3) svg{color:#27a4b8}
+.categories .category:nth-child(4) svg{color:#d2a13c}
+.categories .category:nth-child(5) svg{color:#6b8fd6}
+.categories .category:nth-child(6) svg{color:#d69b38}
+.categories .category:nth-child(7) svg{color:#9b7bd3}
+.categories .category:nth-child(8) svg{color:#39a879}
+.categories .category:nth-child(9) svg{color:#548fd7}
+.categories .category:nth-child(10) svg{color:#a17ad5}
+.categories .category:nth-child(11) svg{color:#858990}
+.categories .category:nth-child(12) svg{color:#de8d52}
+.categories .category:nth-child(13) svg{color:#5789db}
+.category.active svg{filter:saturate(1.12)}
 .category span{font-size:11px;line-height:1.25;white-space:nowrap;font-weight:500}
 .category:hover{background:transparent;border-color:transparent;transform:none}
 .category:active{transform:none}
@@ -6004,7 +6104,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
             if (PtInRect(&r, point)) {
                 sidebarSection = i;
-                InvalidateRect(window, nullptr, FALSE);
+                if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow))
+                    InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
                 return true;
             }
         }
@@ -6815,6 +6916,8 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
         return;
 
     if (browser->sidebarOpen || browser->sidebarAnimating) {
+        browser->hoveredSidebarRow = -1;
+        browser->hoveredSidebarSettings = false;
         browser->sidebarOpen = false;
         browser->sidebarAnimating = false;
         browser->sidebarAnimationFrom = 0.0f;
@@ -6840,7 +6943,7 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
         }
     }
 
-    if (browser->addTab(true)) {
+    if (browser->addTab(true, false)) {
         if (auto* tab = browser->active())
             browser->loadSettingsPage(*tab, requestedSection);
     }
@@ -7046,24 +7149,48 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM w
                     DeleteObject(separatorPen);
                 }
 
-                // A simple outlined site glyph keeps suggestions native to Aurora.
+                const auto& entry = browser->addressSuggestionEntries[i];
                 const int iconSize = MulDiv(22, dpi, 96);
                 const int iconLeft = row.left + MulDiv(12, dpi, 96);
                 const int iconTop = row.top + (rowHeight - iconSize) / 2;
-                HPEN iconPen = CreatePen(PS_SOLID, 1, secondary);
+                const COLORREF iconColor = entry.searchAction
+                    ? (dark ? RGB(133, 180, 245) : RGB(31, 111, 218)) : secondary;
+                HPEN iconPen = CreatePen(PS_SOLID, 1, iconColor);
                 HPEN priorIconPen = static_cast<HPEN>(SelectObject(dc, iconPen));
                 HBRUSH priorIconBrush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
-                Ellipse(dc, iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize);
-                MoveToEx(dc, iconLeft + iconSize / 2, iconTop + 1, nullptr);
-                LineTo(dc, iconLeft + iconSize / 2, iconTop + iconSize - 1);
-                Arc(dc, iconLeft + iconSize / 4, iconTop + 1, iconLeft + iconSize * 3 / 4,
-                    iconTop + iconSize - 1, iconLeft + iconSize / 2, iconTop + 1,
-                    iconLeft + iconSize / 2, iconTop + iconSize - 1);
-                SelectObject(dc, priorIconBrush);
-                SelectObject(dc, priorIconPen);
-                DeleteObject(iconPen);
-
-                const auto& entry = browser->addressSuggestionEntries[i];
+                if (entry.searchAction) {
+                    const int lens = iconSize * 3 / 5;
+                    Ellipse(dc, iconLeft + 1, iconTop + 1, iconLeft + lens, iconTop + lens);
+                    MoveToEx(dc, iconLeft + lens - 2, iconTop + lens - 2, nullptr);
+                    LineTo(dc, iconLeft + iconSize - 1, iconTop + iconSize - 1);
+                } else {
+                    HICON siteIcon = nullptr;
+                    for (const auto& openTab : browser->tabs) {
+                        if (openTab->favicon && openTab->activeUrl == entry.url) {
+                            siteIcon = openTab->favicon;
+                            break;
+                        }
+                    }
+                    if (siteIcon) {
+                        SelectObject(dc, priorIconBrush);
+                        SelectObject(dc, priorIconPen);
+                        DeleteObject(iconPen);
+                        DrawIconEx(dc, iconLeft, iconTop, siteIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                        iconPen = nullptr;
+                    } else {
+                        Ellipse(dc, iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize);
+                        MoveToEx(dc, iconLeft + iconSize / 2, iconTop + 1, nullptr);
+                        LineTo(dc, iconLeft + iconSize / 2, iconTop + iconSize - 1);
+                        Arc(dc, iconLeft + iconSize / 4, iconTop + 1, iconLeft + iconSize * 3 / 4,
+                            iconTop + iconSize - 1, iconLeft + iconSize / 2, iconTop + 1,
+                            iconLeft + iconSize / 2, iconTop + iconSize - 1);
+                    }
+                }
+                if (iconPen) {
+                    SelectObject(dc, priorIconBrush);
+                    SelectObject(dc, priorIconPen);
+                    DeleteObject(iconPen);
+                }
                 const std::wstring title = entry.title.empty() ? entry.url : entry.title;
                 RECT titleRect { iconLeft + iconSize + MulDiv(12, dpi, 96), row.top + MulDiv(6, dpi, 96),
                     row.right - MulDiv(12, dpi, 96), row.top + MulDiv(27, dpi, 96) };
@@ -7075,7 +7202,9 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM w
                     row.right - MulDiv(12, dpi, 96), row.top + MulDiv(45, dpi, 96) };
                 SelectObject(dc, urlFont);
                 SetTextColor(dc, secondary);
-                DrawTextW(dc, entry.url.c_str(), -1, &urlRect,
+                const std::wstring detail = entry.searchAction && browser
+                    ? L"Search with " + browser->searchEngine : entry.url;
+                DrawTextW(dc, detail.c_str(), -1, &urlRect,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             }
         }
@@ -9380,11 +9509,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (previousSidebarRow >= 0) {
                 const RECT rect = state->sidebarRowRect(previousSidebarRow);
-                InvalidateRect(window, &rect, FALSE);
+                state->invalidateSidebarOverlayRect(rect);
             }
             if (previousSidebarSettings) {
                 const RECT rect = state->sidebarSettingsRect();
-                InvalidateRect(window, &rect, FALSE);
+                state->invalidateSidebarOverlayRect(rect);
             }
             if (previousLight >= 0) {
                 const RECT rect = state->trafficLightHitRect(previousLight);
@@ -9396,8 +9525,35 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_PAINT: {
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(window, &paint);
-        if (state)
-            state->paint(dc);
+        if (state) {
+            RECT client { };
+            GetClientRect(window, &client);
+            const int width = static_cast<int>(client.right - client.left);
+            const int height = static_cast<int>(client.bottom - client.top);
+            HDC bufferDC = width > 0 && height > 0 ? CreateCompatibleDC(dc) : nullptr;
+            if (bufferDC) {
+                if (!state->chromePaintBitmap || state->chromePaintBitmapSize.cx != width
+                    || state->chromePaintBitmapSize.cy != height) {
+                    if (state->chromePaintBitmap)
+                        DeleteObject(state->chromePaintBitmap);
+                    state->chromePaintBitmap = CreateCompatibleBitmap(dc, width, height);
+                    state->chromePaintBitmapSize = state->chromePaintBitmap
+                        ? SIZE { width, height } : SIZE { 0, 0 };
+                }
+                if (state->chromePaintBitmap) {
+                    HGDIOBJ oldBitmap = SelectObject(bufferDC, state->chromePaintBitmap);
+                    state->paint(bufferDC);
+                    BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
+                    SelectObject(bufferDC, oldBitmap);
+                    DeleteDC(bufferDC);
+                } else {
+                    DeleteDC(bufferDC);
+                    state->paint(dc);
+                }
+            } else {
+                state->paint(dc);
+            }
+        }
         EndPaint(window, &paint);
         return 0;
     }
@@ -9598,6 +9754,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->tabOverviewBitmap = nullptr;
                 state->tabOverviewBitmapSize = SIZE { 0, 0 };
             }
+            if (state->chromePaintBitmap) {
+                DeleteObject(state->chromePaintBitmap);
+                state->chromePaintBitmap = nullptr;
+                state->chromePaintBitmapSize = SIZE { 0, 0 };
+            }
             for (auto& tab : state->tabs) {
                 if (tab->favicon) {
                     DestroyIcon(tab->favicon);
@@ -9669,7 +9830,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             && state->sidebarAnimating && state->sidebarOverlayAnimationFrameReady
             && !recreatedBitmap && cachedBitmap;
         const bool reuseOverviewFrame = overlay == state->tabOverviewWindow
-            && (state->tabOverviewAnimating || state->tabOverviewClosing)
+            && state->tabOverviewAnimating
             && state->tabOverviewAnimationFrameReady && !recreatedBitmap && cachedBitmap;
         const bool reuseOverlayFrame = reuseSidebarFrame || reuseOverviewFrame;
 
@@ -9701,6 +9862,8 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                     state->tabOverviewAnimationFrameReady = true;
             }
 
+            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
+                state->drawTabOverviewClosingTransition(bufferDC);
             BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
             SelectObject(bufferDC, oldBitmap);
             DeleteDC(bufferDC);
@@ -9723,10 +9886,9 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 }
                 RestoreDC(dc, saved);
             }
+            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
+                state->drawTabOverviewClosingTransition(dc);
         }
-
-        if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
-            state->drawTabOverviewClosingTransition(dc);
 
         EndPaint(overlay, &paint);
         return 0;
