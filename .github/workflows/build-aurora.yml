@@ -401,11 +401,19 @@ jobs:
             $manifestLines = [regex]::Split($manifestText, '\r\n|\n|\r')
             $targetRules = @()
             for ($lineIndex = 0; $lineIndex -lt $manifestLines.Length; $lineIndex++) {
-              if ($manifestLines[$lineIndex] -match '^\s*build\s+build\.ninja:\s*(\S+)') {
-                $targetRules += [pscustomobject]@{
-                  Index = $lineIndex
-                  Rule = $Matches[1]
-                  Line = $manifestLines[$lineIndex]
+              $line = $manifestLines[$lineIndex]
+              # CMake/Ninja may put build.ninja and many other generated files on the
+              # same multi-output edge. Match the rule delimiter (colon + whitespace),
+              # not the first colon, because Windows drive letters contain escaped "$:".
+              if ($line -match '^\s*build\s+(.*?)\s*:\s+(RERUN_CMAKE|phony)\b') {
+                $outputs = @($Matches[1] -split '\s+')
+                if ($outputs -contains 'build.ninja') {
+                  $targetRules += [pscustomobject]@{
+                    Index = $lineIndex
+                    Rule = $Matches[2]
+                    Outputs = $outputs
+                    Line = $line
+                  }
                 }
               }
             }
@@ -432,12 +440,24 @@ jobs:
                 $_ -match '(?i)build.*build\.ninja:|RERUN_CMAKE'
               } | Select-Object -First 12)
               Write-Host "Could not identify exactly one expected build.ninja regeneration edge."
-              $edgeDiagnostics | ForEach-Object { Write-Host "  $_" }
+              $edgeDiagnostics | ForEach-Object {
+                $preview = $_.ToString()
+                if ($preview.Length -gt 600) { $preview = $preview.Substring(0, 600) + " ... [truncated]" }
+                Write-Host "  $preview"
+              }
               throw "Could not safely identify the cached build.ninja regeneration edge. Refusing to risk an implicit WebKit rebuild."
             }
 
             $verifiedManifest = [System.IO.File]::ReadAllText($buildNinja)
-            if ($verifiedManifest -match '(?m)^\s*build\s+build\.ninja:\s*RERUN_CMAKE') {
+            $remainingRerunEdges = @()
+            $verifiedLines = [regex]::Split($verifiedManifest, '\r\n|\n|\r')
+            foreach ($line in $verifiedLines) {
+              if ($line -match '^\s*build\s+(.*?)\s*:\s+RERUN_CMAKE\b') {
+                $outputs = @($Matches[1] -split '\s+')
+                if ($outputs -contains 'build.ninja') { $remainingRerunEdges += $line }
+              }
+            }
+            if ($remainingRerunEdges.Count -gt 0) {
               throw "The cached build.ninja regeneration edge remains enabled. Refusing to risk an implicit WebKit rebuild."
             }
             Write-Host "Cached compiler/configuration are compatible; reusing the cached graph."
