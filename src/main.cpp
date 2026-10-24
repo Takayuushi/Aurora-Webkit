@@ -6943,6 +6943,22 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
         }
     }
 
+    // A brand-new Settings tab has no card in the current overview. Close the
+    // overview as a single state transition instead of animating from a nonexistent
+    // card or leaving the overlay above the new WebKit view.
+    if (browser->tabOverviewVisible) {
+        browser->tabOverviewVisible = false;
+        browser->tabOverviewAnimating = false;
+        browser->tabOverviewClosing = false;
+        browser->tabOverviewClosingTab = -1;
+        browser->tabOverviewAnimationFrameReady = false;
+        browser->hoveredOverviewTab = -1;
+        browser->hoveredOverviewNewTab = false;
+        if (browser->tabOverviewWindow && IsWindow(browser->tabOverviewWindow))
+            ShowWindow(browser->tabOverviewWindow, SW_HIDE);
+        browser->positionOverlayWindows(true);
+    }
+
     if (browser->addTab(true, false)) {
         if (auto* tab = browser->active())
             browser->loadSettingsPage(*tab, requestedSection);
