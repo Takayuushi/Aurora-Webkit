@@ -416,6 +416,30 @@ jobs:
               if (-not (Test-Path -LiteralPath $inputPath)) { throw "CMake input missing: $inputPath" }
               [System.IO.File]::SetLastWriteTimeUtc($inputPath, $safeStamp)
             }
+
+            # WebKit's Ninja manifest tracks many CMakeLists.txt and .cmake files
+            # inside Source/ and Tools/ as configure dependencies. Cache extraction
+            # can make those source timestamps newer than build.ninja even though the
+            # pinned WebKit SHA and the integration CMake hash are unchanged. CMake
+            # then silently reconfigures, reruns vcpkg, and invalidates thousands of
+            # cached objects. Keep the verified, unchanged WebKit CMake inputs older
+            # than the existing manifest so a UI-only build stays incremental.
+            $webkitCmakeInputs = @()
+            $topLevelCmake = Get-ChildItem -LiteralPath $env:WEBKIT_DIR -File -ErrorAction Stop |
+              Where-Object { $_.Name -eq "CMakeLists.txt" -or $_.Extension -eq ".cmake" }
+            $webkitCmakeInputs += $topLevelCmake
+            foreach ($sourceRootName in @("Source", "Tools", "PerformanceTests")) {
+              $sourceRoot = Join-Path $env:WEBKIT_DIR $sourceRootName
+              if (Test-Path -LiteralPath $sourceRoot -PathType Container) {
+                $webkitCmakeInputs += Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Include CMakeLists.txt,*.cmake -ErrorAction Stop
+              }
+            }
+            foreach ($inputFile in $webkitCmakeInputs) {
+              if ($inputFile.LastWriteTimeUtc -gt $safeStamp) {
+                [System.IO.File]::SetLastWriteTimeUtc($inputFile.FullName, $safeStamp)
+              }
+            }
+            Write-Host "Preserved the cached CMake graph and normalized $($webkitCmakeInputs.Count) pinned WebKit CMake input timestamps."
             Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
@@ -447,6 +471,15 @@ jobs:
           # differently by PowerShell/Actions; any planned engine-object compilation
           # must block the normal build before cmake --build can execute it.
           $planText = $plan -join "`n"
+          $cmakeRegeneration = @($plan | Where-Object {
+            $_.ToString() -match '(?i)(Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)'
+          })
+          if ($cmakeRegeneration.Count -gt 0) {
+            Write-Host "Ninja would regenerate the cached CMake graph before compiling:"
+            $cmakeRegeneration | Select-Object -First 8 | ForEach-Object { Write-Host $_.ToString() }
+            throw "Refusing this normal Aurora build because CMake regeneration can invalidate the cached WebKit objects and trigger a full engine rebuild."
+          }
+
           $webkitCompiles = [regex]::Matches(
             $planText,
             '(?im)^\s*\[\d+/\d+\]\s+Building\s+(?:C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](?:WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
