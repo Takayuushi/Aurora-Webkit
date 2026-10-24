@@ -439,7 +439,17 @@ jobs:
                 [System.IO.File]::SetLastWriteTimeUtc($inputFile.FullName, $safeStamp)
               }
             }
-            Write-Host "Preserved the cached CMake graph and normalized $($webkitCmakeInputs.Count) pinned WebKit CMake input timestamps."
+            # Ninja's CMake regeneration edge may still see a newer non-source
+            # dependency from cache extraction (for example CMakeCache.txt or a
+            # generated glob-verification file). The pinned source revision, toolchain,
+            # and integration CMake hash were validated above, so stamp the manifest
+            # after the restored inputs to prevent timestamp-only reconfiguration.
+            # The timestamp is deliberately only a few minutes ahead and will be in
+            # the past by the end of a full build, including in a saved cache.
+            $manifestStamp = [DateTime]::UtcNow.AddMinutes(5)
+            [System.IO.File]::SetLastWriteTimeUtc($buildNinja, $manifestStamp)
+            Write-Host "Preserved the cached CMake graph; normalized $($webkitCmakeInputs.Count) pinned WebKit CMake input timestamps."
+            Write-Host "Set cached Ninja manifest timestamp to $manifestStamp after validating the source/toolchain hashes."
             Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
@@ -462,7 +472,7 @@ jobs:
           }
 
           # Inspect the exact work Ninja plans to do, without compiling anything.
-          $plan = @(& $ninja -C $buildDir -n Aurora 2>&1)
+          $plan = @(& $ninja -C $buildDir -d explain -n Aurora 2>&1)
           if ($LASTEXITCODE -ne 0) {
             throw "Could not inspect the incremental build plan (exit code $LASTEXITCODE). Refusing to proceed."
           }
@@ -475,8 +485,9 @@ jobs:
             $_.ToString() -match '(?i)(Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)'
           })
           if ($cmakeRegeneration.Count -gt 0) {
-            Write-Host "Ninja would regenerate the cached CMake graph before compiling:"
-            $cmakeRegeneration | Select-Object -First 8 | ForEach-Object { Write-Host $_.ToString() }
+            Write-Host "Ninja would regenerate the cached CMake graph before compiling. Dry-run diagnostics:"
+            $plan | Where-Object { $_.ToString() -match '(?i)(ninja explain:|Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)' } |
+              Select-Object -First 20 | ForEach-Object { Write-Host $_.ToString() }
             throw "Refusing this normal Aurora build because CMake regeneration can invalidate the cached WebKit objects and trigger a full engine rebuild."
           }
 
