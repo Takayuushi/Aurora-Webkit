@@ -537,9 +537,22 @@ jobs:
           })
           if ($cmakeRegeneration.Count -gt 0) {
             Write-Host "Cached CMake graph is stale. Regenerating the Ninja manifest only; no compile target will be invoked."
-            $graphOutput = @(& $ninja -C $buildDir build.ninja 2>&1)
-            $graphExitCode = $LASTEXITCODE
-            $graphOutput | Select-Object -Last 30 | ForEach-Object { Write-Host $_.ToString() }
+            # CMake can emit non-fatal warnings on stderr while successfully
+            # regenerating the graph. Windows PowerShell 5.1 can promote native
+            # stderr to a terminating NativeCommandError, so capture both streams
+            # through Start-Process and evaluate the real process exit code.
+            $graphOutPath = Join-Path $env:RUNNER_TEMP "aurora-cmake-graph.out"
+            $graphErrPath = Join-Path $env:RUNNER_TEMP "aurora-cmake-graph.err"
+            Remove-Item -LiteralPath $graphOutPath, $graphErrPath -Force -ErrorAction SilentlyContinue
+            $graphArgs = '-C "' + $buildDir + '" build.ninja'
+            $graphProcess = Start-Process -FilePath $ninja -ArgumentList $graphArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $graphOutPath -RedirectStandardError $graphErrPath
+            $graphExitCode = $graphProcess.ExitCode
+            if (Test-Path -LiteralPath $graphOutPath) {
+              Get-Content -LiteralPath $graphOutPath | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
+            }
+            if (Test-Path -LiteralPath $graphErrPath) {
+              Get-Content -LiteralPath $graphErrPath | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
+            }
             if ($graphExitCode -ne 0) {
               throw "CMake graph-only regeneration failed with exit code $graphExitCode. Aurora/WebKit compilation was not started."
             }
