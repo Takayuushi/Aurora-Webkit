@@ -542,26 +542,49 @@ jobs:
             else { throw "Ninja was not found; refusing to start an unverified Aurora build." }
           }
 
-          # Inspect the exact work Ninja plans to do, without compiling anything.
-          # Merge standard output/error without PowerShell treating Ninja's
-          # diagnostic stderr as a terminating NativeCommandError.
+          # Inspect the exact work Ninja plans to do, without compiling objects.
+          # Merge standard output/error so Windows PowerShell can report Ninja diagnostics.
           Write-Host "Checking incremental Release build plan using $manifestName."
           $plan = @(& $ninja -C $buildDir -f $manifestName -n Aurora 2>&1)
           if ($LASTEXITCODE -ne 0) {
+            Write-Host ($plan -join "`n")
             throw "Could not inspect the incremental build plan (exit code $LASTEXITCODE). Refusing to proceed."
           }
 
-          # Join the dry-run output before matching. Ninja's output may be wrapped
-          # differently by PowerShell/Actions; any planned engine-object compilation
-          # must block the normal build before cmake --build can execute it.
+          # A stale CMake regeneration edge is safe to refresh by requesting only
+          # the generated manifest target. This runs CMake configure/generation,
+          # not the Aurora or WebKit compilation targets.
+          $cmakeRegeneration = @($plan | Where-Object {
+            $_.ToString() -match '(?i)(Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)'
+          })
+          if ($cmakeRegeneration.Count -gt 0) {
+            Write-Host "Cached CMake graph is stale. Regenerating the Ninja manifest only; no compile target will be invoked."
+            $graphOutput = @(& $ninja -C $buildDir build.ninja 2>&1)
+            $graphExitCode = $LASTEXITCODE
+            $graphOutput | Select-Object -Last 30 | ForEach-Object { Write-Host $_.ToString() }
+            if ($graphExitCode -ne 0) {
+              throw "CMake graph-only regeneration failed with exit code $graphExitCode. Aurora/WebKit compilation was not started."
+            }
+
+            # Re-check the refreshed graph before any compilation can begin.
+            $plan = @(& $ninja -C $buildDir -f $manifestName -n Aurora 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ($plan -join "`n")
+              throw "Could not inspect the regenerated incremental build plan. Aurora/WebKit compilation was not started."
+            }
+          }
+
+          # After graph-only regeneration, both another CMake regen and stale engine
+          # objects are hard stops. This prevents configuration changes from silently
+          # turning a UI-only build into a full WebKit rebuild.
           $planText = $plan -join "`n"
           $cmakeRegeneration = @($plan | Where-Object {
             $_.ToString() -match '(?i)(Re-running CMake|RERUN_CMAKE|cmake_check_build_system|--regenerate-during-build)'
           })
           if ($cmakeRegeneration.Count -gt 0) {
-            Write-Host "Ninja would regenerate the cached CMake graph before compiling:"
+            Write-Host "Ninja still reports CMake regeneration after refreshing the graph:"
             $cmakeRegeneration | Select-Object -First 8 | ForEach-Object { Write-Host $_.ToString() }
-            throw "Refusing this normal Aurora build because CMake regeneration can invalidate the cached WebKit objects and trigger a full engine rebuild."
+            throw "Refusing this Aurora build because the CMake graph remains stale. No WebKit compilation was started."
           }
 
           $webkitCompiles = [regex]::Matches(
