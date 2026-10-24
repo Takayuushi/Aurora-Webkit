@@ -519,7 +519,8 @@ jobs:
           }
 
           Write-Host "Ninja reports $($configureInputs.Count) actual CMake regeneration dependencies."
-          Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."          Write-Host "Cached compiler/configuration are compatible; checking the graph before building."
+          Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."
+          Write-Host "Cached compiler/configuration are compatible; checking the graph before building."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
