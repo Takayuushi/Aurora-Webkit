@@ -1798,7 +1798,7 @@ struct BrowserState {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -1824,7 +1824,7 @@ struct BrowserState {
                         ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 36)))
                         : 0;
 
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
                 else if (!alreadyVisible)
@@ -2258,7 +2258,7 @@ struct BrowserState {
     {
         // Never capture through an overlay: PrintWindow/BitBlt can include the
         // sidebar or Tab Overview itself in the returned pixels on accelerated WKViews.
-        if (!tab.browser || tab.browser->sidebarAnimating
+        if (!tab.browser || tab.browser->active() != &tab || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
             || tab.browser->tabOverviewClosing)
             return;
@@ -3571,7 +3571,7 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .categories{display:flex;align-items:stretch;justify-content:center;gap:4px;overflow-x:auto;padding-bottom:10px}
 .category{appearance:none;flex:1 1 0;min-width:72px;max-width:108px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit;line-height:1.3;transition:background .2s cubic-bezier(.2,.7,.2,1),color .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s ease}
 .category svg{width:20px;height:20px;padding:5px;box-sizing:content-box;border-radius:9px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;background:var(--icon-bg,transparent)}
-/* Safari-inspired individually coloured category glyphs. */
+/* Settings category glyphs. */
 .category:nth-child(1) svg{color:#85858b;--icon-bg:rgba(142,142,147,.15)}
 .category:nth-child(2) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
 .category:nth-child(3) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
@@ -3652,16 +3652,14 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="checkbox" disabled>Restore all windows from the previous session</label>
 <label class="checkrow"><input type="checkbox" disabled>Remove history items automatically</label>
 <label class="checkrow"><input type="checkbox" disabled>Open downloaded “safe” files automatically</label>
-</div><p class="help">Session restoration, automatic history retention, and automatic download launching are not implemented in this port.</p>
+</div>
 </section>
 <section class="panel__ACTIVE_SECTION_TABS__" data-section="tabs"><h1>Tabs</h1><p class="sub">Control how links opened by websites behave.</p>
 <div class="checks">
 <label class="checkrow"><input type="hidden" name="backgroundTabs" value="0"><input id="backgroundTabs" type="checkbox" name="backgroundTabs" value="1"__BACKGROUND_TABS__>Open links in new tabs in the background</label>
 <label class="checkrow"><input type="hidden" name="websiteIcons" value="0"><input id="websiteIcons" type="checkbox" name="websiteIcons" value="1"__WEBSITE_ICONS__>Show website icons in tabs</label>
 <label class="checkrow"><input type="hidden" name="alwaysShowTabBar" value="0"><input id="alwaysShowTabBar" type="checkbox" name="alwaysShowTabBar" value="1"__ALWAYS_SHOW_TAB_BAR__>Always show the tab bar, even with one tab</label>
-<label class="checkrow"><input type="checkbox" disabled>Automatically move tabs to the toolbar</label>
-</div>
-<p class="help">Aurora currently opens web-requested windows as tabs. Compact-tab layout and Safari-specific tab keyboard shortcuts are not implemented.</p></section>
+</div></section>
 <section class="panel__ACTIVE_SECTION_ABOUT__" data-section="about">
  <img class="about-cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
  <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
@@ -3688,13 +3686,13 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="checkbox" disabled>Use usernames and passwords</label>
 <label class="checkrow"><input type="checkbox" disabled>Use credit cards</label>
 <label class="checkrow"><input type="checkbox" disabled>Use other form information</label>
-</div><p class="help">AutoFill depends on contact, credential, and payment stores that this Windows WebKit port does not currently expose. These options are unavailable and Aurora does not collect this information.</p></section>
+</div></section>
 <section class="panel__ACTIVE_SECTION_PASSWORDS__" data-section="passwords"><h1>Passwords</h1><p class="sub">Manage saved passwords and passkeys.</p>
 <div class="checks">
 <label class="checkrow"><input type="checkbox" disabled>AutoFill passwords and passkeys</label>
 <label class="checkrow"><input type="checkbox" disabled>Suggest strong passwords</label>
 <label class="checkrow"><input type="checkbox" disabled>Detect compromised passwords</label>
-</div><p class="help">A password manager and secure credential store are not implemented in this experimental browser port. Aurora does not save website passwords.</p></section>
+</div></section>
 <section class="panel__ACTIVE_SECTION_SEARCH__" data-section="search"><h1>Search</h1><p class="sub">Choose the search engine used by Smart Search.</p>
 <div class="field"><label for="engine">Default search engine</label><select id="engine" name="engine"><option value="Google"__ENGINE_GOOGLE__>Google</option><option value="Bing"__ENGINE_BING__>Bing</option><option value="DuckDuckGo"__ENGINE_DUCK__>DuckDuckGo</option><option value="Yahoo"__ENGINE_YAHOO__>Yahoo</option><option value="Ecosia"__ENGINE_ECOSIA__>Ecosia</option></select></div>
 <div class="checks"><label class="checkrow"><input type="hidden" name="searchSuggestions" value="0"><input id="searchSuggestions" type="checkbox" name="searchSuggestions" value="1"__SEARCH_SUGGESTIONS__>Show browsing history suggestions in Smart Search</label></div><p class="help">Suggestions come from local browsing history, not an external search-suggestions service.</p></section>
@@ -3703,7 +3701,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="checkbox" disabled>Warn when visiting fraudulent websites</label>
 <label class="checkrow"><input type="checkbox" disabled>Use a built-in malicious-site database</label>
 <label class="checkrow"><input type="hidden" name="javascript" value="0"><input id="javascript" type="checkbox" name="javascript" value="1"__JAVASCRIPT__>Enable JavaScript</label>
-</div><p class="help">JavaScript is controlled by the WebKit engine and can be changed here. Aurora does not yet have a Safe Browsing service, so fraudulent-site warnings remain unavailable.</p></section>
+</div></section>
 <section class="panel__ACTIVE_SECTION_WEBSITES__" data-section="websites"><h1>Websites</h1><p class="sub">Choose the default permissions used for websites.</p>
 <div class="checks">
 <label class="checkrow"><input type="hidden" name="images" value="0"><input id="images" type="checkbox" name="images" value="1"__IMAGES__>Load images automatically</label>
@@ -3714,16 +3712,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="checkbox" disabled>Prevent cross-site tracking</label>
 <label class="checkrow"><input type="checkbox" disabled>Hide IP address from trackers</label>
 <label class="checkrow"><input type="checkbox" disabled>Block all cookies</label>
-</div><p class="help">These protections require cookie and tracking controls not exposed by the current Windows WebKit integration. They are disabled rather than pretending to change browser behavior.</p>
-<div class="actions"><a class="action" href="aurora-settings://clear-history">Clear History…</a><a class="action" href="aurora-settings://clear-data">Manage / Clear Website Data…</a></div>
+</div><div class="actions"><a class="action" href="aurora-settings://clear-history">Clear History…</a><a class="action" href="aurora-settings://clear-data">Manage / Clear Website Data…</a></div>
 <p class="help">Clearing website data may sign you out of websites.</p></section>
 <section class="panel__ACTIVE_SECTION_PROFILES__" data-section="profiles"><h1>Profiles</h1><p class="sub">Keep browsing data separated for different uses.</p>
 <div class="field"><div class="fieldname">Current profile</div><div class="profile-card"><strong>Default</strong><p class="help">Standard browsing data for this browser window.</p></div></div>
 <div class="checks"><label class="checkrow"><input type="checkbox" disabled>Use separate profiles for work and personal browsing</label><label class="checkrow"><input type="checkbox" disabled>Choose a profile when a new window opens</label></div>
-<p class="help">Regular and private windows are available, but named profile containers and independent cookie stores have not been implemented.</p></section>
+</section>
 <section class="panel__ACTIVE_SECTION_EXTENSIONS__" data-section="extensions"><h1>Extensions</h1><p class="sub">Review user scripts installed for Aurora.</p>
 <div class="checks">__EXTENSION_ITEMS__</div>
-<p class="help">This port currently supports local JavaScript user scripts, not Safari App Extensions or browser extensions with a full extension API. Place trusted .js files in Aurora's Extensions folder, then reload a web page.</p></section>
+</section>
 <section class="panel__ACTIVE_SECTION_ADVANCED__" data-section="advanced"><h1>Advanced</h1><p class="sub">Options for development and diagnostics.</p>
 <div class="checks">
 <label class="checkrow"><input type="hidden" name="developer" value="0"><input id="developer" type="checkbox" name="developer" value="1"__DEVELOPER__>Enable Web Inspector / developer tools</label>
@@ -5105,21 +5102,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (addressEditing)
             endAddressEditing();
 
-        // Capture stale thumbnails while the overview remains hidden. Each WKView
-        // keeps its own child HWND and live viewport, even when another tab is raised.
-        // Skipping pages that are still loading avoids capturing transient blank frames.
-        for (const auto& candidate : tabs) {
-            TabState* candidateTab = candidate.get();
-            if (!candidateTab || candidateTab->activeUrl.empty()
-                || candidateTab->internalPage == L"start"
-                || candidateTab->internalPage == L"settings"
-                || candidateTab->internalPage == L"extensions")
-                continue;
-            if (candidateTab->previewBitmap && candidateTab->previewURL == candidateTab->activeUrl)
-                continue;
-            auto page = WKViewGetPage(candidateTab->view.get());
+        // Refresh only the currently visible page. Inactive WKView child HWNDs
+        // overlap at the same viewport, so PrintWindow/BitBlt on them may copy the
+        // frontmost tab into multiple thumbnails. Other tabs keep their own cached
+        // captures from the time they were active.
+        if (auto* selected = active(); selected
+            && selected->internalPage != L"start"
+            && selected->internalPage != L"settings"
+            && selected->internalPage != L"extensions") {
+            auto page = WKViewGetPage(selected->view.get());
             if (page && WKPageGetEstimatedProgress(page) >= 1.0)
-                captureTabThumbnail(*candidateTab);
+                captureTabThumbnail(*selected);
         }
 
         tabOverviewClosing = false;
@@ -5298,8 +5291,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int viewLeft = 0;
         const int viewWidth = std::max(0, static_cast<int>(client.right));
         const int viewHeight = std::max(0, static_cast<int>(client.bottom - contentTop));
-        HWND activeViewWindow = nullptr;
-
         for (const auto& tab : tabs) {
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
@@ -5317,23 +5308,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
             if (geometryChanged) {
                 MoveWindow(viewWindow, viewLeft, contentTop, viewWidth, viewHeight, FALSE);
-                // Only invalidate when the physical viewport truly changed; ordinary
-                // tab switches leave the retained WebKit frame untouched.
-                if (IsWindowVisible(viewWindow))
+                // Only the visible active page needs a repaint after a genuine
+                // viewport change. Repainting every overlapping inactive WKView can
+                // expose its surface during z-order/compositor updates.
+                if (tab.get() == active() && IsWindowVisible(viewWindow))
                     InvalidateRect(viewWindow, nullptr, FALSE);
             }
-
-            if (tab.get() == active()) {
-                activeViewWindow = viewWindow;
-            } else {
-                SetWindowPos(viewWindow, HWND_BOTTOM, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOOWNERZORDER);
-            }
-        }
-
-        if (activeViewWindow) {
-            SetWindowPos(activeViewWindow, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
         }
 
         if (findBarVisible)
@@ -6868,6 +6848,17 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
 {
     if (!browser || !browser->window)
         return;
+
+    if (browser->sidebarOpen || browser->sidebarAnimating) {
+        browser->sidebarOpen = false;
+        browser->sidebarAnimating = false;
+        browser->sidebarAnimationFrom = 0.0f;
+        browser->sidebarAnimationTarget = 0.0f;
+        browser->sidebarOverlayAnimationFrameReady = false;
+        browser->positionOverlayWindows(true);
+        const RECT sidebarButton = browser->sidebarButtonRect();
+        InvalidateRect(browser->window, &sidebarButton, FALSE);
+    }
 
     for (size_t i = 0; i < browser->tabs.size(); ++i) {
         if (browser->tabs[i]->internalPage == L"settings") {
