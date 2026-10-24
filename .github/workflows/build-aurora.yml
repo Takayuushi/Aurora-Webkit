@@ -487,35 +487,13 @@ jobs:
 
           $latestInput = $configureInputs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           $latestInputStamp = $latestInput.LastWriteTimeUtc
-          $manifestStamp = $latestInputStamp.AddMinutes(2)
 
-          # WebKit uses CMake's Ninja Multi-Config generator. Its regeneration
-          # edge can include build.ninja plus build-Release.ninja and
-          # CMakeFiles/impl-Release.ninja (and their other configurations).
-          # Refresh every top-level/configuration manifest, not just build.ninja,
-          # or the Release build can still trigger a full CMake regeneration.
-          $manifestOutputs = @($buildNinja)
-          $manifestOutputs += @(Get-ChildItem -LiteralPath $buildDir -Filter "build-*.ninja" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-          $implDir = Join-Path $buildDir "CMakeFiles"
-          if (Test-Path -LiteralPath $implDir -PathType Container) {
-            $manifestOutputs += @(Get-ChildItem -LiteralPath $implDir -Filter "impl-*.ninja" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-          }
-          $manifestOutputs = @($manifestOutputs | Sort-Object -Unique)
-          $verifiedManifestStamps = @()
-          foreach ($manifestOutput in $manifestOutputs) {
-            [System.IO.File]::SetLastWriteTimeUtc($manifestOutput, $manifestStamp)
-            $verifiedStamp = (Get-Item -LiteralPath $manifestOutput).LastWriteTimeUtc
-            if ($verifiedStamp -le $latestInputStamp) {
-              throw "Could not preserve the cached Ninja graph: manifest '$manifestOutput' is not newer than its newest regeneration dependency."
-            }
-            $verifiedManifestStamps += "$manifestOutput ($verifiedStamp)"
-          }
-
+          # Do not falsify manifest timestamps to suppress CMake regeneration.
+          # The guard below will regenerate only the graph, then inspect the new
+          # dry-run plan and abort if any WebKit objects would need recompilation.
           Write-Host "Ninja reports $($configureInputs.Count) actual CMake regeneration dependencies."
           Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."
-          Write-Host "Verified CMake manifest timestamps:"
-          $verifiedManifestStamps | ForEach-Object { Write-Host "  $_" }
-          Write-Host "Cached compiler/configuration are compatible; reusing the existing CMake graph."
+          Write-Host "Cached compiler/configuration are compatible; checking the graph before building."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
