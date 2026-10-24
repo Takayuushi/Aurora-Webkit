@@ -449,19 +449,32 @@ jobs:
               continue
             }
 
-            $dependency = $Matches[1].Trim()
+            $dependency = $Matches[1].Trim().Trim('"')
             if ([string]::IsNullOrWhiteSpace($dependency)) { continue }
-            if ([System.IO.Path]::IsPathRooted($dependency)) {
+
+            # Do not call System.IO.Path.IsPathRooted on raw Ninja output: some
+            # Windows PowerShell/.NET combinations throw on escaped/special Ninja
+            # dependency spellings before we can report the offending entry.
+            # Classify only recognized absolute prefixes, and resolve all other
+            # entries relative to the WebKit build directory.
+            if ($dependency -match '^[A-Za-z]:[\\/]' -or $dependency -match '^\\\\' -or $dependency -match '^/') {
               $dependencyPath = $dependency
             } else {
               $dependencyPath = Join-Path $buildDir $dependency
             }
 
-            if (-not (Test-Path -LiteralPath $dependencyPath -PathType Leaf)) {
-              Write-Host "Missing CMake regeneration dependency from Ninja graph: $dependencyPath"
-              throw "Cached Ninja graph has a missing CMake regeneration input; refusing to risk a full WebKit rebuild."
+            try {
+              $dependencyItem = Get-Item -LiteralPath $dependencyPath -ErrorAction Stop
+            } catch {
+              Write-Host "Unresolved Ninja regeneration dependency: [$dependency]"
+              Write-Host "Resolved candidate path: [$dependencyPath]"
+              throw "Cached Ninja graph has an unresolved CMake regeneration input; refusing to risk a full WebKit rebuild."
             }
-            $configureInputs += Get-Item -LiteralPath $dependencyPath
+            if ($dependencyItem.PSIsContainer) {
+              Write-Host "Ninja regeneration dependency is a directory, not a file: [$dependencyPath]"
+              throw "Cached Ninja graph has an invalid CMake regeneration input; refusing to risk a full WebKit rebuild."
+            }
+            $configureInputs += $dependencyItem
           }
 
           if ($configureInputs.Count -eq 0) {
