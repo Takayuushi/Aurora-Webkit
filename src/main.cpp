@@ -3638,7 +3638,6 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <div class="field"><label for="newTabDestination">New tabs open with</label><select id="newTabDestination" name="newTabsOpenWith"><option value="startpage"__NEW_TAB_START__>Start Page</option><option value="homepage"__NEW_TAB_HOME__>Homepage</option></select></div>
 <p class="help">Choose what Aurora displays when a new window or tab opens. The homepage is the address above; Start Page shows Favorites and your selected Start Page sections.</p>
 <div class="checks">
-<label class="checkrow"><input type="checkbox" disabled>Restore all windows from the previous session</label>
 <label class="checkrow"><input type="checkbox" disabled>Remove history items automatically</label>
 <label class="checkrow"><input type="checkbox" disabled>Open downloaded “safe” files automatically</label>
 </div>
@@ -3704,7 +3703,6 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 </div><div class="actions"><a class="action" href="aurora-settings://clear-history">Clear History…</a><a class="action" href="aurora-settings://clear-data">Manage / Clear Website Data…</a></div>
 <p class="help">Clearing website data may sign you out of websites.</p></section>
 <section class="panel__ACTIVE_SECTION_PROFILES__" data-section="profiles"><h1>Profiles</h1><p class="sub">Keep browsing data separated for different uses.</p>
-<div class="field"><div class="fieldname">Current profile</div><div class="profile-card"><strong>Default</strong><p class="help">Standard browsing data for this browser window.</p></div></div>
 <div class="checks"><label class="checkrow"><input type="checkbox" disabled>Use separate profiles for work and personal browsing</label><label class="checkrow"><input type="checkbox" disabled>Choose a profile when a new window opens</label></div>
 </section>
 <section class="panel__ACTIVE_SECTION_EXTENSIONS__" data-section="extensions"><h1>Extensions</h1><p class="sub">Review user scripts installed for Aurora.</p>
