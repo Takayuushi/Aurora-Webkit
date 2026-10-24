@@ -3557,28 +3557,19 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
 .done{display:inline-block;text-decoration:none;border:1px solid transparent;border-radius:8px;padding:7px 13px;background:var(--selected);color:var(--text);font:inherit;line-height:1.35;cursor:pointer}
-.categories{display:flex;align-items:stretch;justify-content:center;gap:4px;overflow-x:auto;padding-bottom:10px}
-.category{appearance:none;flex:1 1 0;min-width:72px;max-width:108px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;cursor:pointer;font:inherit;line-height:1.3;transition:background .2s cubic-bezier(.2,.7,.2,1),color .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s ease}
-.category svg{width:20px;height:20px;padding:5px;box-sizing:content-box;border-radius:9px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;background:var(--icon-bg,transparent)}
-/* Settings category glyphs. */
-.category:nth-child(1) svg{color:#85858b;--icon-bg:rgba(142,142,147,.15)}
-.category:nth-child(2) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
-.category:nth-child(3) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
-.category:nth-child(4) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
-.category:nth-child(5) svg{color:#ff453a;--icon-bg:rgba(255,69,58,.13)}
-.category:nth-child(6) svg{color:#ff453a;--icon-bg:rgba(255,69,58,.13)}
-.category:nth-child(7) svg{color:#30a46c;--icon-bg:rgba(48,164,108,.14)}
-.category:nth-child(8) svg{color:#0a84ff;--icon-bg:rgba(10,132,255,.13)}
-.category:nth-child(9) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
-.category:nth-child(10) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
-.category:nth-child(11) svg{color:#8e8e93;--icon-bg:rgba(142,142,147,.14)}
-.category:nth-child(12) svg{color:#bf5af2;--icon-bg:rgba(191,90,242,.13)}
-.category:nth-child(13) svg{color:#ff9f0a;--icon-bg:rgba(255,159,10,.14)}
+.categories{display:flex;align-items:stretch;justify-content:center;gap:2px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+.categories::-webkit-scrollbar{display:none}
+.category{appearance:none;flex:1 1 0;min-width:58px;max-width:92px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text);padding:4px 3px 5px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;font:inherit;line-height:1.3;transition:color .12s ease}
+.category svg{width:24px;height:24px;padding:0;box-sizing:border-box;border-radius:0;stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round;background:transparent;color:var(--muted)}
+/* Safari-style settings toolbar: bare glyphs, graphite by default, accent blue only when selected. */
+.category.active svg{color:var(--blue);filter:none}
+.category span{font-size:11px;line-height:1.25;white-space:nowrap;font-weight:500}
+.category:hover{background:transparent;border-color:transparent;transform:none}
+.category:active{transform:none}
+.category:focus-visible{outline:2px solid var(--blue);outline-offset:1px;border-radius:7px}
+.category.active{background:transparent;color:var(--text);box-shadow:none}
 .checkrow input:disabled{opacity:.5;cursor:not-allowed}
 .checkrow .muted{color:var(--muted);font-size:12px}
-.category.active svg{filter:saturate(1.08)}
-.category span{font-size:11px;line-height:1.3;white-space:nowrap}
-.category:hover{background:rgba(128,128,140,.12);border-color:rgba(128,128,140,.12);transform:translateY(-1px)}.category:active{transform:scale(.975)}.category:focus-visible{outline:2px solid var(--blue);outline-offset:2px}.category.active{background:var(--selected);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
 .content{max-width:790px;margin:0 auto;padding:30px 34px 34px}
 h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.35px;margin:0 0 6px}
 .sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 27px}
@@ -3617,19 +3608,19 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 </style></head><body>
 <div class="shell"><form action="aurora-settings://save" method="get"><header class="top"><div class="topline"><strong>Aurora Settings</strong><a class="done" href="aurora-settings://close">Done</a></div>
 <nav class="categories" aria-label="Settings categories">
-<button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><path d="M9.5 3h5l.5 2.1a7.3 7.3 0 0 1 1.7 1l2-.7 2.5 4.3-1.6 1.6v1.8l1.6 1.6-2.5 4.3-2-.7a7.3 7.3 0 0 1-1.7 1l-.5 2.1h-5L9 19.3a7.3 7.3 0 0 1-1.7-1l-2 .7-2.5-4.3 1.6-1.6v-1.8L2.8 9.7l2.5-4.3 2 .7A7.3 7.3 0 0 1 9 5.1z"/><circle cx="12" cy="12" r="3"/></svg><span>General</span></button>
-<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><rect x="8" y="2" width="13" height="16" rx="2"/></svg><span>Tabs</span></button>
-<button class="category__ACTIVE_AUTOFILL__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><circle cx="8.5" cy="10" r="2.2"/><path d="M5.5 15c.4-1.6 5.6-1.6 6 0M14 9h4M14 12h4M14 15h3"/></svg><span>AutoFill</span></button>
-<button class="category__ACTIVE_PASSWORDS__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 3 3-2 2 2 2-3 3-2-2-3 3"/></svg><span>Passwords</span></button>
-<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>Search</span></button>
-<button class="category__ACTIVE_SECURITY__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span>Security</span></button>
-<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M7.2 10.8V6.2a1.3 1.3 0 0 1 2.6 0v4.4-6a1.3 1.3 0 0 1 2.6 0v6-5a1.3 1.3 0 0 1 2.6 0v5-3.2a1.3 1.3 0 0 1 2.6 0v6.8c0 4-2.2 6.3-6.1 6.3h-.7c-2.1 0-3.5-.9-4.8-2.9l-1.8-2.7c-.5-.8-.3-1.8.5-2.3.7-.5 1.6-.2 2.2.5l1.8 1.9z"/></svg><span>Privacy</span></button>
-<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>Websites</span></button>
-<button class="category__ACTIVE_PROFILES__" type="submit" formaction="aurora-settings://navigate" name="section" value="8"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.1 2.3-5 6-5s6 1.9 6 5M17 8h4M19 6v4"/></svg><span>Profiles</span></button>
-<button class="category__ACTIVE_EXTENSIONS__" type="submit" formaction="aurora-settings://navigate" name="section" value="9"><svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4h3a2.5 2.5 0 1 1 0 5H3v3a2 2 0 0 0 2 2h4v-3a2.5 2.5 0 1 1 5 0v3h5a2 2 0 0 0 2-2v-4h-3a2.5 2.5 0 1 1 0-5h3V5a2 2 0 0 0-2-2h-4v3a2.5 2.5 0 1 1-5 0z"/></svg><span>Extensions</span></button>
-<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="10"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--bar)"/><circle cx="15" cy="12" r="2" fill="var(--bar)"/><circle cx="8" cy="18" r="2" fill="var(--bar)"/></svg><span>Advanced</span></button>
-<button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="11"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg><span>Appearance</span></button>
-<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="12"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg><span>About</span></button>
+<button class="category__ACTIVE_GENERAL__" type="submit" formaction="aurora-settings://navigate" name="section" value="0"><svg viewBox="0 0 24 24"><path d="M9.6 2.8h4.8l.6 2.3c.7.2 1.3.5 1.9.8l2.1-.8 2.4 4.1-1.6 1.7v2.1l1.6 1.7-2.4 4.1-2.1-.8c-.6.4-1.2.7-1.9.9l-.6 2.3H9.6L9 18.9c-.7-.2-1.3-.5-1.9-.9l-2.1.8-2.4-4.1 1.6-1.7v-2.1L2.6 9.2 5 5.1l2.1.8c.6-.3 1.2-.6 1.9-.8z"/><circle cx="12" cy="11.8" r="3.1"/></svg><span>General</span></button>
+<button class="category__ACTIVE_TABS__" type="submit" formaction="aurora-settings://navigate" name="section" value="1"><svg viewBox="0 0 24 24"><path d="M7.2 6.2V4.8A1.8 1.8 0 0 1 9 3h10.2A1.8 1.8 0 0 1 21 4.8v11.1a1.8 1.8 0 0 1-1.8 1.8h-1.4"/><rect x="3" y="6.5" width="13.6" height="14.5" rx="2"/></svg><span>Tabs</span></button>
+<button class="category__ACTIVE_AUTOFILL__" type="submit" formaction="aurora-settings://navigate" name="section" value="2"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3.5 8h17"/><circle cx="8.1" cy="12" r="1.8"/><path d="M5.6 16c.3-1.5 4.7-1.5 5 0M13 12h4.5M13 15h4.5"/></svg><span>AutoFill</span></button>
+<button class="category__ACTIVE_PASSWORDS__" type="submit" formaction="aurora-settings://navigate" name="section" value="3"><svg viewBox="0 0 24 24"><circle cx="7.4" cy="15.8" r="3.5"/><circle cx="7.4" cy="15.8" r=".85"/><path d="m10 13.3 8.7-8.7 2.1 2.1-2.2 2.2 1.8 1.8-2.2 2.2-1.8-1.8-3.7 3.7"/></svg><span>Passwords</span></button>
+<button class="category__ACTIVE_SEARCH__" type="submit" formaction="aurora-settings://navigate" name="section" value="4"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.4"/><path d="m15.2 15.2 5 5"/></svg><span>Search</span></button>
+<button class="category__ACTIVE_SECURITY__" type="submit" formaction="aurora-settings://navigate" name="section" value="5"><svg viewBox="0 0 24 24"><rect x="4.7" y="10" width="14.6" height="10.7" rx="1.8"/><path d="M7.5 10V7.2a4.5 4.5 0 0 1 9 0V10"/><circle cx="12" cy="14.7" r="1"/><path d="M12 15.7v1.5"/></svg><span>Security</span></button>
+<button class="category__ACTIVE_PRIVACY__" type="submit" formaction="aurora-settings://navigate" name="section" value="6"><svg viewBox="0 0 24 24"><path d="M6.5 11V5.4a1.5 1.5 0 0 1 3 0v5.2V4.2a1.5 1.5 0 0 1 3 0v6.4V5.1a1.5 1.5 0 0 1 3 0v5.5V7.5a1.5 1.5 0 0 1 3 0v6.1c0 4.1-2.5 6.7-6.3 6.7h-.7c-2.3 0-3.8-1.3-5-3.1l-2.1-3.1a1.5 1.5 0 0 1 2.4-1.8L8.8 14"/></svg><span>Privacy</span></button>
+<button class="category__ACTIVE_WEBSITES__" type="submit" formaction="aurora-settings://navigate" name="section" value="7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg><span>Websites</span></button>
+<button class="category__ACTIVE_PROFILES__" type="submit" formaction="aurora-settings://navigate" name="section" value="8"><svg viewBox="0 0 24 24"><circle cx="8.8" cy="8" r="3.1"/><path d="M2.8 20c.2-3.5 2.5-5.5 6-5.5s5.8 2 6 5.5M15.5 5.3a2.8 2.8 0 0 1 0 5.4M16.1 14.8c2.8.5 4.4 2.4 4.7 5.2"/></svg><span>Profiles</span></button>
+<button class="category__ACTIVE_EXTENSIONS__" type="submit" formaction="aurora-settings://navigate" name="section" value="9"><svg viewBox="0 0 24 24"><path d="M9 3.5H5.5A2 2 0 0 0 3.5 5.5V9h2a2.5 2.5 0 1 1 0 5h-2v4.5a2 2 0 0 0 2 2H10v-2a2.5 2.5 0 1 1 5 0v2h3.5a2 2 0 0 0 2-2V14h-2a2.5 2.5 0 1 1 0-5h2V5.5a2 2 0 0 0-2-2H14v2a2.5 2.5 0 1 1-5 0z"/></svg><span>Extensions</span></button>
+<button class="category__ACTIVE_ADVANCED__" type="submit" formaction="aurora-settings://navigate" name="section" value="10"><svg viewBox="0 0 24 24"><path d="M9.6 2.8h4.8l.6 2.3c.7.2 1.3.5 1.9.8l2.1-.8 2.4 4.1-1.6 1.7v2.1l1.6 1.7-2.4 4.1-2.1-.8c-.6.4-1.2.7-1.9.9l-.6 2.3H9.6L9 18.9c-.7-.2-1.3-.5-1.9-.9l-2.1.8-2.4-4.1 1.6-1.7v-2.1L2.6 9.2 5 5.1l2.1.8c.6-.3 1.2-.6 1.9-.8z"/><circle cx="12" cy="11.8" r="3.1"/></svg><span>Advanced</span></button>
+<button class="category__ACTIVE_APPEARANCE__" type="submit" formaction="aurora-settings://navigate" name="section" value="11"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2.5 12h2M19.5 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><span>Appearance</span></button>
+<button class="category__ACTIVE_ABOUT__" type="submit" formaction="aurora-settings://navigate" name="section" value="12"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r=".65" fill="currentColor" stroke="none"/></svg><span>About</span></button>
 </nav></header><main class="content">
 <section class="panel__ACTIVE_SECTION_GENERAL__" data-section="general"><h1>General</h1><p class="sub">Choose your homepage and where downloads are saved.</p>
 <div class="field"><label for="home">Homepage</label><input id="home" type="text" name="home" value="__HOME__"></div>
