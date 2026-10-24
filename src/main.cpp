@@ -1864,21 +1864,6 @@ struct BrowserState {
             return;
         }
 
-        // If the drawer is about to open, refresh a missing/stale page preview
-        // while the WebKit surface is still unobstructed. Do not capture at the
-        // end of the close animation, when that extra synchronous work is visible.
-        if (!sidebarOpen && !sidebarAnimating) {
-            if (auto* selected = active(); selected
-                && selected->internalPage != L"start"
-                && selected->internalPage != L"settings"
-                && selected->internalPage != L"extensions"
-                && (!selected->previewBitmap || selected->previewURL != selected->activeUrl)) {
-                auto page = WKViewGetPage(selected->view.get());
-                if (page && WKPageGetEstimatedProgress(page) >= 1.0)
-                    captureTabThumbnail(*selected);
-            }
-        }
-
         const float from = sidebarProgress();
         sidebarOpen = !sidebarOpen;
         sidebarAnimationFrom = from;
@@ -2258,9 +2243,12 @@ struct BrowserState {
     {
         // Never capture through an overlay: PrintWindow/BitBlt can include the
         // sidebar or Tab Overview itself in the returned pixels on accelerated WKViews.
-        if (!tab.browser || tab.browser->active() != &tab || tab.browser->sidebarAnimating
+        if (!tab.browser || tab.browser->active() != &tab || IsIconic(tab.browser->window)
+            || tab.browser->sidebarOpen || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
-            || tab.browser->tabOverviewClosing)
+            || tab.browser->tabOverviewClosing || tab.browser->findBarVisible
+            || (tab.browser->downloadsPopoverWindow && IsWindowVisible(tab.browser->downloadsPopoverWindow))
+            || (tab.browser->sharePopoverWindow && IsWindowVisible(tab.browser->sharePopoverWindow)))
             return;
 
         auto page = WKViewGetPage(tab.view.get());
@@ -2274,15 +2262,18 @@ struct BrowserState {
         if (!viewWindow)
             return;
 
-        RECT client { };
-        if (!GetClientRect(viewWindow, &client))
+        RECT screenRect { };
+        if (!GetWindowRect(viewWindow, &screenRect))
             return;
-        const int sourceWidth = static_cast<int>(client.right - client.left);
-        const int sourceHeight = static_cast<int>(client.bottom - client.top);
+        const int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
+        const int sourceHeight = static_cast<int>(screenRect.bottom - screenRect.top);
         if (sourceWidth < 80 || sourceHeight < 60)
             return;
 
-        HDC sourceDC = GetDC(viewWindow);
+        // Capture the composited pixels already on screen. PrintWindow can ask a
+        // GPU-backed WKView to repaint into a synthetic DC, returning blank/stale
+        // content and causing visible renderer stalls on some WebKit builds.
+        HDC sourceDC = GetDC(nullptr);
         if (!sourceDC)
             return;
         HDC captureDC = CreateCompatibleDC(sourceDC);
@@ -2290,7 +2281,7 @@ struct BrowserState {
         if (!captureDC || !captureBitmap) {
             if (captureBitmap) DeleteObject(captureBitmap);
             if (captureDC) DeleteDC(captureDC);
-            ReleaseDC(viewWindow, sourceDC);
+            ReleaseDC(nullptr, sourceDC);
             return;
         }
 
@@ -2330,12 +2321,10 @@ struct BrowserState {
                     || nearWhiteSamples * 100 >= validSamples * 94);
         };
 
-        BOOL captured = PrintWindow(viewWindow, captureDC, PW_CLIENTONLY | 0x00000002);
-        if (!captured || captureLooksBlank()) {
-            captured = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight, sourceDC, 0, 0, SRCCOPY);
-            if (captured && captureLooksBlank())
-                captured = FALSE;
-        }
+        BOOL captured = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
+            sourceDC, screenRect.left, screenRect.top, SRCCOPY);
+        if (captured && captureLooksBlank())
+            captured = FALSE;
 
         if (captured) {
             const double factor = std::min(480.0 / sourceWidth, 270.0 / sourceHeight);
@@ -2369,7 +2358,7 @@ struct BrowserState {
         SelectObject(captureDC, oldCapture);
         DeleteObject(captureBitmap);
         DeleteDC(captureDC);
-        ReleaseDC(viewWindow, sourceDC);
+        ReleaseDC(nullptr, sourceDC);
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
@@ -9195,19 +9184,9 @@ void didChangeIsLoading(const void* clientInfo)
         }
     }
 
-    // Capture only the visible active page while Tab Overview is absent. Capturing
-    // after the overlay appears can record the overlay itself as nested page content.
-    if (page && WKPageGetEstimatedProgress(page) >= 1.0
-        && tab == tab->browser->active()
-        && !tab->browser->tabOverviewVisible
-        && !tab->browser->tabOverviewAnimating
-        && !tab->browser->tabOverviewClosing
-        && tab->internalPage != L"start"
-        && tab->internalPage != L"settings"
-        && tab->internalPage != L"extensions") {
-        tab->browser->captureTabThumbnail(*tab);
-    }
-
+    // Page thumbnails are refreshed on an explicit tab switch or when overview
+    // opens. Avoid capturing in this loading callback: synthetic screenshot work
+    // here can stall/flicker the active WebKit surface at navigation completion.
     tab->browser->invalidateTabChrome(tab);
 }
 
