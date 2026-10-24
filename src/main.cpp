@@ -4289,20 +4289,10 @@ search.addEventListener('keydown',e=>{
         if (tabSwitchAnimating)
             startChromeAnimationTimer();
 
-        // Keep background WKViews visible at the bottom of the child-window z-order.
-        // This prevents WebKit's WM_SHOWWINDOW -> ActivityState::IsVisible transition
-        // from tearing down an inline video's renderer every time the user changes tabs.
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            if (i == activeTab)
-                continue;
-            HWND viewWindow = WKViewGetWindow(tabs[i]->view.get());
-            if (!viewWindow)
-                continue;
-            SetWindowPos(viewWindow, HWND_BOTTOM, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-            if (!IsWindowVisible(viewWindow))
-                ShowWindow(viewWindow, SW_SHOWNA);
-        }
+        // Leave inactive WKViews at their existing z-order. They already sit
+        // behind the active child, and reordering every overlapping surface on each
+        // switch can expose intermediate black/white frames before the selected view
+        // is raised. Only the selected child is brought forward below.
 
         auto* tab = active();
         if (!tab)
@@ -4314,15 +4304,12 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
-        // When leaving overview, keep the overview HWND above the WebKit surfaces
-        // while the new tab is positioned and painted. Avoid moving/repainting the
-        // address-bar child because the toolbar geometry has not changed.
-        if (selectedView && !switchingFromOverview)
-            SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
-        // Switching tabs does not change the toolbar geometry; avoid repainting the whole chrome band.
+        // Switching tabs does not change toolbar geometry. Keep WebKit view
+        // geometry stable and reorder only the selected surface once.
         resize(false);
         if (selectedView) {
+            if (!IsWindowVisible(selectedView))
+                ShowWindow(selectedView, SW_SHOWNA);
             if (!switchingFromOverview) {
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
