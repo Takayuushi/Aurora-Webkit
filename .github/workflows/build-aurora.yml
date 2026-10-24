@@ -507,9 +507,19 @@ jobs:
             $manifestText = $manifestText.Remove($regenerationEdge.Index, $regenerationEdge.Length).Insert($regenerationEdge.Index, "build build.ninja: phony")
             [System.IO.File]::WriteAllText($buildNinja, $manifestText, [System.Text.UTF8Encoding]::new($false))
             Write-Host "Disabled timestamp-only CMake regeneration for the verified cached graph."
-          } elseif ($manifestText -match '(?m)^build build\.ninja:\s*phony\s*
-          Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."
-          Write-Host "Cached compiler/configuration are compatible; checking the graph before building."
+          } elseif ($manifestText -match '(?m)^build build\.ninja:\s*phony\s*$') {
+            Write-Host "Timestamp-only CMake regeneration is already disabled in this cached graph."
+          } else {
+            throw "Could not safely identify the cached build.ninja RERUN_CMAKE edge. Refusing to risk an implicit WebKit rebuild."
+          }
+
+          $verifiedManifest = [System.IO.File]::ReadAllText($buildNinja)
+          if ($verifiedManifest -match '(?m)^build build\.ninja:\s*RERUN_CMAKE') {
+            throw "The cached build.ninja regeneration edge remains enabled. Refusing to risk an implicit WebKit rebuild."
+          }
+
+          Write-Host "Ninja reports $($configureInputs.Count) actual CMake regeneration dependencies."
+          Write-Host "Newest dependency: $($latestInput.FullName) ($latestInputStamp)."          Write-Host "Cached compiler/configuration are compatible; checking the graph before building."
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
