@@ -94,8 +94,11 @@ jobs:
             Write-Host "Using the last successful WebKit revision: $sha"
           }
           if ($sha -notmatch '^[0-9a-fA-F]{40}$') { throw "Resolved WebKit revision is not a full 40-character Git commit SHA." }
+          # An explicit rebuild may intentionally reuse the pinned WebKit SHA to
+          # refresh a stale/incomplete saved build. Do not require an engine upgrade
+          # just to regenerate the cached objects for the existing engine revision.
           if ($env:REBUILD_WEBKIT -eq "true" -and $sha -eq $knownGoodSha) {
-            throw "The requested WebKit SHA is already the saved revision. Use a different WebKit SHA to replace the saved engine build."
+            Write-Host "Explicit rebuild requested for the existing pinned WebKit revision; the source SHA will remain unchanged."
           }
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
@@ -741,21 +744,87 @@ jobs:
         run: |
           $workflowPath = Join-Path $env:GITHUB_WORKSPACE ".github\workflows\build-aurora.yml"
           $content = Get-Content -LiteralPath $workflowPath -Raw
-          $pattern = '(?m)^(\s*\$knownGoodSha = ")[0-9a-fA-F]{40}("$)'
-          if ([regex]::Matches($content, $pattern).Count -ne 1) {
+          $pinPattern = '(?m)^\s*\$knownGoodSha = "([0-9a-fA-F]{40})"
+
+      - name: Remove superseded WebKit caches
+        if: success() && steps.save-webkit-snapshot.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_REF: ${{ github.ref }}
+          CURRENT_WEBKIT_CACHE_KEY: webkit-src-v3-${{ runner.os }}-${{ steps.webkit-sha.outputs.sha }}-${{ steps.build-fingerprint.outputs.fingerprint }}-${{ hashFiles('CMakeLists.txt', 'cmake/WebKitProjectHook.cmake') }}
+        shell: powershell
+        run: |
+          try {
+            $repository = $env:TARGET_REPOSITORY
+            if ([string]::IsNullOrWhiteSpace($repository) -or $repository -notmatch '^[^/]+/[^/]+$') {
+              throw "Repository context is invalid: '$repository'."
+            }
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $escapedRef = [System.Uri]::EscapeDataString($env:TARGET_REF)
+            $baseUri = "https://api.github.com/repos/$($repository)/actions/caches"
+            $null = [System.Uri]$baseUri
+            $toDelete = @()
+            $page = 1
+            do {
+              $uri = "$($baseUri)?ref=$escapedRef&per_page=100&page=$page"
+              $null = [System.Uri]$uri
+              $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+              $pageCaches = @($response.actions_caches)
+              foreach ($cache in $pageCaches) {
+                $isWebKitCache = ($cache.key -like "webkit-src-*") -or ($cache.key -like "webkit-build-Windows-*")
+                if ($isWebKitCache -and $cache.key -ne $env:CURRENT_WEBKIT_CACHE_KEY) {
+                  $toDelete += $cache
+                }
+              }
+              $page++
+            } while ($pageCaches.Count -eq 100)
+
+            foreach ($cache in $toDelete) {
+              $deleteUri = "$($baseUri)/$($cache.id)"
+              $null = [System.Uri]$deleteUri
+              Invoke-RestMethod -Method Delete -Uri $deleteUri -Headers $headers | Out-Null
+              Write-Host "Removed superseded WebKit cache: $($cache.key) (id $($cache.id))"
+            }
+          } catch {
+            Write-Warning "WebKit cache cleanup failed: $($_.Exception.Message). The saved engine cache and Aurora artifact must not be invalidated by cleanup."
+          }
+
+      - name: Upload Aurora artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurora-windows-x64
+          path: ${{ github.workspace }}/dist/*.zip
+          if-no-files-found: error
+
+          $pinMatches = [regex]::Matches($content, $pinPattern)
+          if ($pinMatches.Count -ne 1) {
             throw "Could not locate exactly one pinned WebKit SHA in the workflow. The old cache will be kept."
           }
-          $replacement = '$1' + $env:WEBKIT_SHA + '$2'
-          $content = [regex]::Replace($content, $pattern, $replacement, 1)
-          [System.IO.File]::WriteAllText($workflowPath, $content, [System.Text.UTF8Encoding]::new($false))
+          $currentPinnedSha = $pinMatches[0].Groups[1].Value.ToLowerInvariant()
+          $rebuiltSha = $env:WEBKIT_SHA.ToLowerInvariant()
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- ".github/workflows/build-aurora.yml"
-          git commit -m "Pin saved WebKit snapshot $env:WEBKIT_SHA"
-          if ($LASTEXITCODE -ne 0) { throw "Could not commit the new WebKit SHA. The older cache will be kept." }
-          git push origin "HEAD:$env:GITHUB_REF_NAME"
-          if ($LASTEXITCODE -ne 0) { throw "Could not push the new WebKit SHA pin. The older cache will be kept." }
+          if ($currentPinnedSha -eq $rebuiltSha) {
+            Write-Host "The rebuilt WebKit SHA is already pinned. No workflow commit is needed."
+          } else {
+            $pattern = '(?m)^(\s*\$knownGoodSha = ")[0-9a-fA-F]{40}("$)'
+            $replacement = '$1' + $env:WEBKIT_SHA + '$2'
+            $content = [regex]::Replace($content, $pattern, $replacement, 1)
+            [System.IO.File]::WriteAllText($workflowPath, $content, [System.Text.UTF8Encoding]::new($false))
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+Takayuushi@users.noreply.github.com"
+            git add -- ".github/workflows/build-aurora.yml"
+            git commit -m "Pin saved WebKit snapshot $env:WEBKIT_SHA"
+            if ($LASTEXITCODE -ne 0) { throw "Could not commit the new WebKit SHA. The older cache will be kept." }
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
+            if ($LASTEXITCODE -ne 0) { throw "Could not push the new WebKit SHA pin. The older cache will be kept." }
+          }
 
       - name: Remove superseded WebKit caches
         if: success() && steps.save-webkit-snapshot.outcome == 'success'
