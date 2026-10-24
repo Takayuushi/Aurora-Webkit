@@ -499,22 +499,36 @@ jobs:
           # graph. Cache keys change when engine/toolchain/integration inputs change, and
           # those caches are not accepted as exact incremental caches.
           $manifestText = [System.IO.File]::ReadAllText($buildNinja)
-          $regenerationEdge = [regex]::Match(
-            $manifestText,
-            '(?m)^build build\.ninja:\s*RERUN_CMAKE[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*'
-          )
-          if ($regenerationEdge.Success) {
-            $manifestText = $manifestText.Remove($regenerationEdge.Index, $regenerationEdge.Length).Insert($regenerationEdge.Index, "build build.ninja: phony")
+          $manifestLines = [regex]::Split($manifestText, '\r\n|\n|\r')
+          $regenerationIndexes = @()
+          for ($lineIndex = 0; $lineIndex -lt $manifestLines.Length; $lineIndex++) {
+            # Match the generated statement by target/rule, allowing extra spacing.
+            if ($manifestLines[$lineIndex] -match '^\s*build\s+build\.ninja:\s*RERUN_CMAKE(?:\s|$)') {
+              $regenerationIndexes += $lineIndex
+            }
+          }
+
+          if ($regenerationIndexes.Count -eq 1) {
+            # This edge triggers CMake/vcpkg solely because a checked-out copy of the
+            # same integration hook has a newer timestamp. The engine SHA, compiler
+            # fingerprint and integration-file hash were already validated above.
+            $manifestLines[$regenerationIndexes[0]] = 'build build.ninja: phony'
+            $manifestText = [string]::Join([Environment]::NewLine, $manifestLines)
             [System.IO.File]::WriteAllText($buildNinja, $manifestText, [System.Text.UTF8Encoding]::new($false))
             Write-Host "Disabled timestamp-only CMake regeneration for the verified compatible cache."
-          } elseif ($manifestText -match '(?m)^build build\.ninja:\s*phony\s*$') {
+          } elseif ($manifestText -match '(?m)^\s*build\s+build\.ninja:\s*phony\s*$') {
             Write-Host "Timestamp-only CMake regeneration is already disabled in this cache."
           } else {
+            $edgeDiagnostics = @($manifestLines | Where-Object {
+              $_ -match '(?i)build.*build\.ninja:|RERUN_CMAKE'
+            } | Select-Object -First 12)
+            Write-Host "Could not identify the expected generated Ninja edge. Candidate lines:"
+            $edgeDiagnostics | ForEach-Object { Write-Host "  $_" }
             throw "Could not safely identify the cached build.ninja RERUN_CMAKE edge. Refusing to risk an implicit WebKit rebuild."
           }
 
           $verifiedManifest = [System.IO.File]::ReadAllText($buildNinja)
-          if ($verifiedManifest -match '(?m)^build build\.ninja:\s*RERUN_CMAKE') {
+          if ($verifiedManifest -match '(?m)^\s*build\s+build\.ninja:\s*RERUN_CMAKE') {
             throw "The cached build.ninja regeneration edge remains enabled. Refusing to risk an implicit WebKit rebuild."
           }
 
