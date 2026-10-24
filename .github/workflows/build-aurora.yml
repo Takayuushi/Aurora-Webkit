@@ -449,7 +449,10 @@ jobs:
               continue
             }
 
-            $dependency = $Matches[1].Trim().Trim('"')
+            # Ninja marks implicit/order-only inputs with leading pipe tokens
+            # (for example: "| C:/Program Files/CMake/.../CMakeCInformation.cmake").
+            # Strip those graph markers before resolving the actual dependency path.
+            $dependency = ($Matches[1].Trim() -replace '^\|+\s*', '').Trim('"')
             if ([string]::IsNullOrWhiteSpace($dependency)) { continue }
 
             # Do not call System.IO.Path.IsPathRooted on raw Ninja output: some
