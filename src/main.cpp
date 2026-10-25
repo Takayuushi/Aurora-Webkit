@@ -2827,7 +2827,7 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
-            else if (tabs[i]->internalPage == L"start") {
+            } else if (tabs[i]->internalPage == L"start") {
                 // The Start Page has a deterministic native preview. Prefer it over
                 // any stale capture from the accelerated WebKit surface, which can
                 // be black after another tab has been active.
