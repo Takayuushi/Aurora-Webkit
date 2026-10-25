@@ -2140,13 +2140,15 @@ struct BrowserState {
             } else {
                 tabOverviewClosing = false;
                 tabOverviewClosingTab = -1;
-                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-                    ShowWindow(tabOverviewWindow, SW_HIDE);
+                // The selected WKView was raised beneath the overview when selection
+                // began. Focus it while still covered, then remove the overlay; don't
+                // perform another HWND z-order swap after the screenshot has disappeared.
                 if (auto* selected = active()) {
                     if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
-                        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                        SetFocus(viewWindow);
                 }
+                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
+                    ShowWindow(tabOverviewWindow, SW_HIDE);
                 positionOverlayWindows(true);
             }
         }
@@ -4352,11 +4354,10 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
-            if (auto* selected = active()) {
-                if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
-                    SetFocus(viewWindow);
+            // Keep focus on the browser while the overview snapshot animates away.
+            // Focusing WebKit here can synchronously wake its renderer mid-transition.
+            if (auto* selected = active())
                 invalidateTabChrome(selected);
-            }
             return;
         }
         if (addressEditing)
@@ -4409,23 +4410,27 @@ search.addEventListener('keydown',e=>{
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            // Do not force a synchronous full-tree repaint on tab activation.
-            // Keep WebKit's retained backing frame and let real invalid regions paint
-            // naturally; forcing UpdateNow here caused visible white/black frames.
-            SetFocus(selectedView);
+            // Keep the overview in control of focus until its zoom reaches the page.
+            // The live WebKit view is raised underneath the overlay and focused only
+            // after the final frame, avoiding a focus-induced frame stall.
+            if (!switchingFromOverview)
+                SetFocus(selectedView);
         }
 
         if (switchingFromOverview) {
-            // Expand the selected card's saved page image to the content viewport,
-            // then reveal the already-live WKView beneath it.
+            // Put the selected live page at the front of the WebKit stack before the
+            // animation finishes, but keep the overview HWND above it for the whole
+            // transition. That lets WebKit settle its backing surface while covered.
             tabOverviewClosingTab = static_cast<int>(index);
             tabOverviewVisible = false;
             tabOverviewClosing = true;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            tabOverviewAnimationFrameReady = false;
             tabOverviewAnimating = false;
-            
+            if (selectedView) {
+                SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            }
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         }
@@ -5156,6 +5161,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     void showTabOverviewMenu()
     {
         if (tabs.empty())
+            return;
+
+        // A second toolbar activation during the close animation used to restart
+        // opening while the old frame was still being expanded, leaving an empty/black
+        // overlay in rare double-click sequences. Finish the close transition first.
+        if (tabOverviewClosing)
             return;
 
         if (tabOverviewVisible) {
