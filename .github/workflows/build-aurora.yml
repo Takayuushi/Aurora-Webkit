@@ -751,8 +751,24 @@ jobs:
             throw "WebKit.resources was not staged correctly."
           }
 
-          # Keep the development package name stable across branch builds.
-          $zipName = "Aurora_Dev_x64.zip"
+          # Name each package for the branch being built; never reuse a different branch's name.
+          $branchName = $env:AURORA_REF
+          if ([string]::IsNullOrWhiteSpace($branchName)) { $branchName = $env:GITHUB_REF_NAME }
+          if ($branchName -eq "dev/aurora-ui-improvements") {
+            $branchLabel = "Dev"
+          } else {
+            # Preserve branch identity while converting path separators and other
+            # Windows-invalid filename characters into readable underscores.
+            $safeBranchName = $branchName -replace '[\\/:*?"<>|]', '_'
+            $safeBranchName = $safeBranchName -replace '[^A-Za-z0-9._-]', '_'
+            $branchParts = @($safeBranchName -split '[-_.]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $branchLabel = ($branchParts | ForEach-Object {
+              if ($_.Length -le 1) { $_.ToUpperInvariant() }
+              else { $_.Substring(0, 1).ToUpperInvariant() + $_.Substring(1) }
+            }) -join '_'
+            if ([string]::IsNullOrWhiteSpace($branchLabel)) { $branchLabel = "Build" }
+          }
+          $zipName = "Aurora_$($branchLabel)_x64.zip"
           $zipPath = Join-Path $out $zipName
           Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath $zipPath -Force
 
