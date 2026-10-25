@@ -161,6 +161,7 @@ constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
+constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
 constexpr WKContextMenuItemTag kAuroraOpenLinkInNewTabTag = kWKContextMenuItemBaseApplicationTag + 1;
@@ -1105,6 +1106,8 @@ struct TabState {
     int previewWidth { 0 };
     int previewHeight { 0 };
     std::wstring previewURL;
+    bool initialPageLoadPending { false };
+    bool initialPageShouldLoadHomepage { false };
 
     ~TabState()
     {
@@ -1192,6 +1195,9 @@ struct BrowserState {
     ULONGLONG tabOverviewAnimationStart { 0 };
     bool tabOverviewClosing { false };
     ULONGLONG tabOverviewClosingStart { 0 };
+    bool tabOverviewClosingSettling { false };
+    ULONGLONG tabOverviewClosingSettleStart { 0 };
+    int tabOverviewClosingSettleFramesRendered { 0 };
     ULONGLONG tabOverviewTransitionDuration { 420 };
     float tabOverviewZoomFrom { 1.0f }; // 0 = card preview, 1 = full content viewport
     float tabOverviewZoomTo { 0.0f };
@@ -2155,29 +2161,48 @@ struct BrowserState {
         }
 
         if (tabOverviewClosing) {
-            const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG elapsed = now - tabOverviewClosingStart;
             const bool transitionStillActive = elapsed < tabOverviewTransitionDuration
                 || tabOverviewClosingFramesRendered < tabOverviewMinimumFrames();
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             if (transitionStillActive) {
                 continueAnimation = true;
-            } else {
-                // The selected WKView was raised beneath the overview when selection
-                // began. Focus it while still covered, then remove the overlay; don't
-                // perform another HWND z-order swap after the screenshot has disappeared.
+            } else if (!tabOverviewClosingSettling) {
+                // Keep the full-page snapshot covering WebKit while its real page
+                // receives focus and a synchronous repaint. Hiding the overlay on the
+                // same timer tick as the last zoom frame can expose a stale compositor
+                // surface as a black/white flash.
                 if (auto* selected = active()) {
-                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                    if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                         SetFocus(viewWindow);
+                        RedrawWindow(viewWindow, nullptr, nullptr,
+                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                    }
                 }
-                tabOverviewClosing = false;
-                tabOverviewClosingTab = -1;
-                tabOverviewZoomFrom = 1.0f;
-                tabOverviewZoomTo = 1.0f;
-                tabOverviewAnimationFrameReady = false;
-                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-                    ShowWindow(tabOverviewWindow, SW_HIDE);
-                positionOverlayWindows(true);
+                tabOverviewClosingSettling = true;
+                tabOverviewClosingSettleStart = now;
+                tabOverviewClosingSettleFramesRendered = 0;
+                if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                continueAnimation = true;
+            } else {
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 100
+                    || tabOverviewClosingSettleFramesRendered < 4;
+                if (settleStillActive) {
+                    continueAnimation = true;
+                } else {
+                    tabOverviewClosing = false;
+                    tabOverviewClosingSettling = false;
+                    tabOverviewClosingTab = -1;
+                    tabOverviewZoomFrom = 1.0f;
+                    tabOverviewZoomTo = 1.0f;
+                    tabOverviewAnimationFrameReady = false;
+                    if (tabOverviewWindow && IsWindow(tabOverviewWindow))
+                        ShowWindow(tabOverviewWindow, SW_HIDE);
+                    positionOverlayWindows(true);
+                }
             }
         }
 
@@ -2616,9 +2641,10 @@ struct BrowserState {
             HDC previewDC = CreateCompatibleDC(dc);
             if (previewDC) {
                 HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
-                // Nearest-neighbour colour copy is much cheaper than HALFTONE at every
-                // animation tick. The live page is revealed after the final frame.
-                SetStretchBltMode(dc, COLORONCOLOR);
+                // Use the same smooth resampling as the settled card preview. Nearest-
+                // neighbour sampling made text and fine edges shimmer during zoom.
+                SetStretchBltMode(dc, HALFTONE);
+                SetBrushOrgEx(dc, 0, 0, nullptr);
                 StretchBlt(dc, destination.left, destination.top,
                     destination.right - destination.left, destination.bottom - destination.top,
                     previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
@@ -2677,12 +2703,31 @@ struct BrowserState {
         const RECT card = tabOverviewCardRect(index);
         const int inset = scaleForDpi(window, 8);
         const int metaHeight = scaleForDpi(window, 58);
-        return {
+        RECT bounds {
             card.left + inset - area.left,
             card.top + inset - area.top,
             card.right - inset - area.left,
             card.bottom - metaHeight - area.top
         };
+
+        // Match the aspect-preserving image rectangle used by the settled card.
+        // Otherwise the transition changes its scaling halfway through the handoff.
+        if (index < tabs.size()) {
+            const TabState& tab = *tabs[index];
+            if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
+                && tab.previewURL == tab.activeUrl) {
+                const double boundsWidth = static_cast<double>(bounds.right - bounds.left);
+                const double boundsHeight = static_cast<double>(bounds.bottom - bounds.top);
+                const double fit = std::min(boundsWidth / tab.previewWidth,
+                    boundsHeight / tab.previewHeight);
+                const int fitWidth = std::max(1, static_cast<int>(std::lround(tab.previewWidth * fit)));
+                const int fitHeight = std::max(1, static_cast<int>(std::lround(tab.previewHeight * fit)));
+                const int fitLeft = bounds.left + (static_cast<int>(boundsWidth) - fitWidth) / 2;
+                const int fitTop = bounds.top + (static_cast<int>(boundsHeight) - fitHeight) / 2;
+                return { fitLeft, fitTop, fitLeft + fitWidth, fitTop + fitHeight };
+            }
+        }
+        return bounds;
     }
 
     RECT tabOverviewZoomDestination(size_t index) const
@@ -2712,7 +2757,10 @@ struct BrowserState {
         const TabState& tab = *tabs[static_cast<size_t>(tabOverviewClosingTab)];
         drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(
             static_cast<size_t>(tabOverviewClosingTab)));
-        ++tabOverviewClosingFramesRendered;
+        if (tabOverviewClosingSettling)
+            ++tabOverviewClosingSettleFramesRendered;
+        else
+            ++tabOverviewClosingFramesRendered;
     }
 
     void drawTabOverviewOpeningTransition(HDC dc)
@@ -3078,9 +3126,7 @@ struct BrowserState {
         };
         auto hostFor = [](const std::wstring& url) {
             const size_t scheme = url.find(L"://");
-            if (scheme == std::wstring::npos)
-                return url;
-            const size_t begin = scheme + 3;
+            const size_t begin = scheme == std::wstring::npos ? 0 : scheme + 3;
             const size_t end = url.find_first_of(L"/?#:", begin);
             std::wstring host = url.substr(begin, end == std::wstring::npos ? end : end - begin);
             if (host.rfind(L"www.", 0) == 0)
@@ -3094,6 +3140,25 @@ struct BrowserState {
         while (!query.empty() && iswspace(query.back()))
             query.pop_back();
         const std::wstring loweredQuery = lowercase(query);
+        std::wstring matchQuery = loweredQuery;
+        if (matchQuery.rfind(L"https://", 0) == 0)
+            matchQuery.erase(0, 8);
+        else if (matchQuery.rfind(L"http://", 0) == 0)
+            matchQuery.erase(0, 7);
+        if (matchQuery.rfind(L"www.", 0) == 0)
+            matchQuery.erase(0, 4);
+        if (matchQuery.empty())
+            matchQuery = loweredQuery;
+
+        auto normalizeSuggestionEntry = [&](VisitEntry entry) {
+            const std::wstring normalizedTitle = lowercase(entry.title);
+            if (normalizedTitle.empty() || normalizedTitle == L"new tab"
+                || normalizedTitle == L"about:blank") {
+                const std::wstring host = hostFor(entry.url);
+                entry.title = host.empty() ? entry.url : host;
+            }
+            return entry;
+        };
         addressSuggestionEntries.clear();
         selectedAddressSuggestion = -1;
 
@@ -3106,7 +3171,7 @@ struct BrowserState {
                 if (host.empty() || std::find(seenHosts.begin(), seenHosts.end(), host) != seenHosts.end())
                     continue;
                 seenHosts.push_back(host);
-                addressSuggestionEntries.push_back(entry);
+                addressSuggestionEntries.push_back(normalizeSuggestionEntry(entry));
                 if (addressSuggestionEntries.size() >= 6)
                     break;
             }
@@ -3133,23 +3198,49 @@ struct BrowserState {
 
             std::vector<RankedVisit> candidates;
             candidates.reserve(suggestionPool.size());
+
+            auto startsAtWordBoundary = [](const std::wstring& value, const std::wstring& needle) {
+                if (needle.empty())
+                    return false;
+                for (size_t pos = 0; pos + needle.size() <= value.size(); ++pos) {
+                    if (value.compare(pos, needle.size(), needle) != 0)
+                        continue;
+                    if (pos == 0)
+                        return true;
+                    const wchar_t before = value[pos - 1];
+                    if (iswspace(before) || before == L'-' || before == L'_' || before == L'.'
+                        || before == L'/' || before == L'\\' || before == L':' || before == L'?'
+                        || before == L'&' || before == L'=' || before == L'(' || before == L'[')
+                        return true;
+                }
+                return false;
+            };
+
             for (const auto& entry : suggestionPool) {
                 const std::wstring url = lowercase(entry.url);
                 const std::wstring title = lowercase(entry.title);
                 const std::wstring host = lowercase(hostFor(entry.url));
+                const size_t scheme = url.find(L"://");
+                const size_t authorityStart = scheme == std::wstring::npos ? 0 : scheme + 3;
+                const size_t pathStart = url.find_first_of(L"/?#", authorityStart);
+                const std::wstring path = pathStart == std::wstring::npos
+                    ? L"" : url.substr(pathStart + 1);
+
                 int rank = 99;
-                if (url.rfind(loweredQuery, 0) == 0)
+                if (host.rfind(matchQuery, 0) == 0)
                     rank = 0;
-                else if (host.rfind(loweredQuery, 0) == 0)
+                else if (title.rfind(matchQuery, 0) == 0)
                     rank = 1;
-                else if (title.rfind(loweredQuery, 0) == 0)
+                else if (matchQuery.size() >= 2 && startsAtWordBoundary(title, matchQuery))
                     rank = 2;
-                else if (host.find(loweredQuery) != std::wstring::npos)
+                else if (matchQuery.size() >= 3 && host.find(matchQuery) != std::wstring::npos)
                     rank = 3;
-                else if (title.find(loweredQuery) != std::wstring::npos)
+                else if (matchQuery.size() >= 3 && startsAtWordBoundary(path, matchQuery))
                     rank = 4;
-                else if (url.find(loweredQuery) != std::wstring::npos)
-                    rank = 5;
+                else if (loweredQuery.find(L"://") != std::wstring::npos
+                    && url.rfind(loweredQuery, 0) == 0)
+                    rank = 0;
+
                 if (rank < 99)
                     candidates.push_back({ rank, entry });
             }
@@ -3166,7 +3257,7 @@ struct BrowserState {
                     [&](const VisitEntry& entry) { return entry.url == candidate.entry.url; })
                     != addressSuggestionEntries.end())
                     continue;
-                addressSuggestionEntries.push_back(candidate.entry);
+                addressSuggestionEntries.push_back(normalizeSuggestionEntry(candidate.entry));
                 if (addressSuggestionEntries.size() >= 6)
                     break;
             }
@@ -3312,8 +3403,8 @@ struct BrowserState {
             return a.lastVisited > b.lastVisited;
         });
 
-        if (visits.size() > 64)
-            visits.resize(64);
+        if (visits.size() > 256)
+            visits.resize(256);
 
         saveVisitData();
     }
@@ -3951,6 +4042,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 
     void loadStartPage(TabState& tab)
     {
+        tab.initialPageLoadPending = false;
         tab.internalPage = L"start";
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
@@ -4221,6 +4313,7 @@ search.addEventListener('keydown',e=>{
 
     void loadURL(TabState& tab, const std::wstring& value)
     {
+        tab.initialPageLoadPending = false;
         tab.internalPage.clear();
         tab.hasInternalThemeSnapshot = false;
         auto page = WKViewGetPage(tab.view.get());
@@ -4357,10 +4450,12 @@ search.addEventListener('keydown',e=>{
             const bool useHomepage = hasCreatedInitialTab
                 ? newTabsOpenWithHomepage : newWindowsOpenWithHomepage;
             hasCreatedInitialTab = true;
-            if (useHomepage)
-                loadURL(*tabs[index], homePage);
-            else
-                loadStartPage(*tabs[index]);
+            tabs[index]->initialPageLoadPending = true;
+            tabs[index]->initialPageShouldLoadHomepage = useHomepage;
+            if (useHomepage) {
+                tabs[index]->internalPage.clear();
+                tabs[index]->hasInternalThemeSnapshot = false;
+            }
         } else {
             tabs[index]->title = L"New Tab";
             tabs[index]->activeUrl.clear();
@@ -4372,7 +4467,48 @@ search.addEventListener('keydown',e=>{
             activateTab(index);
         else
             resize();
+
+        if (loadInitialStartPage) {
+            // Let the tab chrome paint before building/loading all Start Page content.
+            if (!window || !SetTimer(window, kDeferredTabLoadTimerId, 16, nullptr))
+                loadPendingInitialTabPages();
+        }
         return true;
+    }
+
+    void loadPendingInitialTabPages()
+    {
+        if (tabs.empty())
+            return;
+
+        const size_t previousActive = std::min(activeTab, tabs.size() - 1);
+        bool loadedAny = false;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            TabState& tab = *tabs[i];
+            if (!tab.initialPageLoadPending)
+                continue;
+            const bool useHomepage = tab.initialPageShouldLoadHomepage;
+            tab.initialPageLoadPending = false;
+            activeTab = i;
+            if (useHomepage)
+                loadURL(tab, homePage);
+            else
+                loadStartPage(tab);
+            loadedAny = true;
+        }
+        activeTab = std::min(previousActive, tabs.size() - 1);
+        if (!loadedAny)
+            return;
+
+        if (auto* selected = active()) {
+            const wchar_t* address = selected->activeUrl.empty() || selected->activeUrl == L"about:blank"
+                ? L"" : selected->activeUrl.c_str();
+            SetWindowTextW(addressBar, address);
+            const std::wstring caption = (selected->title.empty() ? L"New Tab" : selected->title)
+                + L" — Aurora";
+            SetWindowTextW(window, caption.c_str());
+            invalidateTabChrome(selected);
+        }
     }
 
     void invalidateTabChrome(TabState* tab)
@@ -4414,6 +4550,8 @@ search.addEventListener('keydown',e=>{
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
             tabOverviewClosing = true;
+            tabOverviewClosingSettling = false;
+            tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
             
@@ -4491,6 +4629,8 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingTab = static_cast<int>(index);
             tabOverviewVisible = false;
             tabOverviewClosing = true;
+            tabOverviewClosingSettling = false;
+            tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewOpeningFramesRendered = 0;
             tabOverviewClosingFramesRendered = 0;
@@ -4593,6 +4733,7 @@ search.addEventListener('keydown',e=>{
 
     void loadLocalHTML(TabState& tab, const std::string& sourceHtml)
     {
+        tab.initialPageLoadPending = false;
         std::string html = sourceHtml;
         // HTML strings are passed to WebKit as NUL-terminated UTF-8; remove any
         // embedded NUL introduced by old persisted browser data before conversion.
@@ -5241,6 +5382,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             tabOverviewZoomTo = 0.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(currentZoom, 0.0f);
             tabOverviewClosing = false;
+            tabOverviewClosingSettling = false;
+            tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewClosingTab = -1;
             tabOverviewVisible = true;
             tabOverviewAnimating = true;
@@ -5283,6 +5426,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         tabOverviewClosing = false;
+        tabOverviewClosingSettling = false;
+        tabOverviewClosingSettleFramesRendered = 0;
         tabOverviewClosingTab = -1;
         tabOverviewAnimationFrameReady = false;
         tabOverviewOpeningFramesRendered = 0;
@@ -9575,6 +9720,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_TIMER:
+        if (state && wParam == kDeferredTabLoadTimerId) {
+            KillTimer(window, kDeferredTabLoadTimerId);
+            state->loadPendingInitialTabPages();
+            return 0;
+        }
         if (state && wParam == kDownloadsAnimationTimerId) {
             state->animateDownloadsPopup();
             return 0;
