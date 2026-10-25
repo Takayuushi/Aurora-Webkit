@@ -751,11 +751,8 @@ jobs:
             throw "WebKit.resources was not staged correctly."
           }
 
-          # Branch names may contain "/" (for example, fix/example). Replace
-          # characters that are invalid in Windows file names before creating the ZIP.
-          $safeRefName = $env:AURORA_REF -replace '[\\/:*?"<>|]', '-'
-          if ([string]::IsNullOrWhiteSpace($safeRefName)) { $safeRefName = $env:GITHUB_SHA }
-          $zipName = "Aurora-windows-x64-$safeRefName.zip"
+          # Keep the development package name stable across branch builds.
+          $zipName = "Aurora_Dev_x64.zip"
           $zipPath = Join-Path $out $zipName
           Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath $zipPath -Force
 

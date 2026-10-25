@@ -2132,7 +2132,7 @@ struct BrowserState {
 
         if (tabOverviewClosing) {
             const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
-            const bool transitionStillActive = elapsed < 280;
+            const bool transitionStillActive = elapsed < 330;
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             if (transitionStillActive) {
@@ -2340,7 +2340,11 @@ struct BrowserState {
             captured = FALSE;
 
         if (captured) {
-            const double factor = std::min(480.0 / sourceWidth, 270.0 / sourceHeight);
+            // This bitmap is enlarged to the full content viewport during the tab-selection zoom.
+            // Keep it near native resolution (up to 1080p) so the transition does not look blurry,
+            // while avoiding pointless upscaling of smaller captures.
+            const double factor = std::min(1.0,
+                std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
             const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
             const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
             HDC previewDC = CreateCompatibleDC(sourceDC);
@@ -2589,10 +2593,10 @@ struct BrowserState {
         };
 
         const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 280.0f, 0.0f, 1.0f);
-        const float eased = t < 0.5f
-            ? 4.0f * t * t * t
-            : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) / 2.0f;
+        const float t = std::clamp(static_cast<float>(elapsed) / 330.0f, 0.0f, 1.0f);
+        // Quintic smoothstep has zero velocity and acceleration at both ends,
+        // making the card-to-page zoom settle without a noticeable snap.
+        const float eased = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
         auto interpolate = [eased](int a, int b) {
             return static_cast<int>(std::lround(static_cast<float>(a)
                 + (static_cast<float>(b - a) * eased)));
@@ -9848,7 +9852,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             && state->sidebarAnimating && state->sidebarOverlayAnimationFrameReady
             && !recreatedBitmap && cachedBitmap;
         const bool reuseOverviewFrame = overlay == state->tabOverviewWindow
-            && state->tabOverviewAnimating
+            && (state->tabOverviewAnimating || state->tabOverviewClosing)
             && state->tabOverviewAnimationFrameReady && !recreatedBitmap && cachedBitmap;
         const bool reuseOverlayFrame = reuseSidebarFrame || reuseOverviewFrame;
 
@@ -9880,9 +9884,12 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                     state->tabOverviewAnimationFrameReady = true;
             }
 
-            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
-                state->drawTabOverviewClosingTransition(bufferDC);
+            // Keep the cached overview frame immutable. Draw only the expanding
+            // selected-tab snapshot on the destination DC; otherwise every tick would
+            // need to repaint every card to erase the previous animation frame.
             BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
+            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
+                state->drawTabOverviewClosingTransition(dc);
             SelectObject(bufferDC, oldBitmap);
             DeleteDC(bufferDC);
         } else {
