@@ -1192,6 +1192,11 @@ struct BrowserState {
     ULONGLONG tabOverviewAnimationStart { 0 };
     bool tabOverviewClosing { false };
     ULONGLONG tabOverviewClosingStart { 0 };
+    ULONGLONG tabOverviewTransitionDuration { 420 };
+    float tabOverviewZoomFrom { 1.0f }; // 0 = card preview, 1 = full content viewport
+    float tabOverviewZoomTo { 0.0f };
+    int tabOverviewOpeningFramesRendered { 0 };
+    int tabOverviewClosingFramesRendered { 0 };
     int tabOverviewClosingTab { -1 };
     int hoveredOverviewTab { -1 };
     bool hoveredOverviewNewTab { false };
@@ -1830,13 +1835,6 @@ struct BrowserState {
             if (ensureOverlayWindow(tabOverviewWindow)) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
-                const float openProgress = tabOverviewAnimating ? tabOverviewEase() : 1.0f;
-                const int slideOffset = tabOverviewClosing
-                    ? 0
-                    : tabOverviewAnimating
-                        ? static_cast<int>(std::lround((1.0f - openProgress) * scaleForDpi(window, 36)))
-                        : 0;
-
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                 if (alreadyVisible && !forceTop)
                     flags |= SWP_NOZORDER;
@@ -1844,7 +1842,7 @@ struct BrowserState {
                     flags |= SWP_SHOWWINDOW;
                 SetWindowPos(tabOverviewWindow,
                     alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                    left, top + slideOffset,
+                    left, top,
                     std::max(0, static_cast<int>(client.right) - left), height, flags);
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             }
@@ -2056,14 +2054,47 @@ struct BrowserState {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    float tabOverviewEaseAt(ULONGLONG start) const
+    {
+        const ULONGLONG duration = std::max<ULONGLONG>(1, tabOverviewTransitionDuration);
+        const ULONGLONG elapsed = GetTickCount64() - start;
+        const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(duration),
+            0.0f, 1.0f);
+        // Quintic smoothstep gives both zero velocity and zero acceleration at the ends.
+        return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+    }
+
     float tabOverviewEase() const
     {
-        if (!tabOverviewAnimating)
-            return 1.0f;
-        const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 320.0f, 0.0f, 1.0f);
-        const float inverse = 1.0f - t;
-        return 1.0f - inverse * inverse * inverse * inverse * inverse;
+        return tabOverviewEaseAt(tabOverviewAnimationStart);
+    }
+
+    float tabOverviewClosingEase() const
+    {
+        return tabOverviewEaseAt(tabOverviewClosingStart);
+    }
+
+    float tabOverviewZoomProgress() const
+    {
+        if (!tabOverviewAnimating && !tabOverviewClosing)
+            return tabOverviewZoomTo;
+        const float eased = tabOverviewClosing
+            ? tabOverviewClosingEase() : tabOverviewEase();
+        return std::clamp(tabOverviewZoomFrom
+            + (tabOverviewZoomTo - tabOverviewZoomFrom) * eased, 0.0f, 1.0f);
+    }
+
+    ULONGLONG tabOverviewDurationForDistance(float from, float to) const
+    {
+        // Keep reversals animated, but scale duration to the remaining distance.
+        return std::max<ULONGLONG>(120,
+            static_cast<ULONGLONG>(std::lround(420.0f * std::abs(to - from))));
+    }
+
+    int tabOverviewMinimumFrames() const
+    {
+        const ULONGLONG duration = std::max<ULONGLONG>(1, tabOverviewTransitionDuration);
+        return std::max(4, static_cast<int>((duration * 60ULL * 72ULL) / 100000ULL));
     }
 
     void animateChrome()
@@ -2106,40 +2137,32 @@ struct BrowserState {
 
         if (tabOverviewAnimating) {
             const ULONGLONG elapsed = GetTickCount64() - tabOverviewAnimationStart;
-            const bool transitionStillActive = elapsed < 320;
-            const float progress = tabOverviewEase();
-            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                RECT client { };
-                GetClientRect(window, &client);
-                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
-                const int offset = static_cast<int>(std::lround(
-                    (1.0f - progress) * scaleForDpi(window, 36)));
-                SetWindowPos(tabOverviewWindow, nullptr, left, contentTop() + offset, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+            const bool transitionStillActive = elapsed < tabOverviewTransitionDuration
+                || tabOverviewOpeningFramesRendered < tabOverviewMinimumFrames();
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-            }
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    SetWindowPos(tabOverviewWindow, nullptr,
-                        sidebarOpen ? scaleForDpi(window, 300) : 0, contentTop(), 0, 0,
+                    const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                    SetWindowPos(tabOverviewWindow, nullptr, left, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 }
             }
         }
 
         if (tabOverviewClosing) {
             const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
-            const bool transitionStillActive = elapsed < 330;
+            const bool transitionStillActive = elapsed < tabOverviewTransitionDuration
+                || tabOverviewClosingFramesRendered < tabOverviewMinimumFrames();
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
-                tabOverviewClosing = false;
-                tabOverviewClosingTab = -1;
                 // The selected WKView was raised beneath the overview when selection
                 // began. Focus it while still covered, then remove the overlay; don't
                 // perform another HWND z-order swap after the screenshot has disappeared.
@@ -2147,6 +2170,11 @@ struct BrowserState {
                     if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
                         SetFocus(viewWindow);
                 }
+                tabOverviewClosing = false;
+                tabOverviewClosingTab = -1;
+                tabOverviewZoomFrom = 1.0f;
+                tabOverviewZoomTo = 1.0f;
+                tabOverviewAnimationFrameReady = false;
                 if (tabOverviewWindow && IsWindow(tabOverviewWindow))
                     ShowWindow(tabOverviewWindow, SW_HIDE);
                 positionOverlayWindows(true);
@@ -2270,7 +2298,8 @@ struct BrowserState {
         if (!page)
             return;
         const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
-        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl)
+        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
+            && tab.internalPage.empty())
             return;
 
         HWND viewWindow = WKViewGetWindow(tab.view.get());
@@ -2362,7 +2391,9 @@ struct BrowserState {
                 tab.previewBitmap = preview;
                 tab.previewWidth = targetWidth;
                 tab.previewHeight = targetHeight;
-                tab.previewURL = pageURL.empty() ? tab.activeUrl : pageURL;
+                // The tab's URL is the stable cache key. Internal pages can expose
+                // an engine URL that differs from Aurora's address-bar URL.
+                tab.previewURL = tab.activeUrl;
                 if (tabOverviewVisible && tabOverviewWindow) {
                     tabOverviewAnimationFrameReady = false;
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
@@ -2573,94 +2604,124 @@ struct BrowserState {
         return true;
     }
 
-    void drawTabOverviewClosingTransition(HDC dc)
+    void drawTabOverviewTransitionSnapshot(HDC dc, const TabState& tab, const RECT& destination) const
     {
-        if (!tabOverviewClosing || tabOverviewClosingTab < 0
-            || static_cast<size_t>(tabOverviewClosingTab) >= tabs.size())
+        if (destination.right <= destination.left || destination.bottom <= destination.top)
             return;
 
-        const size_t index = static_cast<size_t>(tabOverviewClosingTab);
-        const TabState& tab = *tabs[index];
+        // Reuse the same captured pixels shown by the card, including internal pages,
+        // so the moving snapshot and the settled preview do not visually swap midway.
+        if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
+            && tab.previewURL == tab.activeUrl) {
+            HDC previewDC = CreateCompatibleDC(dc);
+            if (previewDC) {
+                HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
+                // Nearest-neighbour colour copy is much cheaper than HALFTONE at every
+                // animation tick. The live page is revealed after the final frame.
+                SetStretchBltMode(dc, COLORONCOLOR);
+                StretchBlt(dc, destination.left, destination.top,
+                    destination.right - destination.left, destination.bottom - destination.top,
+                    previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
+                SelectObject(previewDC, oldPreview);
+                DeleteDC(previewDC);
+                return;
+            }
+        }
+
+        if (tab.internalPage == L"start") {
+            drawStartPageThumbnail(dc, destination);
+            return;
+        }
+        if (tab.internalPage == L"settings") {
+            const bool tabDark = tab.hasInternalThemeSnapshot
+                ? tab.internalDarkTheme : chromeDarkTheme();
+            drawSettingsTabThumbnail(dc, destination, tabDark);
+            return;
+        }
+
+        const bool placeholderDark = tab.hasInternalThemeSnapshot
+            ? tab.internalDarkTheme : chromeDarkTheme();
+        HBRUSH pageBrush = CreateSolidBrush(placeholderDark
+            ? RGB(35, 39, 45) : RGB(250, 251, 253));
+        FillRect(dc, &destination, pageBrush);
+        DeleteObject(pageBrush);
+        RECT fakeBar { destination.left, destination.top, destination.right,
+            std::min(destination.bottom, destination.top + scaleForDpi(window, 20)) };
+        HBRUSH barBrush = CreateSolidBrush(placeholderDark
+            ? RGB(48, 52, 59) : RGB(235, 238, 243));
+        FillRect(dc, &fakeBar, barBrush);
+        DeleteObject(barBrush);
+        if (destination.right - destination.left > scaleForDpi(window, 90)
+            && destination.bottom - destination.top > scaleForDpi(window, 70)) {
+            HBRUSH lineBrush = CreateSolidBrush(placeholderDark
+                ? RGB(78, 83, 91) : RGB(222, 226, 232));
+            const LONG left = destination.left + scaleForDpi(window, 16);
+            const LONG lineWidth = std::max<LONG>(
+                static_cast<LONG>(scaleForDpi(window, 22)),
+                (destination.right - destination.left) * 2 / 3);
+            for (LONG row = 0; row < 3; ++row) {
+                const LONG y = fakeBar.bottom + scaleForDpi(window, 13 + row * 17);
+                RECT line { left, y, std::min<LONG>(
+                    destination.right - scaleForDpi(window, 14), left + lineWidth),
+                    y + scaleForDpi(window, 4) };
+                if (line.bottom < destination.bottom - scaleForDpi(window, 6))
+                    FillRect(dc, &line, lineBrush);
+            }
+            DeleteObject(lineBrush);
+        }
+    }
+
+    RECT tabOverviewZoomCardRect(size_t index) const
+    {
         const RECT area = tabOverviewAreaRect();
-        const int width = std::max(1, static_cast<int>(area.right - area.left));
-        const int height = std::max(1, static_cast<int>(area.bottom - area.top));
         const RECT card = tabOverviewCardRect(index);
         const int inset = scaleForDpi(window, 8);
         const int metaHeight = scaleForDpi(window, 58);
-        RECT from {
+        return {
             card.left + inset - area.left,
             card.top + inset - area.top,
             card.right - inset - area.left,
             card.bottom - metaHeight - area.top
         };
+    }
 
-        const ULONGLONG elapsed = GetTickCount64() - tabOverviewClosingStart;
-        const float t = std::clamp(static_cast<float>(elapsed) / 330.0f, 0.0f, 1.0f);
-        // Quintic smoothstep has zero velocity and acceleration at both ends,
-        // making the card-to-page zoom settle without a noticeable snap.
-        const float eased = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-        auto interpolate = [eased](int a, int b) {
-            return static_cast<int>(std::lround(static_cast<float>(a)
-                + (static_cast<float>(b - a) * eased)));
+    RECT tabOverviewZoomDestination(size_t index) const
+    {
+        const RECT area = tabOverviewAreaRect();
+        const int width = std::max(1, static_cast<int>(area.right - area.left));
+        const int height = std::max(1, static_cast<int>(area.bottom - area.top));
+        const RECT card = tabOverviewZoomCardRect(index);
+        const float zoom = tabOverviewZoomProgress();
+        auto interpolate = [zoom](int from, int to) {
+            return static_cast<int>(std::lround(static_cast<float>(from)
+                + static_cast<float>(to - from) * zoom));
         };
-        RECT destination {
-            interpolate(from.left, 0),
-            interpolate(from.top, 0),
-            interpolate(from.right, width),
-            interpolate(from.bottom, height)
+        return {
+            interpolate(card.left, 0),
+            interpolate(card.top, 0),
+            interpolate(card.right, width),
+            interpolate(card.bottom, height)
         };
-        if (destination.right <= destination.left || destination.bottom <= destination.top)
+    }
+
+    void drawTabOverviewClosingTransition(HDC dc)
+    {
+        if (!tabOverviewClosing || tabOverviewClosingTab < 0
+            || static_cast<size_t>(tabOverviewClosingTab) >= tabs.size())
             return;
+        const TabState& tab = *tabs[static_cast<size_t>(tabOverviewClosingTab)];
+        drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(
+            static_cast<size_t>(tabOverviewClosingTab)));
+        ++tabOverviewClosingFramesRendered;
+    }
 
-        if (tab.internalPage == L"start") {
-            drawStartPageThumbnail(dc, destination);
-        } else if (tab.internalPage == L"settings") {
-            const bool tabDark = tab.hasInternalThemeSnapshot ? tab.internalDarkTheme : chromeDarkTheme();
-            drawSettingsTabThumbnail(dc, destination, tabDark);
-        } else if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
-            && tab.previewURL == tab.activeUrl) {
-            HDC previewDC = CreateCompatibleDC(dc);
-            if (!previewDC)
-                return;
-            HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
-            SetStretchBltMode(dc, HALFTONE);
-            StretchBlt(dc, destination.left, destination.top,
-                destination.right - destination.left, destination.bottom - destination.top,
-                previewDC, 0, 0, tab.previewWidth, tab.previewHeight, SRCCOPY);
-            SelectObject(previewDC, oldPreview);
-            DeleteDC(previewDC);
-        } else {
-            const bool placeholderDark = tab.hasInternalThemeSnapshot
-                ? tab.internalDarkTheme : chromeDarkTheme();
-            HBRUSH pageBrush = CreateSolidBrush(placeholderDark
-                ? RGB(35, 39, 45) : RGB(250, 251, 253));
-            FillRect(dc, &destination, pageBrush);
-            DeleteObject(pageBrush);
-            RECT fakeBar { destination.left, destination.top, destination.right,
-                std::min(destination.bottom, destination.top + scaleForDpi(window, 20)) };
-            HBRUSH barBrush = CreateSolidBrush(placeholderDark
-                ? RGB(48, 52, 59) : RGB(235, 238, 243));
-            FillRect(dc, &fakeBar, barBrush);
-            DeleteObject(barBrush);
-            if (destination.right - destination.left > scaleForDpi(window, 90)
-                && destination.bottom - destination.top > scaleForDpi(window, 70)) {
-                HBRUSH lineBrush = CreateSolidBrush(placeholderDark
-                    ? RGB(78, 83, 91) : RGB(222, 226, 232));
-                const LONG left = destination.left + scaleForDpi(window, 16);
-                const LONG lineWidth = std::max<LONG>(
-                    static_cast<LONG>(scaleForDpi(window, 22)),
-                    (destination.right - destination.left) * 2 / 3);
-                for (LONG row = 0; row < 3; ++row) {
-                    const LONG y = fakeBar.bottom + scaleForDpi(window, 13 + row * 17);
-                    RECT line { left, y, std::min<LONG>(
-                        destination.right - scaleForDpi(window, 14), left + lineWidth),
-                        y + scaleForDpi(window, 4) };
-                    if (line.bottom < destination.bottom - scaleForDpi(window, 6))
-                        FillRect(dc, &line, lineBrush);
-                }
-                DeleteObject(lineBrush);
-            }
-        }
+    void drawTabOverviewOpeningTransition(HDC dc)
+    {
+        if (!tabOverviewAnimating || tabs.empty() || activeTab >= tabs.size())
+            return;
+        const TabState& tab = *tabs[activeTab];
+        drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(activeTab));
+        ++tabOverviewOpeningFramesRendered;
     }
 
     void drawTabOverviewPage(HDC dc)
@@ -2747,16 +2808,7 @@ struct BrowserState {
             FillRect(dc, &preview, previewBrush);
             DeleteObject(previewBrush);
 
-            if (tabs[i]->internalPage == L"start") {
-                // The Start Page has a deterministic native preview. Prefer it over
-                // any stale capture from the accelerated WebKit surface, which can
-                // be black after another tab has been active.
-                drawStartPageThumbnail(dc, preview);
-            } else if (tabs[i]->internalPage == L"settings") {
-                const bool tabDark = tabs[i]->hasInternalThemeSnapshot
-                    ? tabs[i]->internalDarkTheme : dark;
-                drawSettingsTabThumbnail(dc, preview, tabDark);
-            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
+            if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
                 && tabs[i]->previewURL == tabs[i]->activeUrl) {
                 HDC previewDC = CreateCompatibleDC(dc);
@@ -2775,6 +2827,15 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
+            else if (tabs[i]->internalPage == L"start") {
+                // The Start Page has a deterministic native preview. Prefer it over
+                // any stale capture from the accelerated WebKit surface, which can
+                // be black after another tab has been active.
+                drawStartPageThumbnail(dc, preview);
+            } else if (tabs[i]->internalPage == L"settings") {
+                const bool tabDark = tabs[i]->hasInternalThemeSnapshot
+                    ? tabs[i]->internalDarkTheme : dark;
+                drawSettingsTabThumbnail(dc, preview, tabDark);
             } else {
                 const bool placeholderDark = tabs[i]->hasInternalThemeSnapshot
                     ? tabs[i]->internalDarkTheme : dark;
@@ -4341,9 +4402,15 @@ search.addEventListener('keydown',e=>{
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         if (switchingFromOverview && index == previouslyActive) {
+            const float currentZoom = tabOverviewAnimating ? tabOverviewZoomProgress() : 0.0f;
             tabOverviewClosingTab = static_cast<int>(index);
             // The active page has remained live behind the overview overlay.
-            // Close the overlay directly instead of resizing/redrawing WebKit.
+            // Run the zoom back to the page, reversing smoothly if entry is in flight.
+            tabOverviewZoomFrom = currentZoom;
+            tabOverviewZoomTo = 1.0f;
+            tabOverviewTransitionDuration = tabOverviewDurationForDistance(currentZoom, 1.0f);
+            tabOverviewOpeningFramesRendered = 0;
+            tabOverviewClosingFramesRendered = 0;
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
             tabOverviewClosing = true;
@@ -4425,6 +4492,11 @@ search.addEventListener('keydown',e=>{
             tabOverviewVisible = false;
             tabOverviewClosing = true;
             tabOverviewAnimationFrameReady = false;
+            tabOverviewOpeningFramesRendered = 0;
+            tabOverviewClosingFramesRendered = 0;
+            tabOverviewZoomFrom = 0.0f;
+            tabOverviewZoomTo = 1.0f;
+            tabOverviewTransitionDuration = 420;
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewAnimating = false;
             if (selectedView) {
@@ -5163,11 +5235,27 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (tabs.empty())
             return;
 
-        // A second toolbar activation during the close animation used to restart
-        // opening while the old frame was still being expanded, leaving an empty/black
-        // overlay in rare double-click sequences. Finish the close transition first.
-        if (tabOverviewClosing)
+        if (tabOverviewClosing) {
+            const float currentZoom = tabOverviewZoomProgress();
+            tabOverviewZoomFrom = currentZoom;
+            tabOverviewZoomTo = 0.0f;
+            tabOverviewTransitionDuration = tabOverviewDurationForDistance(currentZoom, 0.0f);
+            tabOverviewClosing = false;
+            tabOverviewClosingTab = -1;
+            tabOverviewVisible = true;
+            tabOverviewAnimating = true;
+            tabOverviewAnimationStart = GetTickCount64();
+            tabOverviewOpeningFramesRendered = 0;
+            tabOverviewAnimationFrameReady = false;
+            hoveredOverviewTab = -1;
+            hoveredOverviewNewTab = false;
+            startChromeAnimationTimer();
+            positionOverlayWindows(true);
+            if (tabOverviewWindow)
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             return;
+        }
 
         if (tabOverviewVisible) {
             activateTab(activeTab);
@@ -5188,10 +5276,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // overlap at the same viewport, so PrintWindow/BitBlt on them may copy the
         // frontmost tab into multiple thumbnails. Other tabs keep their own cached
         // captures from the time they were active.
-        if (auto* selected = active(); selected
-            && selected->internalPage != L"start"
-            && selected->internalPage != L"settings"
-            && selected->internalPage != L"extensions") {
+        if (auto* selected = active()) {
             auto page = WKViewGetPage(selected->view.get());
             if (page && WKPageGetEstimatedProgress(page) >= 1.0)
                 captureTabThumbnail(*selected);
@@ -5200,6 +5285,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         tabOverviewClosing = false;
         tabOverviewClosingTab = -1;
         tabOverviewAnimationFrameReady = false;
+        tabOverviewOpeningFramesRendered = 0;
+        tabOverviewClosingFramesRendered = 0;
+        tabOverviewZoomFrom = 1.0f;
+        tabOverviewZoomTo = 0.0f;
+        tabOverviewTransitionDuration = 420;
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -9899,8 +9989,12 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             // selected-tab snapshot on the destination DC; otherwise every tick would
             // need to repaint every card to erase the previous animation frame.
             BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
-            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
-                state->drawTabOverviewClosingTransition(dc);
+            if (overlay == state->tabOverviewWindow) {
+                if (state->tabOverviewClosing)
+                    state->drawTabOverviewClosingTransition(dc);
+                else if (state->tabOverviewAnimating)
+                    state->drawTabOverviewOpeningTransition(dc);
+            }
             SelectObject(bufferDC, oldBitmap);
             DeleteDC(bufferDC);
         } else {
@@ -9922,8 +10016,12 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 }
                 RestoreDC(dc, saved);
             }
-            if (overlay == state->tabOverviewWindow && state->tabOverviewClosing)
-                state->drawTabOverviewClosingTransition(dc);
+            if (overlay == state->tabOverviewWindow) {
+                if (state->tabOverviewClosing)
+                    state->drawTabOverviewClosingTransition(dc);
+                else if (state->tabOverviewAnimating)
+                    state->drawTabOverviewOpeningTransition(dc);
+            }
         }
 
         EndPaint(overlay, &paint);
