@@ -2640,12 +2640,14 @@ struct BrowserState {
                 && destination.bottom - destination.top > scaleForDpi(window, 70)) {
                 HBRUSH lineBrush = CreateSolidBrush(placeholderDark
                     ? RGB(78, 83, 91) : RGB(222, 226, 232));
-                const int left = destination.left + scaleForDpi(window, 16);
-                const int lineWidth = std::max(scaleForDpi(window, 22),
+                const LONG left = destination.left + scaleForDpi(window, 16);
+                const LONG lineWidth = std::max<LONG>(
+                    static_cast<LONG>(scaleForDpi(window, 22)),
                     (destination.right - destination.left) * 2 / 3);
-                for (int row = 0; row < 3; ++row) {
-                    const int y = fakeBar.bottom + scaleForDpi(window, 13 + row * 17);
-                    RECT line { left, y, std::min(destination.right - scaleForDpi(window, 14), left + lineWidth),
+                for (LONG row = 0; row < 3; ++row) {
+                    const LONG y = fakeBar.bottom + scaleForDpi(window, 13 + row * 17);
+                    RECT line { left, y, std::min<LONG>(
+                        destination.right - scaleForDpi(window, 14), left + lineWidth),
                         y + scaleForDpi(window, 4) };
                     if (line.bottom < destination.bottom - scaleForDpi(window, 6))
                         FillRect(dc, &line, lineBrush);
