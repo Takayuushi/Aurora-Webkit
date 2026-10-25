@@ -1788,21 +1788,23 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
-    bool ensureOverlayWindow(HWND& handle)
+    bool ensureOverlayWindow(HWND& handle, bool layered = false)
     {
         if (!window)
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+        handle = CreateWindowExW(layered ? WS_EX_LAYERED : 0, overlayWindowClassName, L"", WS_CHILD,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        if (handle && layered)
+            SetLayeredWindowAttributes(handle, 0, 255, LWA_ALPHA);
         return handle != nullptr;
     }
 
     bool ensureOverlayWindows()
     {
         return ensureOverlayWindow(sidebarOverlayWindow)
-            && ensureOverlayWindow(tabOverviewWindow);
+            && ensureOverlayWindow(tabOverviewWindow, true);
     }
 
     void positionOverlayWindows(bool forceTop = false)
@@ -1840,7 +1842,11 @@ struct BrowserState {
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
-            if (ensureOverlayWindow(tabOverviewWindow)) {
+            if (ensureOverlayWindow(tabOverviewWindow, true)) {
+                // A previously closed zoom may have faded the layered overlay to zero.
+                // Restore it before a new overview/opening transition begins.
+                if (tabOverviewVisible)
+                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2190,7 +2196,14 @@ struct BrowserState {
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 continueAnimation = true;
             } else {
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 160
+                const ULONGLONG settleElapsed = now - tabOverviewClosingSettleStart;
+                const float fadeProgress = std::clamp(
+                    static_cast<float>(settleElapsed) / 160.0f, 0.0f, 1.0f);
+                const BYTE overlayAlpha = static_cast<BYTE>(
+                    std::lround(255.0f * (1.0f - fadeProgress)));
+                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
+                    SetLayeredWindowAttributes(tabOverviewWindow, 0, overlayAlpha, LWA_ALPHA);
+                const bool settleStillActive = settleElapsed < 160
                     || tabOverviewClosingSettleFramesRendered < 6;
                 if (settleStillActive) {
                     continueAnimation = true;
@@ -4748,8 +4761,14 @@ search.addEventListener('keydown',e=>{
             // Keep the overview in control of focus until its zoom reaches the page.
             // The live WebKit view is raised underneath the overlay and focused only
             // after the final frame, avoiding a focus-induced frame stall.
-            if (!switchingFromOverview)
-                SetFocus(selectedView);
+            if (!switchingFromOverview) {
+                // Keep new-tab creation responsive: don't synchronously wake a fresh,
+                // still-uninitialized WebKit surface before its deferred first load.
+                if (tab->initialPageLoadPending)
+                    SetFocus(window);
+                else
+                    SetFocus(selectedView);
+            }
         }
 
         if (switchingFromOverview) {
@@ -7686,17 +7705,8 @@ LRESULT CALLBACK addressBarProcedure(HWND window, UINT message, WPARAM wParam, L
         return result;
     }
 
-    if (browser && browser->addressBarOriginalProcedure) {
-        LRESULT result = CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
-        const bool textChanged = message == WM_CHAR || message == WM_PASTE
-            || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO;
-        if (textChanged && browser->addressEditing) {
-            wchar_t text[4096] { };
-            GetWindowTextW(window, text, static_cast<int>(std::size(text)));
-            browser->updateAddressSuggestions(text);
-        }
-        return result;
-    }
+    if (browser && browser->addressBarOriginalProcedure)
+        return CallWindowProcW(browser->addressBarOriginalProcedure, window, message, wParam, lParam);
 
     return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -10088,6 +10098,19 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_COMMAND:
+        // Edit controls notify their parent after the text has actually changed.
+        // Use EN_CHANGE as the authoritative autocomplete trigger so typing, deletion,
+        // undo and pasted text all refresh the history filter consistently.
+        if (state && lParam != 0
+            && reinterpret_cast<HWND>(lParam) == state->addressBar
+            && HIWORD(wParam) == EN_CHANGE) {
+            if (state->addressEditing) {
+                wchar_t text[4096] { };
+                GetWindowTextW(state->addressBar, text, static_cast<int>(std::size(text)));
+                state->updateAddressSuggestions(text);
+            }
+            return 0;
+        }
         if (state && lParam != 0 && state->handleFindControlCommand(
                 LOWORD(wParam), reinterpret_cast<HWND>(lParam), HIWORD(wParam)))
             return 0;
