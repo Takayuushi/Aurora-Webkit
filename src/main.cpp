@@ -162,6 +162,7 @@ constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
+constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
 constexpr WKContextMenuItemTag kAuroraOpenLinkInNewTabTag = kWKContextMenuItemBaseApplicationTag + 1;
@@ -1230,6 +1231,7 @@ struct BrowserState {
     bool showWebsiteIconsInTabs { true };
     bool alwaysShowTabBar { false };
     bool hasCreatedInitialTab { false };
+    TabState* pendingThumbnailCaptureTab { nullptr };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -2188,8 +2190,8 @@ struct BrowserState {
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 continueAnimation = true;
             } else {
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 100
-                    || tabOverviewClosingSettleFramesRendered < 4;
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 160
+                    || tabOverviewClosingSettleFramesRendered < 6;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
@@ -2320,7 +2322,7 @@ struct BrowserState {
             return;
 
         auto page = WKViewGetPage(tab.view.get());
-        if (!page)
+        if (!page || WKPageGetEstimatedProgress(page) < 1.0)
             return;
         const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
@@ -2434,6 +2436,47 @@ struct BrowserState {
         DeleteObject(captureBitmap);
         DeleteDC(captureDC);
         ReleaseDC(nullptr, sourceDC);
+    }
+
+    void scheduleTabThumbnailCapture(TabState* tab, UINT delayMilliseconds = 180)
+    {
+        if (!window || !tab)
+            return;
+        pendingThumbnailCaptureTab = tab;
+        SetTimer(window, kDeferredThumbnailCaptureTimerId,
+            std::max<UINT>(1, delayMilliseconds), nullptr);
+    }
+
+    void servicePendingTabThumbnailCapture()
+    {
+        TabState* pending = pendingThumbnailCaptureTab;
+        if (!window || !pending)
+            return;
+        if (active() != pending) {
+            pendingThumbnailCaptureTab = nullptr;
+            KillTimer(window, kDeferredThumbnailCaptureTimerId);
+            return;
+        }
+
+        auto page = WKViewGetPage(pending->view.get());
+        if (!page || WKPageGetEstimatedProgress(page) < 1.0) {
+            SetTimer(window, kDeferredThumbnailCaptureTimerId, 100, nullptr);
+            return;
+        }
+
+        const bool overlayBusy = IsIconic(window) || sidebarOpen || sidebarAnimating
+            || tabOverviewVisible || tabOverviewAnimating || tabOverviewClosing
+            || findBarVisible
+            || (downloadsPopoverWindow && IsWindowVisible(downloadsPopoverWindow))
+            || (sharePopoverWindow && IsWindowVisible(sharePopoverWindow));
+        if (overlayBusy) {
+            SetTimer(window, kDeferredThumbnailCaptureTimerId, 100, nullptr);
+            return;
+        }
+
+        pendingThumbnailCaptureTab = nullptr;
+        KillTimer(window, kDeferredThumbnailCaptureTimerId);
+        captureTabThumbnail(*pending);
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
@@ -3150,7 +3193,15 @@ struct BrowserState {
         if (matchQuery.empty())
             matchQuery = loweredQuery;
 
+        auto trimWhitespace = [](std::wstring value) {
+            while (!value.empty() && iswspace(value.front()))
+                value.erase(value.begin());
+            while (!value.empty() && iswspace(value.back()))
+                value.pop_back();
+            return value;
+        };
         auto normalizeSuggestionEntry = [&](VisitEntry entry) {
+            entry.title = trimWhitespace(std::move(entry.title));
             const std::wstring normalizedTitle = lowercase(entry.title);
             if (normalizedTitle.empty() || normalizedTitle == L"new tab"
                 || normalizedTitle == L"about:blank") {
@@ -3216,6 +3267,63 @@ struct BrowserState {
                 return false;
             };
 
+            // Allow a small typo in a typed query to find an existing history entry.
+            // Compare only against word prefixes, so a fuzzy match cannot surface an
+            // unrelated page merely because the query appears somewhere in a long title.
+            auto editDistance = [](const std::wstring& left, const std::wstring& right) {
+                if (std::abs(static_cast<int>(left.size()) - static_cast<int>(right.size())) > 2)
+                    return 99;
+                std::vector<int> previous(right.size() + 1);
+                std::vector<int> current(right.size() + 1);
+                for (size_t j = 0; j <= right.size(); ++j)
+                    previous[j] = static_cast<int>(j);
+                for (size_t i = 1; i <= left.size(); ++i) {
+                    current[0] = static_cast<int>(i);
+                    for (size_t j = 1; j <= right.size(); ++j) {
+                        const int substitution = previous[j - 1]
+                            + (left[i - 1] == right[j - 1] ? 0 : 1);
+                        current[j] = std::min({
+                            previous[j] + 1,
+                            current[j - 1] + 1,
+                            substitution
+                        });
+                    }
+                    previous.swap(current);
+                }
+                return previous[right.size()];
+            };
+            auto fuzzyPrefixDistance = [&](const std::wstring& value, const std::wstring& needle) {
+                if (needle.size() < 5 || value.empty())
+                    return 99;
+                int best = 99;
+                for (size_t start = 0; start < value.size(); ++start) {
+                    if (start > 0) {
+                        const wchar_t before = value[start - 1];
+                        if (!(iswspace(before) || before == L'-' || before == L'_' || before == L'.'
+                            || before == L'/' || before == L'\\' || before == L':' || before == L'('
+                            || before == L'['))
+                            continue;
+                    }
+                    size_t end = start;
+                    while (end < value.size() && !iswspace(value[end]) && value[end] != L'.'
+                        && value[end] != L'/' && value[end] != L'\\' && value[end] != L':'
+                        && value[end] != L'?' && value[end] != L'&' && value[end] != L'='
+                        && end - start <= needle.size() + 1)
+                        ++end;
+                    const size_t wordLength = end - start;
+                    const size_t minLength = needle.size() > 2 ? needle.size() - 2 : 1;
+                    const size_t maxLength = std::min(needle.size() + 2, wordLength);
+                    if (maxLength < minLength)
+                        continue;
+                    for (size_t length = minLength; length <= maxLength; ++length) {
+                        best = std::min(best, editDistance(needle, value.substr(start, length)));
+                        if (best == 0)
+                            return best;
+                    }
+                }
+                return best;
+            };
+
             for (const auto& entry : suggestionPool) {
                 const std::wstring url = lowercase(entry.url);
                 const std::wstring title = lowercase(entry.title);
@@ -3240,6 +3348,17 @@ struct BrowserState {
                 else if (loweredQuery.find(L"://") != std::wstring::npos
                     && url.rfind(loweredQuery, 0) == 0)
                     rank = 0;
+                else if (matchQuery.size() >= 5) {
+                    const size_t hostLabelEnd = host.find(L'.');
+                    const std::wstring hostLabel = host.substr(0,
+                        hostLabelEnd == std::wstring::npos ? hostLabelEnd : hostLabelEnd);
+                    const int hostDistance = fuzzyPrefixDistance(hostLabel, matchQuery);
+                    const int titleDistance = fuzzyPrefixDistance(title, matchQuery);
+                    const int distance = std::min(hostDistance, titleDistance);
+                    const int allowedEdits = matchQuery.size() >= 8 ? 2 : 1;
+                    if (distance <= allowedEdits)
+                        rank = 5 + distance;
+                }
 
                 if (rank < 99)
                     candidates.push_back({ rank, entry });
@@ -4283,8 +4402,10 @@ search.addEventListener('keydown',e=>{
         tab.title = L"New Tab";
         tab.activeUrl.clear();
         tab.lastRecordedUrl.clear();
-        SetWindowTextW(addressBar, L"");
-        SetWindowTextW(window, windowTitle);
+        if (active() == &tab) {
+            SetWindowTextW(addressBar, L"");
+            SetWindowTextW(window, windowTitle);
+        }
     }
 
     void refreshOpenStartPages()
@@ -4481,24 +4602,26 @@ search.addEventListener('keydown',e=>{
         if (tabs.empty())
             return;
 
-        const size_t previousActive = std::min(activeTab, tabs.size() - 1);
-        bool loadedAny = false;
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            TabState& tab = *tabs[i];
-            if (!tab.initialPageLoadPending)
-                continue;
-            const bool useHomepage = tab.initialPageShouldLoadHomepage;
-            tab.initialPageLoadPending = false;
-            activeTab = i;
-            if (useHomepage)
-                loadURL(tab, homePage);
-            else
-                loadStartPage(tab);
-            loadedAny = true;
+        // Initialize one page per UI tick instead of loading every queued start page
+        // in a single timer callback. Prefer the visible tab so it becomes responsive first.
+        size_t index = std::min(activeTab, tabs.size() - 1);
+        if (!tabs[index]->initialPageLoadPending) {
+            const auto pending = std::find_if(tabs.begin(), tabs.end(),
+                [](const std::unique_ptr<TabState>& candidate) {
+                    return candidate->initialPageLoadPending;
+                });
+            if (pending == tabs.end())
+                return;
+            index = static_cast<size_t>(std::distance(tabs.begin(), pending));
         }
-        activeTab = std::min(previousActive, tabs.size() - 1);
-        if (!loadedAny)
-            return;
+
+        TabState& tab = *tabs[index];
+        const bool useHomepage = tab.initialPageShouldLoadHomepage;
+        tab.initialPageLoadPending = false;
+        if (useHomepage)
+            loadURL(tab, homePage);
+        else
+            loadStartPage(tab);
 
         if (auto* selected = active()) {
             const wchar_t* address = selected->activeUrl.empty() || selected->activeUrl == L"about:blank"
@@ -4509,6 +4632,13 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(window, caption.c_str());
             invalidateTabChrome(selected);
         }
+
+        const bool morePending = std::any_of(tabs.begin(), tabs.end(),
+            [](const std::unique_ptr<TabState>& candidate) {
+                return candidate->initialPageLoadPending;
+            });
+        if (morePending && window)
+            SetTimer(window, kDeferredTabLoadTimerId, 48, nullptr);
     }
 
     void invalidateTabChrome(TabState* tab)
@@ -4643,6 +4773,9 @@ search.addEventListener('keydown',e=>{
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
+            // Refresh this page's snapshot after the overlay has finished closing.
+            // This replaces stale skeleton previews after a tab was selected mid-load.
+            scheduleTabThumbnailCapture(tab, 220);
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         }
@@ -9555,6 +9688,8 @@ void didChangeIsLoading(const void* clientInfo)
             tab->browser->recordVisit(url, tab->title.empty() ? url : tab->title);
             tab->lastRecordedUrl = url;
         }
+        if (tab == tab->browser->active())
+            tab->browser->scheduleTabThumbnailCapture(tab, 220);
     }
 
     // Page thumbnails are refreshed on an explicit tab switch or when overview
@@ -9723,6 +9858,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && wParam == kDeferredTabLoadTimerId) {
             KillTimer(window, kDeferredTabLoadTimerId);
             state->loadPendingInitialTabPages();
+            return 0;
+        }
+        if (state && wParam == kDeferredThumbnailCaptureTimerId) {
+            KillTimer(window, kDeferredThumbnailCaptureTimerId);
+            state->servicePendingTabThumbnailCapture();
             return 0;
         }
         if (state && wParam == kDownloadsAnimationTimerId) {
