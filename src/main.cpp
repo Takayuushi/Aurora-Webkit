@@ -1857,24 +1857,15 @@ struct BrowserState {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
-                if (!alreadyVisible) {
-                    SetWindowPos(tabOverviewWindow, HWND_TOP,
-                        left, top, width, height,
-                        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
-                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                    UpdateWindow(tabOverviewWindow);
-                    ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
-                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-                } else {
-                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-                    if (!forceTop)
-                        flags |= SWP_NOZORDER;
-                    SetWindowPos(tabOverviewWindow,
-                        forceTop ? HWND_TOP : nullptr,
-                        left, top, width, height, flags);
-                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                }
+                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                if (alreadyVisible && !forceTop)
+                    flags |= SWP_NOZORDER;
+                else if (!alreadyVisible)
+                    flags |= SWP_SHOWWINDOW;
+                SetWindowPos(tabOverviewWindow,
+                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
+                    left, top, width, height, flags);
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
