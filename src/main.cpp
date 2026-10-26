@@ -3461,6 +3461,7 @@ struct BrowserState {
         // area can remain visible beneath the suggestion rows after the list shrinks.
         RedrawWindow(addressSuggestionWindow, nullptr, nullptr,
             RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_NOCHILDREN);
+        UpdateWindow(addressSuggestionWindow);
     }
 
     void loadVisitData()
@@ -6266,7 +6267,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const RECT downloadButton = rightToolbarButtonRect(1);
         const RECT newTabButton = rightToolbarButtonRect(2);
         const RECT overviewButton = rightToolbarButtonRect(3);
-        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
+        if (PtInRect(&overviewButton, point)) {
+            // Invoke the overview entry point directly from its own hit target.
+            // This keeps the toolbar control independent of command-routing changes.
+            showTabOverviewMenu();
+            return true;
+        }
         if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
         if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
         if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
