@@ -1163,7 +1163,6 @@ struct BrowserState {
     HWND sharePopoverWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
-    HWND tabOverviewButtonWindow { nullptr };
     HBITMAP chromePaintBitmap { nullptr };
     SIZE chromePaintBitmapSize { 0, 0 };
     HBITMAP sidebarOverlayBitmap { nullptr };
@@ -1545,8 +1544,6 @@ struct BrowserState {
         }
         resize();
         InvalidateRect(window, nullptr, FALSE);
-        if (tabOverviewButtonWindow)
-            InvalidateRect(tabOverviewButtonWindow, nullptr, FALSE);
     }
 
     WKRetainPtr<WKWebsiteDataStoreConfigurationRef> websiteDataStoreConfiguration;
@@ -1748,43 +1745,6 @@ struct BrowserState {
         const int height = scaleForDpi(window, 30);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + button, top + height };
-    }
-
-    void positionTabOverviewButton()
-    {
-        if (!tabOverviewButtonWindow || !IsWindow(tabOverviewButtonWindow))
-            return;
-        if (webFullscreen) {
-            ShowWindow(tabOverviewButtonWindow, SW_HIDE);
-            return;
-        }
-
-        const RECT rect = rightToolbarButtonRect(3);
-        if (rect.right <= rect.left || rect.bottom <= rect.top) {
-            ShowWindow(tabOverviewButtonWindow, SW_HIDE);
-            return;
-        }
-
-        RECT current { };
-        bool geometryChanged = !GetWindowRect(tabOverviewButtonWindow, &current);
-        if (!geometryChanged) {
-            MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&current), 2);
-            geometryChanged = current.left != rect.left || current.top != rect.top
-                || current.right - current.left != rect.right - rect.left
-                || current.bottom - current.top != rect.bottom - rect.top;
-        }
-        if (geometryChanged || !IsWindowVisible(tabOverviewButtonWindow)) {
-            SetWindowPos(tabOverviewButtonWindow, HWND_TOP,
-                rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-            InvalidateRect(tabOverviewButtonWindow, nullptr, FALSE);
-        } else if (GetWindow(window, GW_CHILD) != tabOverviewButtonWindow) {
-            // Z-order may change when WebKit and overlay child windows are raised.
-            // Restore the control to the top of the child stack after layout changes.
-            SetWindowPos(tabOverviewButtonWindow, HWND_TOP,
-                rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-        }
     }
 
     RECT leftToolbarControlRect(int index) const
@@ -3728,17 +3688,6 @@ struct BrowserState {
         createAddressBar();
         createMenu();
 
-        // Use a real child HWND for Tab Overview instead of a decorative
-        // parent-painted icon. This gives the control its own reliable mouse hit target.
-        tabOverviewButtonWindow = CreateWindowExW(
-            0, L"BUTTON", L"",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_PUSHBUTTON,
-            0, 0, 1, 1,
-            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandTabOverview)),
-            GetModuleHandleW(nullptr), nullptr);
-        if (!tabOverviewButtonWindow)
-            return false;
-
         if (!addTab(true))
             return false;
 
@@ -5612,27 +5561,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             hoveredOverviewNewTab = false;
             startChromeAnimationTimer();
             positionOverlayWindows(true);
-
-            // Re-entering overview while its close animation is in flight must
-            // explicitly re-show the layered child HWND. The ordinary opening
-            // path does this, but this interrupted-transition path previously
-            // only invalidated the window and could leave the button looking inert.
-            if (!tabOverviewWindow || !IsWindow(tabOverviewWindow)) {
-                if (!ensureOverlayWindow(tabOverviewWindow, true))
-                    return;
-            }
-            RECT client { };
-            GetClientRect(window, &client);
-            const int overlayTop = contentTop();
-            const int overlayLeft = sidebarOpen ? scaleForDpi(window, 300) : 0;
-            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
-            SetWindowPos(tabOverviewWindow, HWND_TOP, overlayLeft, overlayTop,
-                std::max(0, static_cast<int>(client.right) - overlayLeft),
-                std::max(0, static_cast<int>(client.bottom) - overlayTop),
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-            ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
-            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_ALLCHILDREN);
+            if (tabOverviewWindow)
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             return;
         }
 
@@ -5680,26 +5611,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // Lay out only the overlay. resize() would invalidate and relayout the
         // accelerated page underneath, which is unnecessary for an overlay transition.
         positionOverlayWindows(true);
-        // Make the overview's visibility an explicit postcondition. A child overlay
-        // can be positioned while remaining hidden if its previous close transition
-        // interrupted before the normal hide/show path completed.
-        if (!tabOverviewWindow || !IsWindow(tabOverviewWindow)) {
-            if (!ensureOverlayWindow(tabOverviewWindow, true))
-                return;
-        }
-        RECT client { };
-        GetClientRect(window, &client);
-        const int overlayTop = contentTop();
-        const int overlayLeft = sidebarOpen ? scaleForDpi(window, 300) : 0;
-        SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
-        SetWindowPos(tabOverviewWindow, HWND_TOP, overlayLeft, overlayTop,
-            std::max(0, static_cast<int>(client.right) - overlayLeft),
-            std::max(0, static_cast<int>(client.bottom) - overlayTop),
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-        ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
         SetFocus(window);
-        RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_ALLCHILDREN);
+        if (tabOverviewWindow) {
+            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        }
     }
 
     void showSidebarSelectionMenu()
@@ -5887,7 +5803,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (findBarVisible)
             positionFindBar();
         positionOverlayWindows(true);
-        positionTabOverviewButton();
         if (invalidateChrome)
             InvalidateRect(window, nullptr, FALSE);
     }
@@ -6347,23 +6262,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&back, point)) { handleCommand(kCommandBack); return true; }
         if (PtInRect(&forward, point)) { handleCommand(kCommandForward); return true; }
 
-        // Resolve the trailing toolbar controls before the address pill. This
-        // gives the Tab Overview control an unambiguous hit target even if DPI
-        // rounding makes adjacent rectangles touch or overlap by one pixel.
-        const RECT shareButton = rightToolbarButtonRect(0);
-        const RECT downloadButton = rightToolbarButtonRect(1);
-        const RECT newTabButton = rightToolbarButtonRect(2);
-        const RECT overviewButton = rightToolbarButtonRect(3);
-        if (PtInRect(&overviewButton, point)) {
-            // Invoke the overview entry point directly from its own hit target.
-            // This keeps the toolbar control independent of command-routing changes.
-            showTabOverviewMenu();
-            return true;
-        }
-        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
-        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
-        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
-
         RECT pill = addressPillRect();
         RECT privacyRect { pill.left, pill.top, pill.left + scaleForDpi(window, 30), pill.bottom };
         if (PtInRect(&privacyRect, point)) { handleCommand(kCommandPrivacy); return true; }
@@ -6373,6 +6271,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             beginAddressEditing();
             return true;
         }
+
+        const RECT shareButton = rightToolbarButtonRect(0);
+        const RECT downloadButton = rightToolbarButtonRect(1);
+        const RECT newTabButton = rightToolbarButtonRect(2);
+        const RECT overviewButton = rightToolbarButtonRect(3);
+        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
+        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
+        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
+        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
     }
 
@@ -6910,9 +6817,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (downloadsButtonVisible())
             drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
-        // Tab Overview is a native owner-drawn BUTTON child. Keep it synchronized
-        // after layout changes while native button logic owns mouse-down/up handling.
-        positionTabOverviewButton();
+        drawTabOverview(dc, overviewRect, dark);
     }
 };
 
@@ -10178,16 +10083,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        // Fallback to the parent hit-test rectangle if another child HWND happens
-        // to sit above the visible native button. The button itself also sends BN_CLICKED.
-        const RECT overviewButtonFallback = state->rightToolbarButtonRect(3);
-        if (overviewButtonFallback.right > overviewButtonFallback.left
-            && overviewButtonFallback.bottom > overviewButtonFallback.top
-            && PtInRect(&overviewButtonFallback, point)) {
-            state->showTabOverviewMenu();
-            return 0;
-        }
-
         if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
             const RECT downloadsButton = state->rightToolbarButtonRect(1);
             // Clicking the Downloads button toggles this popover; other browser clicks dismiss it immediately.
@@ -10205,32 +10100,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
 
         return DefWindowProcW(window, message, wParam, lParam);
-    }
-
-    case WM_DRAWITEM: {
-        auto* item = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (state && item && item->CtlType == ODT_BUTTON
-            && item->hwndItem == state->tabOverviewButtonWindow
-            && item->CtlID == kCommandTabOverview) {
-            const bool dark = state->chromeDarkTheme();
-            RECT rect = item->rcItem;
-            HBRUSH background = CreateSolidBrush(dark ? RGB(57, 57, 61) : RGB(255, 255, 255));
-            FillRect(item->hDC, &rect, background);
-            DeleteObject(background);
-            if (item->itemState & (ODS_HOTLIGHT | ODS_SELECTED)) {
-                RECT hoverRect { rect.left + MulDiv(2, windowDpi(window), 96),
-                    rect.top + MulDiv(2, windowDpi(window), 96),
-                    rect.right - MulDiv(2, windowDpi(window), 96),
-                    rect.bottom - MulDiv(2, windowDpi(window), 96) };
-                const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
-                const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
-                drawRoundedControl(item->hDC, hoverRect, hoverFill, hoverBorder,
-                    static_cast<float>(MulDiv(7, windowDpi(window), 96)));
-            }
-            drawTabOverview(item->hDC, rect, dark);
-            return TRUE;
-        }
-        break;
     }
 
     case WM_AURORA_WEBSITE_DATA_CLEARED:
@@ -10261,14 +10130,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_COMMAND:
-        // Native BUTTON click notification is the primary activation path.
-        if (state && lParam != 0
-            && reinterpret_cast<HWND>(lParam) == state->tabOverviewButtonWindow
-            && HIWORD(wParam) == BN_CLICKED) {
-            state->showTabOverviewMenu();
-            return 0;
-        }
-
         // Edit controls notify their parent after the text has actually changed.
         // Use EN_CHANGE as the authoritative autocomplete trigger so typing, deletion,
         // undo and pasted text all refresh the history filter consistently.
