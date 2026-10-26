@@ -10106,6 +10106,18 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        // Give Tab Overview a first-chance hit test at the window-procedure level.
+        // This bypasses competing toolbar/tab handlers and guarantees that the
+        // drawn button's own rectangle is the activation rectangle.
+        const RECT overviewButton = state->rightToolbarButtonRect(3);
+        if (overviewButton.right > overviewButton.left
+            && overviewButton.bottom > overviewButton.top
+            && PtInRect(&overviewButton, point)) {
+            state->showTabOverviewMenu();
+            return 0;
+        }
+
         if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
             const RECT downloadsButton = state->rightToolbarButtonRect(1);
             // Clicking the Downloads button toggles this popover; other browser clicks dismiss it immediately.
