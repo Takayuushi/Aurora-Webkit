@@ -5561,9 +5561,27 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             hoveredOverviewNewTab = false;
             startChromeAnimationTimer();
             positionOverlayWindows(true);
-            if (tabOverviewWindow)
-                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+
+            // Re-entering overview while its close animation is in flight must
+            // explicitly re-show the layered child HWND. The ordinary opening
+            // path does this, but this interrupted-transition path previously
+            // only invalidated the window and could leave the button looking inert.
+            if (!tabOverviewWindow || !IsWindow(tabOverviewWindow)) {
+                if (!ensureOverlayWindow(tabOverviewWindow, true))
+                    return;
+            }
+            RECT client { };
+            GetClientRect(window, &client);
+            const int overlayTop = contentTop();
+            const int overlayLeft = sidebarOpen ? scaleForDpi(window, 300) : 0;
+            SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            SetWindowPos(tabOverviewWindow, HWND_TOP, overlayLeft, overlayTop,
+                std::max(0, static_cast<int>(client.right) - overlayLeft),
+                std::max(0, static_cast<int>(client.bottom) - overlayTop),
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
+            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_ALLCHILDREN);
             return;
         }
 
