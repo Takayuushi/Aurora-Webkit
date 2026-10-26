@@ -5809,6 +5809,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void toggleMaximizeWindow()
     {
+        // Keep maximize state changes deterministic; animation is handled as a
+        // separate window-transition task rather than by synchronous layout work.
         if (!customMaximized) {
             GetWindowRect(window, &restoredWindowRect);
 
@@ -10028,6 +10030,21 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         RECT client { };
         GetClientRect(window, &client);
+
+        // Toolbar actions at the right edge must remain client-hit targets.
+        // Resolve these before resize-border detection so Windows cannot turn a
+        // click on Tab Overview into HTTOP/HTRIGHT on narrow or high-DPI layouts.
+        if (state) {
+            const int toolbarTop = state->titleBarHeight();
+            const int toolbarBottom = toolbarTop + state->toolbarHeight();
+            if (point.y >= toolbarTop && point.y < toolbarBottom) {
+                for (int index = 0; index < 4; ++index) {
+                    const RECT button = state->rightToolbarButtonRect(index);
+                    if (button.right > button.left && PtInRect(&button, point))
+                        return HTCLIENT;
+                }
+            }
+        }
 
         int border = scaleForDpi(window, kResizeBorder);
         bool left = point.x < border;
