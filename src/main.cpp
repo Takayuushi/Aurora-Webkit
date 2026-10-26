@@ -3456,8 +3456,11 @@ struct BrowserState {
             std::max(static_cast<int>(work.top), static_cast<int>(work.bottom) - popupHeight));
 
         SetWindowPos(addressSuggestionWindow, HWND_TOPMOST, popupLeft, popupTop,
-            popupWidth, popupHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        InvalidateRect(addressSuggestionWindow, nullptr, TRUE);
+            popupWidth, popupHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
+        // Repaint the entire resized popup immediately. Otherwise a stale client
+        // area can remain visible beneath the suggestion rows after the list shrinks.
+        RedrawWindow(addressSuggestionWindow, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_NOCHILDREN);
     }
 
     void loadVisitData()
@@ -4762,6 +4765,12 @@ search.addEventListener('keydown',e=>{
             if (!switchingFromOverview) {
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                // Request a normal asynchronous repaint for an already-open page.
+                // Avoid RDW_UPDATENOW here so tab switching never blocks on WebKit.
+                if (!tab->initialPageLoadPending) {
+                    RedrawWindow(selectedView, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+                }
             }
             // Keep the overview in control of focus until its zoom reaches the page.
             // The live WebKit view is raised underneath the overlay and focused only
@@ -6250,6 +6259,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (PtInRect(&back, point)) { handleCommand(kCommandBack); return true; }
         if (PtInRect(&forward, point)) { handleCommand(kCommandForward); return true; }
 
+        // Resolve the trailing toolbar controls before the address pill. This
+        // gives the Tab Overview control an unambiguous hit target even if DPI
+        // rounding makes adjacent rectangles touch or overlap by one pixel.
+        const RECT shareButton = rightToolbarButtonRect(0);
+        const RECT downloadButton = rightToolbarButtonRect(1);
+        const RECT newTabButton = rightToolbarButtonRect(2);
+        const RECT overviewButton = rightToolbarButtonRect(3);
+        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
+        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
+        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
+        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
+
         RECT pill = addressPillRect();
         RECT privacyRect { pill.left, pill.top, pill.left + scaleForDpi(window, 30), pill.bottom };
         if (PtInRect(&privacyRect, point)) { handleCommand(kCommandPrivacy); return true; }
@@ -6259,15 +6280,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             beginAddressEditing();
             return true;
         }
-
-        const RECT shareButton = rightToolbarButtonRect(0);
-        const RECT downloadButton = rightToolbarButtonRect(1);
-        const RECT newTabButton = rightToolbarButtonRect(2);
-        const RECT overviewButton = rightToolbarButtonRect(3);
-        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
-        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
-        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
-        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
         return false;
     }
 
