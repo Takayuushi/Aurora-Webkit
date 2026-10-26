@@ -4680,8 +4680,13 @@ search.addEventListener('keydown',e=>{
 
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
+        // Preserve the current animation position if a tab is selected while the
+        // overview is still opening. Resetting this to zero causes a visible jump
+        // back to the card before the selected-tab zoom can continue.
+        const float overviewZoom = switchingFromOverview && tabOverviewAnimating
+            ? tabOverviewZoomProgress() : 0.0f;
         if (switchingFromOverview && index == previouslyActive) {
-            const float currentZoom = tabOverviewAnimating ? tabOverviewZoomProgress() : 0.0f;
+            const float currentZoom = overviewZoom;
             tabOverviewClosingTab = static_cast<int>(index);
             // The active page has remained live behind the overview overlay.
             // Run the zoom back to the page, reversing smoothly if entry is in flight.
@@ -4783,9 +4788,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewAnimationFrameReady = false;
             tabOverviewOpeningFramesRendered = 0;
             tabOverviewClosingFramesRendered = 0;
-            tabOverviewZoomFrom = 0.0f;
+            tabOverviewZoomFrom = overviewZoom;
             tabOverviewZoomTo = 1.0f;
-            tabOverviewTransitionDuration = 420;
+            tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewAnimating = false;
             if (selectedView) {
@@ -10490,13 +10495,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     MSG message { };
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        bool acceleratorHandled = TranslateAcceleratorW(window, acceleratorTable, &message) != 0;
-        if (!acceleratorHandled) {
-            for (const auto& browser : gAdditionalBrowserWindows) {
-                if (browser && browser->window
-                    && TranslateAcceleratorW(browser->window, acceleratorTable, &message)) {
-                    acceleratorHandled = true;
-                    break;
+        // Browser shortcuts must only be translated for actual key-down messages
+        // while a required Ctrl/Alt modifier is held. This keeps ordinary text
+        // entry in the address bar from being interpreted as a browser command.
+        const bool isShortcutKeyMessage = message.message == WM_KEYDOWN
+            || message.message == WM_SYSKEYDOWN;
+        const bool hasShortcutModifier = (GetKeyState(VK_CONTROL) & 0x8000) != 0
+            || (GetKeyState(VK_MENU) & 0x8000) != 0;
+        bool acceleratorHandled = false;
+        if (isShortcutKeyMessage && hasShortcutModifier) {
+            acceleratorHandled = TranslateAcceleratorW(window, acceleratorTable, &message) != 0;
+            if (!acceleratorHandled) {
+                for (const auto& browser : gAdditionalBrowserWindows) {
+                    if (browser && browser->window
+                        && TranslateAcceleratorW(browser->window, acceleratorTable, &message)) {
+                        acceleratorHandled = true;
+                        break;
+                    }
                 }
             }
         }
