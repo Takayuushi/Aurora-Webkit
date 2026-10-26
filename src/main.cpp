@@ -77,7 +77,6 @@ namespace {
 
 constexpr wchar_t windowClassName[] = L"AuroraWindow";
 constexpr wchar_t overlayWindowClassName[] = L"AuroraOverlayWindow";
-constexpr wchar_t tabOverviewButtonClassName[] = L"AuroraTabOverviewButton";
 constexpr wchar_t windowTitle[] = L"Aurora";
 
 std::wstring auroraExecutableDirectory()
@@ -1089,7 +1088,6 @@ LRESULT CALLBACK addressBarProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK overlayWindowProcedure(HWND, UINT, WPARAM, LPARAM);
-LRESULT CALLBACK tabOverviewButtonProcedure(HWND, UINT, WPARAM, LPARAM);
 
 struct TabState {
     BrowserState* browser { nullptr };
@@ -1166,9 +1164,6 @@ struct BrowserState {
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
     HWND tabOverviewButtonWindow { nullptr };
-    bool tabOverviewButtonHovered { false };
-    bool tabOverviewButtonPressed { false };
-    bool tabOverviewButtonTracking { false };
     HBITMAP chromePaintBitmap { nullptr };
     SIZE chromePaintBitmapSize { 0, 0 };
     HBITMAP sidebarOverlayBitmap { nullptr };
@@ -1783,6 +1778,12 @@ struct BrowserState {
                 rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
             InvalidateRect(tabOverviewButtonWindow, nullptr, FALSE);
+        } else if (GetWindow(window, GW_CHILD) != tabOverviewButtonWindow) {
+            // Z-order may change when WebKit and overlay child windows are raised.
+            // Restore the control to the top of the child stack after layout changes.
+            SetWindowPos(tabOverviewButtonWindow, HWND_TOP,
+                rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
     }
 
@@ -3730,10 +3731,11 @@ struct BrowserState {
         // Use a real child HWND for Tab Overview instead of a decorative
         // parent-painted icon. This gives the control its own reliable mouse hit target.
         tabOverviewButtonWindow = CreateWindowExW(
-            0, tabOverviewButtonClassName, L"",
-            WS_CHILD | WS_VISIBLE,
+            0, L"BUTTON", L"",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_PUSHBUTTON,
             0, 0, 1, 1,
-            window, nullptr, GetModuleHandleW(nullptr), this);
+            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCommandTabOverview)),
+            GetModuleHandleW(nullptr), nullptr);
         if (!tabOverviewButtonWindow)
             return false;
 
@@ -6908,110 +6910,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (downloadsButtonVisible())
             drawDownload(dc, downloadRect, dark);
         drawPlus(dc, newTabRect, dark);
-        // Tab Overview is painted and handled by its dedicated child HWND.
-        // Keep its geometry synchronized after toolbar layout/Downloads visibility changes.
+        // Tab Overview is a native owner-drawn BUTTON child. Keep it synchronized
+        // after layout changes while native button logic owns mouse-down/up handling.
         positionTabOverviewButton();
     }
 };
-
-LRESULT CALLBACK tabOverviewButtonProcedure(HWND button, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    if (message == WM_NCCREATE) {
-        auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
-        auto* browser = static_cast<BrowserState*>(createInfo->lpCreateParams);
-        if (!browser)
-            return FALSE;
-        SetWindowLongPtrW(button, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(browser));
-        return TRUE;
-    }
-
-    auto* browser = reinterpret_cast<BrowserState*>(GetWindowLongPtrW(button, GWLP_USERDATA));
-    if (!browser)
-        return DefWindowProcW(button, message, wParam, lParam);
-
-    switch (message) {
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_MOUSEMOVE:
-        if (!browser->tabOverviewButtonTracking) {
-            TRACKMOUSEEVENT tracking { };
-            tracking.cbSize = sizeof(tracking);
-            tracking.dwFlags = TME_LEAVE;
-            tracking.hwndTrack = button;
-            browser->tabOverviewButtonTracking = TrackMouseEvent(&tracking) != FALSE;
-        }
-        if (!browser->tabOverviewButtonHovered) {
-            browser->tabOverviewButtonHovered = true;
-            InvalidateRect(button, nullptr, FALSE);
-        }
-        return 0;
-    case WM_MOUSELEAVE:
-        browser->tabOverviewButtonTracking = false;
-        if (browser->tabOverviewButtonHovered) {
-            browser->tabOverviewButtonHovered = false;
-            InvalidateRect(button, nullptr, FALSE);
-        }
-        return 0;
-    case WM_LBUTTONDOWN:
-        browser->tabOverviewButtonPressed = true;
-        SetCapture(button);
-        InvalidateRect(button, nullptr, FALSE);
-        return 0;
-    case WM_LBUTTONUP: {
-        const bool wasPressed = browser->tabOverviewButtonPressed;
-        browser->tabOverviewButtonPressed = false;
-        if (GetCapture() == button)
-            ReleaseCapture();
-        POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        RECT client { };
-        GetClientRect(button, &client);
-        InvalidateRect(button, nullptr, FALSE);
-        if (wasPressed && PtInRect(&client, point))
-            browser->showTabOverviewMenu();
-        return 0;
-    }
-    case WM_CANCELMODE:
-    case WM_CAPTURECHANGED:
-        if (browser->tabOverviewButtonPressed) {
-            browser->tabOverviewButtonPressed = false;
-            InvalidateRect(button, nullptr, FALSE);
-        }
-        if (message == WM_CANCELMODE && GetCapture() == button)
-            ReleaseCapture();
-        return 0;
-    case WM_PAINT: {
-        PAINTSTRUCT paint { };
-        HDC dc = BeginPaint(button, &paint);
-        RECT client { };
-        GetClientRect(button, &client);
-        const bool dark = browser->chromeDarkTheme();
-        HBRUSH background = CreateSolidBrush(dark ? RGB(57, 57, 61) : RGB(255, 255, 255));
-        FillRect(dc, &client, background);
-        DeleteObject(background);
-
-        if (browser->tabOverviewButtonHovered || browser->tabOverviewButtonPressed) {
-            RECT hoverRect { client.left + MulDiv(2, windowDpi(browser->window), 96),
-                client.top + MulDiv(2, windowDpi(browser->window), 96),
-                client.right - MulDiv(2, windowDpi(browser->window), 96),
-                client.bottom - MulDiv(2, windowDpi(browser->window), 96) };
-            const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
-            const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
-            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
-                static_cast<float>(MulDiv(7, windowDpi(browser->window), 96)));
-        }
-        drawTabOverview(dc, client, dark);
-        EndPaint(button, &paint);
-        return 0;
-    }
-    case WM_NCDESTROY:
-        SetWindowLongPtrW(button, GWLP_USERDATA, 0);
-        return DefWindowProcW(button, message, wParam, lParam);
-    default:
-        return DefWindowProcW(button, message, wParam, lParam);
-    }
-}
 
 void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef listener, const void* clientInfo)
 {
@@ -10275,6 +10178,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        // Fallback to the parent hit-test rectangle if another child HWND happens
+        // to sit above the visible native button. The button itself also sends BN_CLICKED.
+        const RECT overviewButtonFallback = state->rightToolbarButtonRect(3);
+        if (overviewButtonFallback.right > overviewButtonFallback.left
+            && overviewButtonFallback.bottom > overviewButtonFallback.top
+            && PtInRect(&overviewButtonFallback, point)) {
+            state->showTabOverviewMenu();
+            return 0;
+        }
+
         if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
             const RECT downloadsButton = state->rightToolbarButtonRect(1);
             // Clicking the Downloads button toggles this popover; other browser clicks dismiss it immediately.
@@ -10292,6 +10205,32 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
 
         return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    case WM_DRAWITEM: {
+        auto* item = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (state && item && item->CtlType == ODT_BUTTON
+            && item->hwndItem == state->tabOverviewButtonWindow
+            && item->CtlID == kCommandTabOverview) {
+            const bool dark = state->chromeDarkTheme();
+            RECT rect = item->rcItem;
+            HBRUSH background = CreateSolidBrush(dark ? RGB(57, 57, 61) : RGB(255, 255, 255));
+            FillRect(item->hDC, &rect, background);
+            DeleteObject(background);
+            if (item->itemState & (ODS_HOTLIGHT | ODS_SELECTED)) {
+                RECT hoverRect { rect.left + MulDiv(2, windowDpi(window), 96),
+                    rect.top + MulDiv(2, windowDpi(window), 96),
+                    rect.right - MulDiv(2, windowDpi(window), 96),
+                    rect.bottom - MulDiv(2, windowDpi(window), 96) };
+                const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
+                const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
+                drawRoundedControl(item->hDC, hoverRect, hoverFill, hoverBorder,
+                    static_cast<float>(MulDiv(7, windowDpi(window), 96)));
+            }
+            drawTabOverview(item->hDC, rect, dark);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_AURORA_WEBSITE_DATA_CLEARED:
@@ -10322,6 +10261,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_COMMAND:
+        // Native BUTTON click notification is the primary activation path.
+        if (state && lParam != 0
+            && reinterpret_cast<HWND>(lParam) == state->tabOverviewButtonWindow
+            && HIWORD(wParam) == BN_CLICKED) {
+            state->showTabOverviewMenu();
+            return 0;
+        }
+
         // Edit controls notify their parent after the text has actually changed.
         // Use EN_CHANGE as the authoritative autocomplete trigger so typing, deletion,
         // undo and pasted text all refresh the history filter consistently.
@@ -10651,19 +10598,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     overlayClass.lpszClassName = overlayWindowClassName;
     if (!RegisterClassExW(&overlayClass)) {
         MessageBoxW(nullptr, L"Could not register the Aurora overlay window class.", windowTitle, MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(gdiplusToken);
-        return 1;
-    }
-
-    WNDCLASSEXW overviewButtonClass { };
-    overviewButtonClass.cbSize = sizeof(overviewButtonClass);
-    overviewButtonClass.lpfnWndProc = tabOverviewButtonProcedure;
-    overviewButtonClass.hInstance = instance;
-    overviewButtonClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    overviewButtonClass.hbrBackground = nullptr;
-    overviewButtonClass.lpszClassName = tabOverviewButtonClassName;
-    if (!RegisterClassExW(&overviewButtonClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        MessageBoxW(nullptr, L"Could not register the Tab Overview button class.", windowTitle, MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
     }
