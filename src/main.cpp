@@ -1788,23 +1788,21 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
-    bool ensureOverlayWindow(HWND& handle, bool layered = false)
+    bool ensureOverlayWindow(HWND& handle)
     {
         if (!window)
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(layered ? WS_EX_LAYERED : 0, overlayWindowClassName, L"", WS_CHILD,
+        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
-        if (handle && layered)
-            SetLayeredWindowAttributes(handle, 0, 255, LWA_ALPHA);
         return handle != nullptr;
     }
 
     bool ensureOverlayWindows()
     {
         return ensureOverlayWindow(sidebarOverlayWindow)
-            && ensureOverlayWindow(tabOverviewWindow, true);
+            && ensureOverlayWindow(tabOverviewWindow);
     }
 
     void positionOverlayWindows(bool forceTop = false)
@@ -1842,11 +1840,7 @@ struct BrowserState {
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
-            if (ensureOverlayWindow(tabOverviewWindow, true)) {
-                // A previously closed zoom may have faded the layered overlay to zero.
-                // Restore it before a new overview/opening transition begins.
-                if (tabOverviewVisible)
-                    SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+            if (ensureOverlayWindow(tabOverviewWindow)) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2196,14 +2190,7 @@ struct BrowserState {
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 continueAnimation = true;
             } else {
-                const ULONGLONG settleElapsed = now - tabOverviewClosingSettleStart;
-                const float fadeProgress = std::clamp(
-                    static_cast<float>(settleElapsed) / 160.0f, 0.0f, 1.0f);
-                const BYTE overlayAlpha = static_cast<BYTE>(
-                    std::lround(255.0f * (1.0f - fadeProgress)));
-                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
-                    SetLayeredWindowAttributes(tabOverviewWindow, 0, overlayAlpha, LWA_ALPHA);
-                const bool settleStillActive = settleElapsed < 160
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 160
                     || tabOverviewClosingSettleFramesRendered < 6;
                 if (settleStillActive) {
                     continueAnimation = true;
