@@ -1170,6 +1170,8 @@ struct BrowserState {
     bool sidebarOverlayAnimationFrameReady { false };
     HBITMAP tabOverviewBitmap { nullptr };
     SIZE tabOverviewBitmapSize { 0, 0 };
+    HBITMAP tabOverviewFrameBitmap { nullptr };
+    SIZE tabOverviewFrameBitmapSize { 0, 0 };
     bool tabOverviewAnimationFrameReady { false };
     bool downloadsAnimationTimerActive { false };
     bool lastDownloadsButtonVisible { false };
@@ -1824,15 +1826,26 @@ struct BrowserState {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-                if (alreadyVisible && !forceTop)
-                    flags |= SWP_NOZORDER;
-                else if (!alreadyVisible)
-                    flags |= SWP_SHOWWINDOW;
-                SetWindowPos(sidebarOverlayWindow,
-                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                    left, top, width, height, flags);
-                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                if (!alreadyVisible) {
+                    SetWindowPos(sidebarOverlayWindow, HWND_TOP,
+                        left, top, width, height,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                    InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                    UpdateWindow(sidebarOverlayWindow);
+                    ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
+                    // Flush only the cached panel blit. The expensive panel layout
+                    // was prepared by the hidden-window paint above.
+                    RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                } else {
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                    if (!forceTop)
+                        flags |= SWP_NOZORDER;
+                    SetWindowPos(sidebarOverlayWindow,
+                        forceTop ? HWND_TOP : nullptr,
+                        left, top, width, height, flags);
+                    InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                }
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
@@ -1842,17 +1855,26 @@ struct BrowserState {
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
                 const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-                if (alreadyVisible && !forceTop)
-                    flags |= SWP_NOZORDER;
-                else if (!alreadyVisible)
-                    flags |= SWP_SHOWWINDOW;
-                SetWindowPos(tabOverviewWindow,
-                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                    left, top,
-                    std::max(0, static_cast<int>(client.right) - left), height, flags);
-                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                if (!alreadyVisible) {
+                    SetWindowPos(tabOverviewWindow, HWND_TOP,
+                        left, top, width, height,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                    UpdateWindow(tabOverviewWindow);
+                    ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
+                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                } else {
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                    if (!forceTop)
+                        flags |= SWP_NOZORDER;
+                    SetWindowPos(tabOverviewWindow,
+                        forceTop ? HWND_TOP : nullptr,
+                        left, top, width, height, flags);
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                }
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
@@ -10205,6 +10227,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->tabOverviewBitmap = nullptr;
                 state->tabOverviewBitmapSize = SIZE { 0, 0 };
             }
+            if (state->tabOverviewFrameBitmap) {
+                DeleteObject(state->tabOverviewFrameBitmap);
+                state->tabOverviewFrameBitmap = nullptr;
+                state->tabOverviewFrameBitmapSize = SIZE { 0, 0 };
+            }
             if (state->chromePaintBitmap) {
                 DeleteObject(state->chromePaintBitmap);
                 state->chromePaintBitmap = nullptr;
@@ -10313,15 +10340,47 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                     state->tabOverviewAnimationFrameReady = true;
             }
 
-            // Keep the cached overview frame immutable. Draw only the expanding
-            // selected-tab snapshot on the destination DC; otherwise every tick would
-            // need to repaint every card to erase the previous animation frame.
-            BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
-            if (overlay == state->tabOverviewWindow) {
-                if (state->tabOverviewClosing)
-                    state->drawTabOverviewClosingTransition(dc);
-                else if (state->tabOverviewAnimating)
-                    state->drawTabOverviewOpeningTransition(dc);
+            const bool composeOverviewFrame = overlay == state->tabOverviewWindow
+                && (state->tabOverviewClosing || state->tabOverviewAnimating);
+            if (composeOverviewFrame) {
+                if (!state->tabOverviewFrameBitmap
+                    || state->tabOverviewFrameBitmapSize.cx != width
+                    || state->tabOverviewFrameBitmapSize.cy != height) {
+                    if (state->tabOverviewFrameBitmap)
+                        DeleteObject(state->tabOverviewFrameBitmap);
+                    state->tabOverviewFrameBitmap = CreateCompatibleBitmap(dc, width, height);
+                    state->tabOverviewFrameBitmapSize = state->tabOverviewFrameBitmap
+                        ? SIZE { width, height } : SIZE { 0, 0 };
+                }
+
+                HDC frameDC = CreateCompatibleDC(dc);
+                bool frameComposited = false;
+                if (frameDC && state->tabOverviewFrameBitmap) {
+                    HGDIOBJ oldFrame = SelectObject(frameDC, state->tabOverviewFrameBitmap);
+                    if (BitBlt(frameDC, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY)) {
+                        if (state->tabOverviewClosing)
+                            state->drawTabOverviewClosingTransition(frameDC);
+                        else
+                            state->drawTabOverviewOpeningTransition(frameDC);
+                        // Present the complete background+snapshot as one screen write.
+                        frameComposited = BitBlt(dc, 0, 0, width, height,
+                            frameDC, 0, 0, SRCCOPY) != FALSE;
+                    }
+                    SelectObject(frameDC, oldFrame);
+                    DeleteDC(frameDC);
+                }
+
+                if (!frameComposited) {
+                    // Allocation failure fallback: preserve function rather than
+                    // dropping the overview frame, though normal frames use one blit.
+                    BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
+                    if (state->tabOverviewClosing)
+                        state->drawTabOverviewClosingTransition(dc);
+                    else
+                        state->drawTabOverviewOpeningTransition(dc);
+                }
+            } else {
+                BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
             }
             SelectObject(bufferDC, oldBitmap);
             DeleteDC(bufferDC);
