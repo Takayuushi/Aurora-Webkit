@@ -2342,11 +2342,10 @@ struct BrowserState {
         auto page = WKViewGetPage(tab.view.get());
         if (!page || WKPageGetEstimatedProgress(page) < 1.0)
             return;
-        const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
-        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
-            && tab.internalPage.empty())
-            return;
-
+        // WKPageCopyActiveURL can briefly differ from the address-bar URL during
+        // redirects and canonicalization (for example, GitHub adding a trailing
+        // slash). The WKView belongs to this TabState, so an exact URL-string
+        // comparison can incorrectly reject a valid live-page thumbnail.
         HWND viewWindow = WKViewGetWindow(tab.view.get());
         if (!viewWindow)
             return;
@@ -2417,10 +2416,11 @@ struct BrowserState {
 
         if (captured) {
             // This bitmap is enlarged to the full content viewport during the tab-selection zoom.
-            // Keep it near native resolution (up to 1080p) so the transition does not look blurry,
-            // while avoiding pointless upscaling of smaller captures.
+            // Keep the cached preview near native resolution for the full-window
+            // selection transition. A 1080p cap can leave a visible soft frame on
+            // high-DPI / larger viewports, so retain detail up to 2560x1440.
             const double factor = std::min(1.0,
-                std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
+                std::min(2560.0 / sourceWidth, 1440.0 / sourceHeight));
             const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
             const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
             HDC previewDC = CreateCompatibleDC(sourceDC);
