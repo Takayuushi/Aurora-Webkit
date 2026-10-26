@@ -233,6 +233,51 @@ constexpr int kTrafficLightSize = 13;
 constexpr int kTrafficLightGap = 8;
 constexpr int kResizeBorder = 4;
 
+// Temporary runtime trace for the Tab Overview button. Written to
+// %TEMP%\\AuroraOverviewTrace.log so no-op clicks can be diagnosed without
+// attaching a debugger to the browser process.
+void traceTabOverviewEvent(
+    const wchar_t* stage, HWND hwnd, POINT point, const RECT& button,
+    LRESULT hitTest, bool pointInButton, bool overviewState,
+    bool overlayExists, bool overlayVisible, bool closing, bool animating, size_t tabCount)
+{
+    wchar_t tempPath[MAX_PATH + 1] { };
+    const DWORD pathLength = GetTempPathW(MAX_PATH, tempPath);
+    if (!pathLength || pathLength >= MAX_PATH)
+        return;
+
+    const std::filesystem::path logPath = std::filesystem::path(tempPath) / L"AuroraOverviewTrace.log";
+    static bool initialized = false;
+    std::wofstream log;
+    log.open(logPath, initialized ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc));
+    if (!log)
+        return;
+    initialized = true;
+
+    RECT windowRect { };
+    RECT clientRect { };
+    if (hwnd && IsWindow(hwnd)) {
+        GetWindowRect(hwnd, &windowRect);
+        GetClientRect(hwnd, &clientRect);
+    }
+    log << L"tick=" << GetTickCount64()
+        << L" stage=" << (stage ? stage : L"(null)")
+        << L" hwnd=" << hwnd
+        << L" point=(" << point.x << L"," << point.y << L")"
+        << L" button=(" << button.left << L"," << button.top << L"," << button.right << L"," << button.bottom << L")"
+        << L" inButton=" << (pointInButton ? 1 : 0)
+        << L" hitTest=" << hitTest
+        << L" overviewState=" << (overviewState ? 1 : 0)
+        << L" overlayExists=" << (overlayExists ? 1 : 0)
+        << L" overlayVisible=" << (overlayVisible ? 1 : 0)
+        << L" closing=" << (closing ? 1 : 0)
+        << L" animating=" << (animating ? 1 : 0)
+        << L" tabs=" << tabCount
+        << L" windowRect=(" << windowRect.left << L"," << windowRect.top << L"," << windowRect.right << L"," << windowRect.bottom << L")"
+        << L" client=(" << clientRect.right << L"," << clientRect.bottom << L")\r\n";
+    log.flush();
+}
+
 struct BrowserState;
 struct TabState;
 
@@ -5540,8 +5585,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     void showTabOverviewMenu()
     {
-        if (tabs.empty())
+        const RECT traceButton = rightToolbarButtonRect(3);
+        traceTabOverviewEvent(L"SHOW_OVERVIEW_ENTER", window, POINT { -1, -1 }, traceButton, 0,
+            false, tabOverviewVisible,
+            tabOverviewWindow && IsWindow(tabOverviewWindow),
+            tabOverviewWindow && IsWindowVisible(tabOverviewWindow),
+            tabOverviewClosing, tabOverviewAnimating, tabs.size());
+        if (tabs.empty()) {
+            traceTabOverviewEvent(L"SHOW_OVERVIEW_NO_TABS", window, POINT { -1, -1 }, traceButton, 0,
+                false, tabOverviewVisible,
+                tabOverviewWindow && IsWindow(tabOverviewWindow),
+                tabOverviewWindow && IsWindowVisible(tabOverviewWindow),
+                tabOverviewClosing, tabOverviewAnimating, tabs.size());
             return;
+        }
 
         if (tabOverviewClosing) {
             const float currentZoom = tabOverviewZoomProgress();
@@ -10064,6 +10121,19 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         RECT client { };
         GetClientRect(window, &client);
 
+        const RECT overviewTraceButton = state ? state->rightToolbarButtonRect(3) : RECT { };
+        const bool traceNearOverview = state
+            && point.y >= state->titleBarHeight() - scaleForDpi(window, 6)
+            && point.y <= state->titleBarHeight() + state->toolbarHeight() + scaleForDpi(window, 6)
+            && point.x >= client.right - scaleForDpi(window, 150);
+        if (traceNearOverview) {
+            traceTabOverviewEvent(L"WM_NCHITTEST", window, point, overviewTraceButton, 0,
+                PtInRect(&overviewTraceButton, point) != FALSE, state->tabOverviewVisible,
+                state->tabOverviewWindow && IsWindow(state->tabOverviewWindow),
+                state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow),
+                state->tabOverviewClosing, state->tabOverviewAnimating, state->tabs.size());
+        }
+
         // Toolbar actions at the right edge must remain client-hit targets.
         // Resolve these before resize-border detection so Windows cannot turn a
         // click on Tab Overview into HTTOP/HTRIGHT on narrow or high-DPI layouts.
@@ -10124,6 +10194,18 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(state->sharePopoverWindow);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        RECT clickClient { };
+        GetClientRect(window, &clickClient);
+        const RECT overviewTraceButton = state->rightToolbarButtonRect(3);
+        if (point.y >= state->titleBarHeight() - scaleForDpi(window, 6)
+            && point.y <= state->titleBarHeight() + state->toolbarHeight() + scaleForDpi(window, 6)
+            && point.x >= clickClient.right - scaleForDpi(window, 150)) {
+            traceTabOverviewEvent(L"WM_LBUTTONDOWN", window, point, overviewTraceButton, HTCLIENT,
+                PtInRect(&overviewTraceButton, point) != FALSE, state->tabOverviewVisible,
+                state->tabOverviewWindow && IsWindow(state->tabOverviewWindow),
+                state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow),
+                state->tabOverviewClosing, state->tabOverviewAnimating, state->tabs.size());
+        }
 
         // Give Tab Overview a first-chance hit test at the window-procedure level.
         // This bypasses competing toolbar/tab handlers and guarantees that the
@@ -10152,6 +10234,27 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state->handleSidebarHit(point))
             return 0;
 
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    case WM_NCLBUTTONDOWN: {
+        if (state) {
+            POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(window, &point);
+            RECT client { };
+            GetClientRect(window, &client);
+            const RECT overviewButton = state->rightToolbarButtonRect(3);
+            if (point.y >= state->titleBarHeight() - scaleForDpi(window, 6)
+                && point.y <= state->titleBarHeight() + state->toolbarHeight() + scaleForDpi(window, 6)
+                && point.x >= client.right - scaleForDpi(window, 150)) {
+                traceTabOverviewEvent(L"WM_NCLBUTTONDOWN", window, point, overviewButton,
+                    static_cast<LRESULT>(wParam), PtInRect(&overviewButton, point) != FALSE,
+                    state->tabOverviewVisible,
+                    state->tabOverviewWindow && IsWindow(state->tabOverviewWindow),
+                    state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow),
+                    state->tabOverviewClosing, state->tabOverviewAnimating, state->tabs.size());
+            }
+        }
         return DefWindowProcW(window, message, wParam, lParam);
     }
 
