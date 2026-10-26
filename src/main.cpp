@@ -2172,16 +2172,13 @@ struct BrowserState {
             if (transitionStillActive) {
                 continueAnimation = true;
             } else if (!tabOverviewClosingSettling) {
-                // Keep the full-page snapshot covering WebKit while its real page
-                // receives focus and a synchronous repaint. Hiding the overlay on the
-                // same timer tick as the last zoom frame can expose a stale compositor
-                // surface as a black/white flash.
+                // Let WebKit repaint asynchronously while the overview snapshot
+                // still covers it. RDW_UPDATENOW can block this UI thread waiting on
+                // an accelerated surface, freezing both the zoom and the browser.
+                SetFocus(window);
                 if (auto* selected = active()) {
-                    if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                        SetFocus(viewWindow);
-                        RedrawWindow(viewWindow, nullptr, nullptr,
-                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-                    }
+                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        InvalidateRect(viewWindow, nullptr, FALSE);
                 }
                 tabOverviewClosingSettling = true;
                 tabOverviewClosingSettleStart = now;
@@ -2190,8 +2187,10 @@ struct BrowserState {
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 continueAnimation = true;
             } else {
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 160
-                    || tabOverviewClosingSettleFramesRendered < 6;
+                // A short asynchronous settle is enough to let queued WebKit paints
+                // start without adding a visible dead pause after the zoom animation.
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
+                    || tabOverviewClosingSettleFramesRendered < 3;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
@@ -2204,6 +2203,12 @@ struct BrowserState {
                     if (tabOverviewWindow && IsWindow(tabOverviewWindow))
                         ShowWindow(tabOverviewWindow, SW_HIDE);
                     positionOverlayWindows(true);
+                    // Return keyboard focus only after the transition overlay is gone.
+                    // No synchronous redraw is requested here.
+                    if (auto* selected = active()) {
+                        if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                            SetFocus(viewWindow);
+                    }
                 }
             }
         }
@@ -5549,8 +5554,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             startChromeAnimationTimer();
             positionOverlayWindows(true);
             if (tabOverviewWindow)
-                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             return;
         }
 
@@ -5569,16 +5573,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (addressEditing)
             endAddressEditing();
 
-        // Refresh only the currently visible page. Inactive WKView child HWNDs
-        // overlap at the same viewport, so PrintWindow/BitBlt on them may copy the
-        // frontmost tab into multiple thumbnails. Other tabs keep their own cached
-        // captures from the time they were active.
-        if (auto* selected = active()) {
-            auto page = WKViewGetPage(selected->view.get());
-            if (page && WKPageGetEstimatedProgress(page) >= 1.0)
-                captureTabThumbnail(*selected);
-        }
-
+        // Do not capture the live WebKit surface synchronously on the UI thread
+        // while opening the overview. GPU-backed BitBlt plus thumbnail scaling can
+        // stall the same thread that must deliver animation frames. Use the cached
+        // preview here; a fresh capture is already scheduled after tab selection.
         tabOverviewClosing = false;
         tabOverviewClosingSettling = false;
         tabOverviewClosingSettleFramesRendered = 0;
@@ -5599,10 +5597,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // accelerated page underneath, which is unnecessary for an overlay transition.
         positionOverlayWindows(true);
         SetFocus(window);
-        if (tabOverviewWindow) {
-            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-        }
+        if (tabOverviewWindow)
+            InvalidateRect(tabOverviewWindow, nullptr, FALSE);
     }
 
     void showSidebarSelectionMenu()
