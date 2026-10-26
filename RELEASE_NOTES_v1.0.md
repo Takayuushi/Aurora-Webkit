@@ -18,7 +18,3 @@ Aurora 1.0 establishes the first stable-channel baseline for the native Windows 
 - Intermittent blank or black frames still need hands-on regression testing.
 - Downloads are not restored after restarting Aurora.
 - Some Apple-service-dependent Safari features are unavailable on Windows; see README for details.
-
-## Validation
-- GitHub Actions workflow run **#196** — **build-aurora-windows #196** — completed successfully (green check) for commit [7cee018](https://github.com/Takayuushi/Aurora-Webkit/commit/7cee01894b63a0a03f9ef390b2b6a892839251c1), “Avoid blocking overview grid paint during activation,” on `dev/aurora-ui-improvements`.
-- A successful CI run confirms the workflow passed; it does not replace hands-on testing of the packaged browser and the known preview/rendering issues above.
