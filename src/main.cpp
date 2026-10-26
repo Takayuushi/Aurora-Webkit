@@ -5611,11 +5611,26 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // Lay out only the overlay. resize() would invalidate and relayout the
         // accelerated page underneath, which is unnecessary for an overlay transition.
         positionOverlayWindows(true);
-        SetFocus(window);
-        if (tabOverviewWindow) {
-            RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        // Make the overview's visibility an explicit postcondition. A child overlay
+        // can be positioned while remaining hidden if its previous close transition
+        // interrupted before the normal hide/show path completed.
+        if (!tabOverviewWindow || !IsWindow(tabOverviewWindow)) {
+            if (!ensureOverlayWindow(tabOverviewWindow, true))
+                return;
         }
+        RECT client { };
+        GetClientRect(window, &client);
+        const int overlayTop = contentTop();
+        const int overlayLeft = sidebarOpen ? scaleForDpi(window, 300) : 0;
+        SetLayeredWindowAttributes(tabOverviewWindow, 0, 255, LWA_ALPHA);
+        SetWindowPos(tabOverviewWindow, HWND_TOP, overlayLeft, overlayTop,
+            std::max(0, static_cast<int>(client.right) - overlayLeft),
+            std::max(0, static_cast<int>(client.bottom) - overlayTop),
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        ShowWindow(tabOverviewWindow, SW_SHOWNOACTIVATE);
+        SetFocus(window);
+        RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_ALLCHILDREN);
     }
 
     void showSidebarSelectionMenu()
