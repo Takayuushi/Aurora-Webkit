@@ -4796,7 +4796,13 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewAnimating = false;
             if (selectedView) {
-                SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                // Keep the overview HWND above the live WebKit surface for every
+                // frame of the zoom. Raising the selected page to HWND_TOP first
+                // exposes its not-yet-composited backing surface (often black) before
+                // positionOverlayWindows() can raise the overlay again.
+                const HWND insertAfter = tabOverviewWindow && IsWindow(tabOverviewWindow)
+                    ? tabOverviewWindow : HWND_TOP;
+                SetWindowPos(selectedView, insertAfter, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
             // Refresh this page's snapshot after the overlay has finished closing.
