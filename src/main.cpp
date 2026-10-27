@@ -1111,6 +1111,7 @@ struct TabState {
     int previewWidth { 0 };
     int previewHeight { 0 };
     std::wstring previewURL;
+    int thumbnailCaptureRetries { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
 
@@ -1704,7 +1705,10 @@ struct BrowserState {
         const int available = std::max(1, static_cast<int>(client.right) - sidePadding * 2
             - gap * static_cast<int>(count - 1));
         const int maxWidth = scaleForDpi(window, 280);
-        const int tabWidth = std::max(scaleForDpi(window, 112),
+        // Never force a 112px minimum: with many tabs that minimum makes the
+        // computed group wider than the window, so adjacent tabs overlap.
+        // Let tabs shrink to the available slot and clip their labels instead.
+        const int tabWidth = std::max(1,
             std::min(maxWidth, available / static_cast<int>(count)));
         const int groupWidth = tabWidth * static_cast<int>(count) + gap * static_cast<int>(count - 1);
         const int groupLeft = std::max(sidePadding, (static_cast<int>(client.right) - groupWidth) / 2);
@@ -2227,8 +2231,19 @@ struct BrowserState {
                     // Return keyboard focus only after the transition overlay is gone.
                     // No synchronous redraw is requested here.
                     if (auto* selected = active()) {
-                        if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             SetFocus(viewWindow);
+                            RECT client { };
+                            if (GetClientRect(window, &client)) {
+                                const int exposedWidth = std::min(
+                                    scaleForDpi(window, 300), static_cast<int>(client.right));
+                                RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
+                                InvalidateRect(window, &exposedParent, FALSE);
+                                RECT exposedView { 0, 0, exposedWidth,
+                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
+                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                            }
+                        }
                     }
                 }
             }
@@ -2469,6 +2484,7 @@ struct BrowserState {
         if (!window || !tab)
             return;
         pendingThumbnailCaptureTab = tab;
+        tab->thumbnailCaptureRetries = 0;
         SetTimer(window, kDeferredThumbnailCaptureTimerId,
             std::max<UINT>(1, delayMilliseconds), nullptr);
     }
@@ -2503,6 +2519,18 @@ struct BrowserState {
         pendingThumbnailCaptureTab = nullptr;
         KillTimer(window, kDeferredThumbnailCaptureTimerId);
         captureTabThumbnail(*pending);
+
+        // A GPU-backed view can still be presenting a blank frame immediately
+        // after activation. Retry a few times while this tab remains active so
+        // a transient failed BitBlt does not leave a generic card indefinitely.
+        if (pending->previewURL != pending->activeUrl
+            && pending->thumbnailCaptureRetries < 4) {
+            ++pending->thumbnailCaptureRetries;
+            pendingThumbnailCaptureTab = pending;
+            SetTimer(window, kDeferredThumbnailCaptureTimerId, 320, nullptr);
+        } else {
+            pending->thumbnailCaptureRetries = 0;
+        }
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
