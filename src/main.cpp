@@ -2214,7 +2214,14 @@ struct BrowserState {
                 // post-selection repaint has had time to reach the child surface.
                 // The previous 72 ms timeout could uncover a not-yet-painted view,
                 // exposing a white frame for several seconds on slower page restores.
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
+                // The native Start Page is hosted by WebKit too, and can take
+                // longer than a normal live page to repaint after being covered
+                // by the overview. Keep the transition surface over it briefly
+                // longer instead of exposing its transient black backing store.
+                const auto* selectedForSettle = active();
+                const ULONGLONG settleDuration = selectedForSettle
+                    && selectedForSettle->internalPage == L"start" ? 240 : 72;
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < settleDuration
                     || tabOverviewClosingSettleFramesRendered < 3;
                 if (settleStillActive) {
                     continueAnimation = true;
@@ -2241,7 +2248,12 @@ struct BrowserState {
                                 InvalidateRect(window, &exposedParent, FALSE);
                                 RECT exposedView { 0, 0, exposedWidth,
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                                // Repaint only the strip uncovered by the sidebar.
+                                // RedrawWindow queues child invalidation without forcing
+                                // a synchronous WebKit paint, avoiding a white flash while
+                                // the accelerated surface catches up.
+                                RedrawWindow(viewWindow, &exposedView, nullptr,
+                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
                     }
@@ -2275,7 +2287,8 @@ struct BrowserState {
                             if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                                 RECT exposedView { 0, 0, exposedWidth,
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                                RedrawWindow(viewWindow, &exposedView, nullptr,
+                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
                     }
