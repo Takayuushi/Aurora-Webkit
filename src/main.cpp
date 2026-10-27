@@ -2202,8 +2202,12 @@ struct BrowserState {
             } else {
                 // A short asynchronous settle is enough to let queued WebKit paints
                 // start without adding a visible dead pause after the zoom animation.
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
-                    || tabOverviewClosingSettleFramesRendered < 3;
+                // Keep the transition snapshot over WebKit until its first
+                // post-selection repaint has had time to reach the child surface.
+                // The previous 72 ms timeout could uncover a not-yet-painted view,
+                // exposing a white frame for several seconds on slower page restores.
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 240
+                    || tabOverviewClosingSettleFramesRendered < 6;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
@@ -2250,9 +2254,15 @@ struct BrowserState {
                         // Queue an asynchronous child repaint after the overlay is hidden.
                         if (auto* selected = active()) {
                             if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0, exposedWidth,
+                                RECT exposedView { 0, 0,
+                                    std::max(0, static_cast<int>(client.right)),
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
                                 InvalidateRect(viewWindow, &exposedView, FALSE);
+                                // Force the newly exposed child area to be queued for
+                                // repaint as well; the sidebar is a sibling overlay and
+                                // the parent invalidation alone can leave its dark pixels behind.
+                                RedrawWindow(viewWindow, &exposedView, nullptr,
+                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
                     }
@@ -3940,7 +3950,7 @@ struct BrowserState {
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
 form{margin:0}
 button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
-.shell{width:min(1040px,calc(100% - 48px));margin:0 auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
+.shell{width:100%;min-height:100vh;margin:0;background:transparent;border:0;border-radius:0;overflow:hidden;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;transform:none;will-change:auto;animation:none}
 .top{padding:13px 22px 0;background:var(--glass-bar);backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);border-bottom:1px solid var(--line)}
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
