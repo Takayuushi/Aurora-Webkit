@@ -236,6 +236,15 @@ constexpr int kResizeBorder = 4;
 struct BrowserState;
 struct TabState;
 
+void sidebarForcedRepaintCompleted(WKErrorRef, void* context)
+{
+    HWND viewWindow = reinterpret_cast<HWND>(context);
+    if (!viewWindow || !IsWindow(viewWindow))
+        return;
+    RedrawWindow(viewWindow, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+}
+
 int gLiveBrowserWindows = 0;
 bool openNewBrowserWindow(BrowserState*, bool privateMode = false);
 
@@ -289,7 +298,11 @@ std::wstring faviconURLForPage(const std::wstring& pageURL)
     if (host.empty())
         return { };
 
-    return L"https://" + host + L"/favicon.ico";
+    // Do not assume every site publishes /favicon.ico. Ask Google's favicon
+    // service for a larger raster icon; many sites declare their icon at a
+    // different path, and the old 16x16 ICO request produced visibly pixelated
+    // toolbar and tab icons.
+    return L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=128";
 }
 
 struct VisitEntry {
@@ -1107,6 +1120,7 @@ struct TabState {
     int previewWidth { 0 };
     int previewHeight { 0 };
     std::wstring previewURL;
+    int thumbnailCaptureRetries { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
 
@@ -1142,6 +1156,13 @@ struct BrowserState {
     bool privateBrowsing { false };
     bool customMaximized { false };
     bool wasMinimized { false };
+    bool windowBoundsAnimating { false };
+    bool windowTransitionAtTarget { false };
+    ULONGLONG windowTransitionStart { 0 };
+    ULONGLONG windowTransitionRevealAt { 0 };
+    ULONGLONG windowTransitionDuration { 320 };
+    RECT windowTransitionFrom { };
+    RECT windowTransitionTo { };
     RECT restoredWindowRect { };
     bool webFullscreen { false };
     bool fullscreenRestoreWasMaximized { false };
@@ -1163,6 +1184,9 @@ struct BrowserState {
     HWND sharePopoverWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
+    HWND windowTransitionWindow { nullptr };
+    HBITMAP windowTransitionBitmap { nullptr };
+    SIZE windowTransitionBitmapSize { 0, 0 };
     HBITMAP chromePaintBitmap { nullptr };
     SIZE chromePaintBitmapSize { 0, 0 };
     HBITMAP sidebarOverlayBitmap { nullptr };
@@ -1700,7 +1724,10 @@ struct BrowserState {
         const int available = std::max(1, static_cast<int>(client.right) - sidePadding * 2
             - gap * static_cast<int>(count - 1));
         const int maxWidth = scaleForDpi(window, 280);
-        const int tabWidth = std::max(scaleForDpi(window, 112),
+        // Never force a 112px minimum: with many tabs that minimum makes the
+        // computed group wider than the window, so adjacent tabs overlap.
+        // Let tabs shrink to the available slot and clip their labels instead.
+        const int tabWidth = std::max(1,
             std::min(maxWidth, available / static_cast<int>(count)));
         const int groupWidth = tabWidth * static_cast<int>(count) + gap * static_cast<int>(count - 1);
         const int groupLeft = std::max(sidePadding, (static_cast<int>(client.right) - groupWidth) / 2);
@@ -1711,6 +1738,20 @@ struct BrowserState {
         return { left, rowTop + inset, left + tabWidth, rowTop + rowHeight - inset };
     }
 
+    void invalidateTabBar()
+    {
+        // Invalidate the old row even when the new tab count hides the strip;
+        // otherwise stale capsules remain where the last visible row used to be.
+        if (!window || webFullscreen || tabs.empty())
+            return;
+        RECT client { };
+        if (!GetClientRect(window, &client))
+            return;
+        const int top = titleBarHeight() + toolbarHeight();
+        const int rowHeight = scaleForDpi(window, kTabsBarHeight);
+        RECT strip { 0, top, client.right, top + rowHeight };
+        InvalidateRect(window, &strip, FALSE);
+    }
 
     bool downloadsHaveInProgress() const
     {
@@ -1890,7 +1931,7 @@ struct BrowserState {
             sidebarAnimating = false;
             sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
             sidebarAnimationTarget = sidebarAnimationFrom;
-            positionOverlayWindows();
+            positionOverlayWindows(true);
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
             return;
@@ -1908,7 +1949,7 @@ struct BrowserState {
         // Only the independent sidebar overlay changes geometry during this
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
         // resize and synchronously repaint the WebKit GPU surface.
-        positionOverlayWindows();
+        positionOverlayWindows(true);
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
     }
@@ -2124,6 +2165,51 @@ struct BrowserState {
             return;
 
         bool continueAnimation = false;
+        if (windowBoundsAnimating) {
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG elapsed = now - windowTransitionStart;
+            if (elapsed < windowTransitionDuration && windowTransitionWindow
+                && IsWindow(windowTransitionWindow)) {
+                const float t = std::clamp(
+                    static_cast<float>(elapsed) / static_cast<float>(windowTransitionDuration),
+                    0.0f, 1.0f);
+                const float eased = t < 0.5f
+                    ? 4.0f * t * t * t
+                    : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) / 2.0f;
+                const auto interpolate = [eased](int from, int to) {
+                    return static_cast<int>(std::lround(
+                        static_cast<float>(from) + static_cast<float>(to - from) * eased));
+                };
+                const int left = interpolate(windowTransitionFrom.left, windowTransitionTo.left);
+                const int top = interpolate(windowTransitionFrom.top, windowTransitionTo.top);
+                const int right = interpolate(windowTransitionFrom.right, windowTransitionTo.right);
+                const int bottom = interpolate(windowTransitionFrom.bottom, windowTransitionTo.bottom);
+                SetWindowPos(windowTransitionWindow, HWND_TOPMOST,
+                    left, top, std::max(1, right - left), std::max(1, bottom - top),
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                InvalidateRect(windowTransitionWindow, nullptr, FALSE);
+                UpdateWindow(windowTransitionWindow);
+                continueAnimation = true;
+            } else if (!windowTransitionAtTarget) {
+                if (windowTransitionWindow && IsWindow(windowTransitionWindow)) {
+                    SetWindowPos(windowTransitionWindow, HWND_TOPMOST,
+                        windowTransitionTo.left, windowTransitionTo.top,
+                        windowTransitionTo.right - windowTransitionTo.left,
+                        windowTransitionTo.bottom - windowTransitionTo.top,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+                    InvalidateRect(windowTransitionWindow, nullptr, FALSE);
+                    UpdateWindow(windowTransitionWindow);
+                }
+                windowTransitionAtTarget = true;
+                continueAnimation = now < windowTransitionRevealAt;
+                if (!continueAnimation)
+                    finishWindowBoundsTransition();
+            } else if (now < windowTransitionRevealAt) {
+                continueAnimation = true;
+            } else {
+                finishWindowBoundsTransition();
+            }
+        }
         for (int i = 0; i < 4; ++i) {
             const RECT button = rightToolbarButtonRect(i);
             const float target = hoveredToolbarButton == i && button.right > button.left ? 1.0f : 0.0f;
@@ -2202,7 +2288,18 @@ struct BrowserState {
             } else {
                 // A short asynchronous settle is enough to let queued WebKit paints
                 // start without adding a visible dead pause after the zoom animation.
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
+                // Keep the transition snapshot over WebKit until its first
+                // post-selection repaint has had time to reach the child surface.
+                // The previous 72 ms timeout could uncover a not-yet-painted view,
+                // exposing a white frame for several seconds on slower page restores.
+                // The native Start Page is hosted by WebKit too, and can take
+                // longer than a normal live page to repaint after being covered
+                // by the overview. Keep the transition surface over it briefly
+                // longer instead of exposing its transient black backing store.
+                const auto* selectedForSettle = active();
+                const ULONGLONG settleDuration = selectedForSettle
+                    && selectedForSettle->internalPage == L"start" ? 240 : 72;
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < settleDuration
                     || tabOverviewClosingSettleFramesRendered < 3;
                 if (settleStillActive) {
                     continueAnimation = true;
@@ -2219,8 +2316,24 @@ struct BrowserState {
                     // Return keyboard focus only after the transition overlay is gone.
                     // No synchronous redraw is requested here.
                     if (auto* selected = active()) {
-                        if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             SetFocus(viewWindow);
+                            RECT client { };
+                            if (GetClientRect(window, &client)) {
+                                const int exposedWidth = std::min(
+                                    scaleForDpi(window, 300), static_cast<int>(client.right));
+                                RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
+                                InvalidateRect(window, &exposedParent, FALSE);
+                                RECT exposedView { 0, 0, exposedWidth,
+                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
+                                // Repaint only the strip uncovered by the sidebar.
+                                // RedrawWindow queues child invalidation without forcing
+                                // a synchronous WebKit paint, avoiding a white flash while
+                                // the accelerated surface catches up.
+                                RedrawWindow(viewWindow, &exposedView, nullptr,
+                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+                            }
+                        }
                     }
                 }
             }
@@ -2230,32 +2343,32 @@ struct BrowserState {
             const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 240;
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
-            positionOverlayWindows();
+            positionOverlayWindows(true);
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
                 sidebarAnimating = false;
-                positionOverlayWindows();
+                positionOverlayWindows(true);
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
                 if (!sidebarOpen) {
-                    RECT client { };
-                    if (GetClientRect(window, &client)) {
-                        const int exposedWidth = std::min(
-                            scaleForDpi(window, 300), static_cast<int>(client.right));
-                        RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
-                        InvalidateRect(window, &exposedParent, FALSE);
-                        // The sidebar is a sibling HWND. Invalidating only the parent
-                        // does not refresh the WebKit child region previously hidden by it.
-                        // Queue an asynchronous child repaint after the overlay is hidden.
-                        if (auto* selected = active()) {
-                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0, exposedWidth,
-                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
-                            }
+                    // The overlay was a sibling above WebKit. Restore the active
+                    // accelerated view's z-order after hiding the sidebar.
+                    if (auto* selected = active()) {
+                        auto page = WKViewGetPage(selected->view.get());
+                        if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
+                            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                                    | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                            // Ask WebKit itself to deliver a full composited repaint;
+                            // merely invalidating its child HWND can leave a stale
+                            // accelerated surface exposed beneath the closing sidebar.
+                            if (page)
+                                WKPageForceRepaint(page, reinterpret_cast<void*>(viewWindow),
+                                    sidebarForcedRepaintCompleted);
                         }
                     }
+
                 }
             }
         }
@@ -2342,11 +2455,10 @@ struct BrowserState {
         auto page = WKViewGetPage(tab.view.get());
         if (!page || WKPageGetEstimatedProgress(page) < 1.0)
             return;
-        const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
-        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
-            && tab.internalPage.empty())
-            return;
-
+        // WKPageCopyActiveURL can briefly differ from the address-bar URL during
+        // redirects and canonicalization (for example, GitHub adding a trailing
+        // slash). The WKView belongs to this TabState, so an exact URL-string
+        // comparison can incorrectly reject a valid live-page thumbnail.
         HWND viewWindow = WKViewGetWindow(tab.view.get());
         if (!viewWindow)
             return;
@@ -2417,10 +2529,11 @@ struct BrowserState {
 
         if (captured) {
             // This bitmap is enlarged to the full content viewport during the tab-selection zoom.
-            // Keep it near native resolution (up to 1080p) so the transition does not look blurry,
-            // while avoiding pointless upscaling of smaller captures.
+            // Keep the cached preview near native resolution for the full-window
+            // selection transition. A 1080p cap can leave a visible soft frame on
+            // high-DPI / larger viewports, so retain detail up to 2560x1440.
             const double factor = std::min(1.0,
-                std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
+                std::min(2560.0 / sourceWidth, 1440.0 / sourceHeight));
             const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
             const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
             HDC previewDC = CreateCompatibleDC(sourceDC);
@@ -2461,6 +2574,7 @@ struct BrowserState {
         if (!window || !tab)
             return;
         pendingThumbnailCaptureTab = tab;
+        tab->thumbnailCaptureRetries = 0;
         SetTimer(window, kDeferredThumbnailCaptureTimerId,
             std::max<UINT>(1, delayMilliseconds), nullptr);
     }
@@ -2495,6 +2609,18 @@ struct BrowserState {
         pendingThumbnailCaptureTab = nullptr;
         KillTimer(window, kDeferredThumbnailCaptureTimerId);
         captureTabThumbnail(*pending);
+
+        // A GPU-backed view can still be presenting a blank frame immediately
+        // after activation. Retry a few times while this tab remains active so
+        // a transient failed BitBlt does not leave a generic card indefinitely.
+        if (pending->previewURL != pending->activeUrl
+            && pending->thumbnailCaptureRetries < 4) {
+            ++pending->thumbnailCaptureRetries;
+            pendingThumbnailCaptureTab = pending;
+            SetTimer(window, kDeferredThumbnailCaptureTimerId, 320, nullptr);
+        } else {
+            pending->thumbnailCaptureRetries = 0;
+        }
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
@@ -2698,7 +2824,7 @@ struct BrowserState {
         // Reuse the same captured pixels shown by the card, including internal pages,
         // so the moving snapshot and the settled preview do not visually swap midway.
         if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
-            && tab.previewURL == tab.activeUrl) {
+            ) {
             HDC previewDC = CreateCompatibleDC(dc);
             if (previewDC) {
                 HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
@@ -2776,7 +2902,7 @@ struct BrowserState {
         if (index < tabs.size()) {
             const TabState& tab = *tabs[index];
             if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
-                && tab.previewURL == tab.activeUrl) {
+                ) {
                 const double boundsWidth = static_cast<double>(bounds.right - bounds.left);
                 const double boundsHeight = static_cast<double>(bounds.bottom - bounds.top);
                 const double fit = std::min(boundsWidth / tab.previewWidth,
@@ -2919,7 +3045,7 @@ struct BrowserState {
 
             if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
-                && tabs[i]->previewURL == tabs[i]->activeUrl) {
+                ) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
                     HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
@@ -3940,7 +4066,7 @@ struct BrowserState {
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
 form{margin:0}
 button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
-.shell{width:min(1040px,calc(100% - 48px));margin:0 auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
+.shell{width:100%;min-height:100vh;margin:0;background:transparent;border:0;border-radius:0;overflow:hidden;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;transform:none;will-change:auto;animation:none}
 .top{padding:13px 22px 0;background:var(--glass-bar);backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);border-bottom:1px solid var(--line)}
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
@@ -4611,6 +4737,7 @@ search.addEventListener('keydown',e=>{
         else
             resize();
 
+        invalidateTabBar();
         if (loadInitialStartPage) {
             // Let the tab chrome paint before building/loading all Start Page content.
             if (!window || !SetTimer(window, kDeferredTabLoadTimerId, 16, nullptr))
@@ -4822,6 +4949,12 @@ search.addEventListener('keydown',e=>{
         // that so an open sidebar remains above it without touching the renderer.
         positionOverlayWindows(true);
         invalidateTabChrome(tab);
+        // Refresh the newly selected tab's cached preview as well as the tab
+        // we just left. Without this, tabs that were already loaded before the
+        // thumbnail-capture feature was enabled can keep showing skeleton cards
+        // indefinitely until another navigation happens.
+        if (!switchingFromOverview && previouslyActive != index)
+            scheduleTabThumbnailCapture(tab, 260);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
     }
@@ -4859,6 +4992,7 @@ search.addEventListener('keydown',e=>{
         else if (activeTab > index)
             --activeTab;
 
+        invalidateTabBar();
         if (keepOverviewOpen) {
             tabSwitchAnimating = false;
             if (auto* tab = active()) {
@@ -5803,41 +5937,158 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             InvalidateRect(window, nullptr, FALSE);
     }
 
+    bool captureWindowTransitionFrame(const RECT& sourceRect)
+    {
+        if (!window || GetForegroundWindow() != window)
+            return false;
+
+        const int width = sourceRect.right - sourceRect.left;
+        const int height = sourceRect.bottom - sourceRect.top;
+        if (width <= 0 || height <= 0)
+            return false;
+
+        HDC screenDC = GetDC(nullptr);
+        if (!screenDC)
+            return false;
+        HDC memoryDC = CreateCompatibleDC(screenDC);
+        HBITMAP frame = memoryDC ? CreateCompatibleBitmap(screenDC, width, height) : nullptr;
+        bool copied = false;
+        if (memoryDC && frame) {
+            HGDIOBJ oldBitmap = SelectObject(memoryDC, frame);
+            copied = BitBlt(memoryDC, 0, 0, width, height, screenDC,
+                sourceRect.left, sourceRect.top, SRCCOPY) != FALSE;
+            SelectObject(memoryDC, oldBitmap);
+        }
+        if (memoryDC)
+            DeleteDC(memoryDC);
+        ReleaseDC(nullptr, screenDC);
+
+        if (!copied || !frame) {
+            if (frame)
+                DeleteObject(frame);
+            return false;
+        }
+        if (windowTransitionBitmap)
+            DeleteObject(windowTransitionBitmap);
+        windowTransitionBitmap = frame;
+        windowTransitionBitmapSize = SIZE { width, height };
+        return true;
+    }
+
+    void finishWindowBoundsTransition()
+    {
+        windowBoundsAnimating = false;
+        windowTransitionAtTarget = false;
+        windowTransitionRevealAt = 0;
+
+        // Reveal the real WebKit window under the final transition frame so the
+        // compositor can settle the resize before the captured frame disappears.
+        if (window && IsWindow(window)) {
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+            disableNativeWindowBorder(window);
+            resize();
+            redrawActiveWebView(false);
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        if (windowTransitionWindow && IsWindow(windowTransitionWindow))
+            ShowWindow(windowTransitionWindow, SW_HIDE);
+        if (windowTransitionBitmap) {
+            DeleteObject(windowTransitionBitmap);
+            windowTransitionBitmap = nullptr;
+            windowTransitionBitmapSize = SIZE { 0, 0 };
+        }
+        if (window && IsWindow(window))
+            SetForegroundWindow(window);
+    }
+
+    bool animateWindowBoundsTo(const RECT& target, bool targetMaximized)
+    {
+        if (!window || IsIconic(window))
+            return false;
+
+        RECT from { };
+        if (!GetWindowRect(window, &from))
+            return false;
+        if (from.left == target.left && from.top == target.top
+            && from.right == target.right && from.bottom == target.bottom) {
+            customMaximized = targetMaximized;
+            return true;
+        }
+        if (!captureWindowTransitionFrame(from))
+            return false;
+
+        if (!windowTransitionWindow || !IsWindow(windowTransitionWindow)) {
+            windowTransitionWindow = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                overlayWindowClassName, L"", WS_POPUP,
+                from.left, from.top, from.right - from.left, from.bottom - from.top,
+                nullptr, nullptr, GetModuleHandleW(nullptr), this);
+        }
+        if (!windowTransitionWindow || !IsWindow(windowTransitionWindow)) {
+            DeleteObject(windowTransitionBitmap);
+            windowTransitionBitmap = nullptr;
+            windowTransitionBitmapSize = SIZE { 0, 0 };
+            return false;
+        }
+
+        windowTransitionFrom = from;
+        windowTransitionTo = target;
+        windowTransitionStart = GetTickCount64();
+        windowTransitionDuration = 320;
+        windowTransitionRevealAt = windowTransitionStart + windowTransitionDuration + 180;
+        windowTransitionAtTarget = false;
+        windowBoundsAnimating = true;
+        customMaximized = targetMaximized;
+
+        // Resize the real browser once, hidden behind the captured frame. WM_SIZE
+        // lays out WebKit at the destination without forcing a synchronous paint.
+        SetWindowPos(window, nullptr,
+            target.left, target.top, target.right - target.left, target.bottom - target.top,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_HIDEWINDOW);
+        disableNativeWindowBorder(window);
+
+        SetWindowPos(windowTransitionWindow, HWND_TOPMOST,
+            from.left, from.top, from.right - from.left, from.bottom - from.top,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        InvalidateRect(windowTransitionWindow, nullptr, FALSE);
+        UpdateWindow(windowTransitionWindow);
+        startChromeAnimationTimer();
+        return true;
+    }
+
     void toggleMaximizeWindow()
     {
-        // Keep maximize state changes deterministic; animation is handled as a
-        // separate window-transition task rather than by synchronous layout work.
-        if (!customMaximized) {
-            GetWindowRect(window, &restoredWindowRect);
+        if (!window || windowBoundsAnimating)
+            return;
 
+        RECT current { };
+        if (!GetWindowRect(window, &current))
+            return;
+
+        const bool targetMaximized = !customMaximized;
+        RECT target { };
+        if (targetMaximized) {
+            restoredWindowRect = current;
             HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
             MONITORINFO info { };
             info.cbSize = sizeof(info);
-            if (monitor && GetMonitorInfoW(monitor, &info)) {
-                SetWindowPos(
-                    window,
-                    HWND_TOP,
-                    info.rcWork.left,
-                    info.rcWork.top,
-                    info.rcWork.right - info.rcWork.left,
-                    info.rcWork.bottom - info.rcWork.top,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
-                );
-                customMaximized = true;
-            }
+            if (!monitor || !GetMonitorInfoW(monitor, &info))
+                return;
+            target = info.rcWork;
         } else {
-            SetWindowPos(
-                window,
-                HWND_TOP,
-                restoredWindowRect.left,
-                restoredWindowRect.top,
-                restoredWindowRect.right - restoredWindowRect.left,
-                restoredWindowRect.bottom - restoredWindowRect.top,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
-            );
-            customMaximized = false;
+            target = restoredWindowRect;
+            if (target.right <= target.left || target.bottom <= target.top)
+                return;
         }
 
+        if (animateWindowBoundsTo(target, targetMaximized))
+            return;
+
+        // If a screenshot cannot be taken, retain the native instant resize.
+        SetWindowPos(window, HWND_TOP,
+            target.left, target.top, target.right - target.left, target.bottom - target.top,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        customMaximized = targetMaximized;
         resize();
         disableNativeWindowBorder(window);
         redrawAfterLayoutChange();
@@ -6692,6 +6943,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
             for (size_t i = 0; i < tabs.size(); ++i) {
                 const RECT tabRect = tabBarItemRect(i);
+                const int tabPaintState = SaveDC(dc);
+                if (tabPaintState)
+                    IntersectClipRect(dc, tabRect.left, tabsTop, tabRect.right, tabsTop + tabsH);
                 const float transitionProgress = tabSwitchEase();
                 const float activeWeight = i == activeTab ? transitionProgress
                     : (tabSwitchAnimating && i == previousActiveTab ? 1.0f - transitionProgress : 0.0f);
@@ -6741,6 +6995,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     SelectObject(dc, oldTabFont);
                 RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top, tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
                 drawClose(dc, closeRect, dark);
+                if (tabPaintState)
+                    RestoreDC(dc, tabPaintState);
             }
         }
 
@@ -7486,8 +7742,14 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
         if (FAILED(hr) || !cacheFile[0] || !IsWindow(window))
             return;
 
-        HICON icon = static_cast<HICON>(LoadImageW(nullptr, cacheFile, IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-        if (!icon)
+        // The favicon service returns PNG data. Load it through GDI+ instead
+        // of IMAGE_ICON, which only understands ICO files. Request 128px source
+        // artwork so the 16-17px toolbar and tab slots have more detail to scale.
+        Gdiplus::Bitmap bitmap(cacheFile);
+        if (bitmap.GetLastStatus() != Gdiplus::Ok)
+            return;
+        HICON icon = nullptr;
+        if (bitmap.GetHICON(&icon) != Gdiplus::Ok || !icon)
             return;
 
         auto* result = new FaviconResult { pageURL, icon };
@@ -10153,6 +10415,24 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->applyTheme();
         return 0;
 
+    case WM_SYSCOMMAND:
+        if (state && !state->webFullscreen) {
+            const UINT systemCommand = static_cast<UINT>(wParam) & 0xFFF0u;
+            if (systemCommand == SC_MAXIMIZE && !IsIconic(window)) {
+                // Windows still considers the borderless, custom-zoomed window
+                // a normal window, so caption double-click reports SC_MAXIMIZE
+                // even when the user intends to restore it.
+                state->toggleMaximizeWindow();
+                return 0;
+            }
+            if (systemCommand == SC_RESTORE && state->customMaximized
+                && !state->wasMinimized && !IsIconic(window)) {
+                state->toggleMaximizeWindow();
+                return 0;
+            }
+        }
+        break;
+
     case WM_SIZE:
         if (state) {
             const bool minimizing = wParam == SIZE_MINIMIZED;
@@ -10167,7 +10447,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->resize();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
                 disableNativeWindowBorder(window);
-                state->redrawAfterLayoutChange();
+                if (!state->windowBoundsAnimating)
+                    state->redrawAfterLayoutChange();
             }
         }
         return 0;
@@ -10207,6 +10488,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             if (state->tabOverviewWindow && IsWindow(state->tabOverviewWindow)) {
                 DestroyWindow(state->tabOverviewWindow);
                 state->tabOverviewWindow = nullptr;
+            }
+            if (state->windowTransitionWindow && IsWindow(state->windowTransitionWindow)) {
+                DestroyWindow(state->windowTransitionWindow);
+                state->windowTransitionWindow = nullptr;
+            }
+            if (state->windowTransitionBitmap) {
+                DeleteObject(state->windowTransitionBitmap);
+                state->windowTransitionBitmap = nullptr;
+                state->windowTransitionBitmapSize = SIZE { 0, 0 };
             }
             if (state->sidebarOverlayBitmap) {
                 DeleteObject(state->sidebarOverlayBitmap);
@@ -10269,11 +10559,45 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_NCHITTEST:
+        if (overlay == state->windowTransitionWindow)
+            return HTCLIENT;
+        break;
+
+    case WM_MOUSEACTIVATE:
+        if (overlay == state->windowTransitionWindow)
+            return MA_NOACTIVATE;
+        break;
+
     case WM_PAINT: {
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(overlay, &paint);
         RECT client { };
         GetClientRect(overlay, &client);
+
+        if (overlay == state->windowTransitionWindow) {
+            HBRUSH background = CreateSolidBrush(RGB(25, 25, 28));
+            FillRect(dc, &client, background);
+            DeleteObject(background);
+            if (state->windowTransitionBitmap && state->windowTransitionBitmapSize.cx > 0
+                && state->windowTransitionBitmapSize.cy > 0) {
+                HDC sourceDC = CreateCompatibleDC(dc);
+                if (sourceDC) {
+                    HGDIOBJ oldBitmap = SelectObject(sourceDC, state->windowTransitionBitmap);
+                    SetStretchBltMode(dc, HALFTONE);
+                    SetBrushOrgEx(dc, 0, 0, nullptr);
+                    StretchBlt(dc, 0, 0, std::max(1L, client.right), std::max(1L, client.bottom),
+                        sourceDC, 0, 0,
+                        state->windowTransitionBitmapSize.cx,
+                        state->windowTransitionBitmapSize.cy, SRCCOPY);
+                    SelectObject(sourceDC, oldBitmap);
+                    DeleteDC(sourceDC);
+                }
+            }
+            EndPaint(overlay, &paint);
+            return 0;
+        }
+
         const int width = std::max(1L, client.right);
         const int height = std::max(1L, client.bottom);
 

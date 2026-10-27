@@ -5,6 +5,10 @@ on:
     branches:
       - fix/safari-download-toolbar-sidebar
       - dev/aurora-ui-improvements
+      - fix/tab-preview-rendering
+  pull_request:
+    branches:
+      - dev/aurora-ui-improvements
   workflow_dispatch:
     inputs:
       webkit_sha:
