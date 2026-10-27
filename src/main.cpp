@@ -1732,13 +1732,16 @@ struct BrowserState {
 
     void invalidateTabBar()
     {
-        if (!window || tabsBarHeight() <= 0)
+        // Invalidate the old row even when the new tab count hides the strip;
+        // otherwise stale capsules remain where the last visible row used to be.
+        if (!window || webFullscreen || tabs.empty())
             return;
         RECT client { };
         if (!GetClientRect(window, &client))
             return;
         const int top = titleBarHeight() + toolbarHeight();
-        RECT strip { 0, top, client.right, top + tabsBarHeight() };
+        const int rowHeight = scaleForDpi(window, kTabsBarHeight);
+        RECT strip { 0, top, client.right, top + rowHeight };
         InvalidateRect(window, &strip, FALSE);
     }
 
@@ -1920,7 +1923,7 @@ struct BrowserState {
             sidebarAnimating = false;
             sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
             sidebarAnimationTarget = sidebarAnimationFrom;
-            positionOverlayWindows();
+            positionOverlayWindows(true);
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
             return;
@@ -1938,7 +1941,7 @@ struct BrowserState {
         // Only the independent sidebar overlay changes geometry during this
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
         // resize and synchronously repaint the WebKit GPU surface.
-        positionOverlayWindows();
+        positionOverlayWindows(true);
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
     }
@@ -2332,12 +2335,12 @@ struct BrowserState {
             const bool transitionStillActive = GetTickCount64() - sidebarAnimationStart < 240;
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
-            positionOverlayWindows();
+            positionOverlayWindows(true);
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
                 sidebarAnimating = false;
-                positionOverlayWindows();
+                positionOverlayWindows(true);
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
                 if (!sidebarOpen) {
@@ -2378,7 +2381,7 @@ struct BrowserState {
 
         if (sidebarExposeRepairUntil) {
             const ULONGLONG now = GetTickCount64();
-            if (now < sidebarExposeRepairUntil) {
+            if (!sidebarOpen && !sidebarAnimating && now < sidebarExposeRepairUntil) {
                 RECT client { };
                 if (GetClientRect(window, &client)) {
                     const int exposedWidth = std::min(
