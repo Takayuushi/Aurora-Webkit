@@ -2747,7 +2747,7 @@ struct BrowserState {
         // Reuse the same captured pixels shown by the card, including internal pages,
         // so the moving snapshot and the settled preview do not visually swap midway.
         if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
-            && tab.previewURL == tab.activeUrl) {
+            ) {
             HDC previewDC = CreateCompatibleDC(dc);
             if (previewDC) {
                 HGDIOBJ oldPreview = SelectObject(previewDC, tab.previewBitmap);
@@ -2825,7 +2825,7 @@ struct BrowserState {
         if (index < tabs.size()) {
             const TabState& tab = *tabs[index];
             if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
-                && tab.previewURL == tab.activeUrl) {
+                ) {
                 const double boundsWidth = static_cast<double>(bounds.right - bounds.left);
                 const double boundsHeight = static_cast<double>(bounds.bottom - bounds.top);
                 const double fit = std::min(boundsWidth / tab.previewWidth,
@@ -2968,7 +2968,7 @@ struct BrowserState {
 
             if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
-                && tabs[i]->previewURL == tabs[i]->activeUrl) {
+                ) {
                 HDC previewDC = CreateCompatibleDC(dc);
                 if (previewDC) {
                     HGDIOBJ oldPreview = SelectObject(previewDC, tabs[i]->previewBitmap);
