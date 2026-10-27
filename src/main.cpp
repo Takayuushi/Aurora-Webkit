@@ -1217,7 +1217,6 @@ struct BrowserState {
     float sidebarAnimationFrom { 0.0f };
     float sidebarAnimationTarget { 0.0f };
     ULONGLONG sidebarAnimationStart { 0 };
-    ULONGLONG sidebarExposeRepairUntil { 0 };
     bool tabOverviewVisible { false };
     bool tabOverviewAnimating { false };
     ULONGLONG tabOverviewAnimationStart { 0 };
@@ -2369,54 +2368,8 @@ struct BrowserState {
                                     sidebarForcedRepaintCompleted);
                         }
                     }
-                    // Accelerated WebKit surfaces can miss the first expose after
-                    // an overlay is removed. Keep requesting localized paints briefly
-                    // so the Start Page and live pages both recover without a full redraw.
-                    sidebarExposeRepairUntil = GetTickCount64() + 700;
-                    RECT client { };
-                    if (GetClientRect(window, &client)) {
-                        const int exposedWidth = std::min(
-                            scaleForDpi(window, 300), static_cast<int>(client.right));
-                        RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
-                        InvalidateRect(window, &exposedParent, FALSE);
-                        // The sidebar is a sibling HWND. Invalidating only the parent
-                        // does not refresh the WebKit child region previously hidden by it.
-                        // Queue an asynchronous child repaint after the overlay is hidden.
-                        if (auto* selected = active()) {
-                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0, exposedWidth,
-                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                RedrawWindow(viewWindow, &exposedView, nullptr,
-                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
-        if (sidebarExposeRepairUntil) {
-            const ULONGLONG now = GetTickCount64();
-            if (!sidebarOpen && !sidebarAnimating && now < sidebarExposeRepairUntil) {
-                RECT client { };
-                if (GetClientRect(window, &client)) {
-                    const int exposedWidth = std::min(
-                        scaleForDpi(window, 300), static_cast<int>(client.right));
-                    const int contentY = contentTop();
-                    RECT exposedParent { 0, contentY, exposedWidth, client.bottom };
-                    InvalidateRect(window, &exposedParent, FALSE);
-                    if (auto* selected = active()) {
-                        if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                            RECT exposedView { 0, 0, exposedWidth,
-                                std::max(0, static_cast<int>(client.bottom) - contentY) };
-                            RedrawWindow(viewWindow, &exposedView, nullptr,
-                                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-                        }
-                    }
                 }
-                continueAnimation = true;
-            } else {
-                sidebarExposeRepairUntil = 0;
             }
         }
 
