@@ -10465,7 +10465,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_SYSCOMMAND:
         if (state && !state->webFullscreen) {
             const UINT systemCommand = static_cast<UINT>(wParam) & 0xFFF0u;
-            if (systemCommand == SC_MAXIMIZE && !state->customMaximized && !IsIconic(window)) {
+            if (systemCommand == SC_MAXIMIZE && !IsIconic(window)) {
+                // Windows still considers the borderless, custom-zoomed window
+                // a normal window, so caption double-click reports SC_MAXIMIZE
+                // even when the user intends to restore it.
                 state->toggleMaximizeWindow();
                 return 0;
             }
