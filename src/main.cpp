@@ -289,7 +289,11 @@ std::wstring faviconURLForPage(const std::wstring& pageURL)
     if (host.empty())
         return { };
 
-    return L"https://" + host + L"/favicon.ico";
+    // Do not assume every site publishes /favicon.ico. Ask Google's favicon
+    // service for a larger raster icon; many sites declare their icon at a
+    // different path, and the old 16x16 ICO request produced visibly pixelated
+    // toolbar and tab icons.
+    return L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=64";
 }
 
 struct VisitEntry {
@@ -7496,8 +7500,14 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
         if (FAILED(hr) || !cacheFile[0] || !IsWindow(window))
             return;
 
-        HICON icon = static_cast<HICON>(LoadImageW(nullptr, cacheFile, IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-        if (!icon)
+        // The favicon service returns PNG data. Load it through GDI+ instead
+        // of IMAGE_ICON, which only understands ICO files, and rasterize at 32px
+        // so Windows can downscale cleanly for the 16px toolbar slot.
+        Gdiplus::Bitmap bitmap(cacheFile);
+        if (bitmap.GetLastStatus() != Gdiplus::Ok)
+            return;
+        HICON icon = nullptr;
+        if (bitmap.GetHICON(&icon) != Gdiplus::Ok || !icon)
             return;
 
         auto* result = new FaviconResult { pageURL, icon };
