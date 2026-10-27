@@ -2206,8 +2206,8 @@ struct BrowserState {
                 // post-selection repaint has had time to reach the child surface.
                 // The previous 72 ms timeout could uncover a not-yet-painted view,
                 // exposing a white frame for several seconds on slower page restores.
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 240
-                    || tabOverviewClosingSettleFramesRendered < 6;
+                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
+                    || tabOverviewClosingSettleFramesRendered < 3;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
@@ -2254,15 +2254,9 @@ struct BrowserState {
                         // Queue an asynchronous child repaint after the overlay is hidden.
                         if (auto* selected = active()) {
                             if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0,
-                                    std::max(0, static_cast<int>(client.right)),
+                                RECT exposedView { 0, 0, exposedWidth,
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
                                 InvalidateRect(viewWindow, &exposedView, FALSE);
-                                // Force the newly exposed child area to be queued for
-                                // repaint as well; the sidebar is a sibling overlay and
-                                // the parent invalidation alone can leave its dark pixels behind.
-                                RedrawWindow(viewWindow, &exposedView, nullptr,
-                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
                     }
