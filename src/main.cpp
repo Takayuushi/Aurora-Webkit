@@ -236,6 +236,15 @@ constexpr int kResizeBorder = 4;
 struct BrowserState;
 struct TabState;
 
+void sidebarForcedRepaintCompleted(WKErrorRef, void* context)
+{
+    HWND viewWindow = reinterpret_cast<HWND>(context);
+    if (!viewWindow || !IsWindow(viewWindow))
+        return;
+    RedrawWindow(viewWindow, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+}
+
 int gLiveBrowserWindows = 0;
 bool openNewBrowserWindow(BrowserState*, bool privateMode = false);
 
@@ -2347,10 +2356,17 @@ struct BrowserState {
                     // The overlay was a sibling above WebKit. Restore the active
                     // accelerated view's z-order after hiding the sidebar.
                     if (auto* selected = active()) {
+                        auto page = WKViewGetPage(selected->view.get());
                         if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                                     | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                            // Ask WebKit itself to deliver a full composited repaint;
+                            // merely invalidating its child HWND can leave a stale
+                            // accelerated surface exposed beneath the closing sidebar.
+                            if (page)
+                                WKPageForceRepaint(page, reinterpret_cast<void*>(viewWindow),
+                                    sidebarForcedRepaintCompleted);
                         }
                     }
                     // Accelerated WebKit surfaces can miss the first expose after
