@@ -293,7 +293,7 @@ std::wstring faviconURLForPage(const std::wstring& pageURL)
     // service for a larger raster icon; many sites declare their icon at a
     // different path, and the old 16x16 ICO request produced visibly pixelated
     // toolbar and tab icons.
-    return L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=64";
+    return L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=128";
 }
 
 struct VisitEntry {
@@ -7501,8 +7501,8 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
             return;
 
         // The favicon service returns PNG data. Load it through GDI+ instead
-        // of IMAGE_ICON, which only understands ICO files, and rasterize at 32px
-        // so Windows can downscale cleanly for the 16px toolbar slot.
+        // of IMAGE_ICON, which only understands ICO files. Request 128px source
+        // artwork so the 16-17px toolbar and tab slots have more detail to scale.
         Gdiplus::Bitmap bitmap(cacheFile);
         if (bitmap.GetLastStatus() != Gdiplus::Ok)
             return;
