@@ -4826,6 +4826,12 @@ search.addEventListener('keydown',e=>{
         // that so an open sidebar remains above it without touching the renderer.
         positionOverlayWindows(true);
         invalidateTabChrome(tab);
+        // Refresh the newly selected tab's cached preview as well as the tab
+        // we just left. Without this, tabs that were already loaded before the
+        // thumbnail-capture feature was enabled can keep showing skeleton cards
+        // indefinitely until another navigation happens.
+        if (!switchingFromOverview && previouslyActive != index)
+            scheduleTabThumbnailCapture(tab, 260);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
     }
