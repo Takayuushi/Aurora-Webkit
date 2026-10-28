@@ -2001,13 +2001,15 @@ struct BrowserState {
                     RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
                         RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
                 } else {
-                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-                    if (!forceTop)
-                        flags |= SWP_NOZORDER;
-                    SetWindowPos(sidebarOverlayWindow,
-                        forceTop ? HWND_TOP : nullptr,
-                        left, top, width, height, flags);
+                    // WebKit can raise its accelerated child HWND when a page paints.
+                    // Keep the sidebar above that surface even after the first show.
+                    SetWindowPos(sidebarOverlayWindow, HWND_TOP,
+                        left, top, width, height,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                     InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                    if (!sidebarAnimating || forceTop)
+                        RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
                 }
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
@@ -10214,6 +10216,9 @@ void didChangeIsLoading(const void* clientInfo)
     // opens. Avoid capturing in this loading callback: synthetic screenshot work
     // here can stall/flicker the active WebKit surface at navigation completion.
     tab->browser->invalidateTabChrome(tab);
+    if (tab == tab->browser->active()
+        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating))
+        tab->browser->positionOverlayWindows(true);
 }
 
 void didChangeTitle(const void* clientInfo)
@@ -10268,6 +10273,9 @@ void didChangeActiveURL(const void* clientInfo)
         setWindowTextIfChanged(tab->browser->addressBar, addressText);
     }
 
+    if (tab == tab->browser->active()
+        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating))
+        tab->browser->positionOverlayWindows(true);
     tab->browser->invalidateTabChrome(tab);
 
     if (url.empty() || url == L"about:blank")
