@@ -2181,16 +2181,16 @@ struct BrowserState {
 
         if (sidebarOpen || sidebarAnimating) {
             if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
-                InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
+                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
                 RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
             }
         }
         if (tabOverviewVisible || tabOverviewClosing) {
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                InvalidateRect(tabOverviewWindow, nullptr, TRUE);
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
             }
         }
 
@@ -2589,9 +2589,9 @@ struct BrowserState {
                             if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                                 RECT exposedView { 0, 0, exposedWidth,
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, TRUE);
+                                InvalidateRect(viewWindow, &exposedView, FALSE);
                                 RedrawWindow(viewWindow, &exposedView, nullptr,
-                                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_NOERASE);
+                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
                         // The newly uncovered strip can remain stale in WebKit's
@@ -6185,9 +6185,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                     | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            InvalidateRect(viewWindow, nullptr, TRUE);
+            InvalidateRect(viewWindow, nullptr, FALSE);
             RedrawWindow(viewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_NOERASE);
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
         }
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
@@ -11095,7 +11095,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->updateLastNormalWindowRect();
             state->resize(false);
             state->beginWindowSurfaceRecovery(true);
-            state->requestActivePageRepaint(true);
             if (state->sidebarOpen) {
                 state->sidebarPaintRecoveryTicks = 3;
                 state->updateSidebarZOrderTimer();
@@ -11125,10 +11124,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 disableNativeWindowBorder(window);
                 state->redrawAfterLayoutChange();
             }
-            if (restoredFromMinimized) {
+            if (restoredFromMinimized)
                 state->beginWindowSurfaceRecovery(true);
-                state->requestActivePageRepaint(true);
-            }
         }
         return 0;
 
