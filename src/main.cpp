@@ -2157,8 +2157,14 @@ struct BrowserState {
                 resize(false);
             if (windowSurfaceRecoveryRefreshScale) {
                 if (auto* selected = active()) {
-                    if (auto page = WKViewGetPage(selected->view.get()))
-                        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+                    if (auto page = WKViewGetPage(selected->view.get())) {
+                        const double targetScale = windowScaleFactor(window);
+                        // Reapply scale only when the monitor DPI actually changed.
+                        // Resetting an unchanged scale rebuilds WebKit's backing
+                        // surface and can leave an enlarged page briefly blurry.
+                        if (std::abs(WKPageGetBackingScaleFactor(page) - targetScale) > 0.001)
+                            WKPageSetCustomBackingScaleFactor(page, targetScale);
+                    }
                 }
             }
         } else {
@@ -6182,8 +6188,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         WKPageRef page = WKViewGetPage(selected->view.get());
         if (!page)
             return;
-        if (refreshBackingScale)
-            WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+        if (refreshBackingScale) {
+            const double targetScale = windowScaleFactor(window);
+            if (std::abs(WKPageGetBackingScaleFactor(page) - targetScale) > 0.001)
+                WKPageSetCustomBackingScaleFactor(page, targetScale);
+        }
 
         HWND viewWindow = WKViewGetWindow(selected->view.get());
         if (viewWindow && IsWindow(viewWindow)) {
@@ -11163,10 +11172,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DPICHANGED:
         if (state) {
+            const double targetScale = windowScaleFactor(window);
             for (auto& tab : state->tabs) {
                 auto page = WKViewGetPage(tab->view.get());
-                if (page)
-                    WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+                if (page && std::abs(WKPageGetBackingScaleFactor(page) - targetScale) > 0.001)
+                    WKPageSetCustomBackingScaleFactor(page, targetScale);
             }
             state->resize();
         }
