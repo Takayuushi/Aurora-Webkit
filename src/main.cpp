@@ -5193,7 +5193,7 @@ search.addEventListener('keydown',e=>{
             }
             // Refresh this page's snapshot after the overlay has finished closing.
             // This replaces stale skeleton previews after a tab was selected mid-load.
-            scheduleTabThumbnailCapture(tab, 220);
+            scheduleTabThumbnailCapture(tab, 420);
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         }
@@ -10445,7 +10445,7 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active())
-            tab->browser->scheduleTabThumbnailCapture(tab, 220);
+            tab->browser->scheduleTabThumbnailCapture(tab, 520);
     }
 
     // Page thumbnails are refreshed on an explicit tab switch or when overview
