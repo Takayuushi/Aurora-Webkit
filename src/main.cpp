@@ -2143,7 +2143,7 @@ struct BrowserState {
             else
                 resize(false);
             if (windowSurfaceRecoveryRefreshScale) {
-                const double scale = std::round(windowScaleFactor(window));
+                const double scale = windowScaleFactor(window);
                 for (const auto& tab : tabs) {
                     auto page = WKViewGetPage(tab->view.get());
                     if (page)
@@ -5039,7 +5039,7 @@ search.addEventListener('keydown',e=>{
         contextMenuClient.customContextMenuItemSelected = customContextMenuItemSelected;
         WKPageSetPageContextMenuClient(page, &contextMenuClient.base);
 
-        WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
+        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
 
         // The live WebKit surface is not captured during ordinary tab switches.
 
@@ -11101,7 +11101,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             for (auto& tab : state->tabs) {
                 auto page = WKViewGetPage(tab->view.get());
                 if (page)
-                    WKPageSetCustomBackingScaleFactor(page, std::round(windowScaleFactor(window)));
+                    WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
             }
             state->resize();
         }
