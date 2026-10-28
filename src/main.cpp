@@ -1145,7 +1145,17 @@ struct BrowserState {
     bool customMaximized { false };
     bool wasMinimized { false };
     RECT restoredWindowRect { };
+    bool rememberWindowState { true };
+    bool persistWindowStateForThisWindow { true };
+    bool lastWindowStateValid { false };
+    bool lastWindowWasMaximized { false };
+    RECT lastWindowRect { };
+    int lastWindowWidth { 1280 };
+    int lastWindowHeight { 840 };
+    RECT lastNormalWindowRect { };
+    bool hasLastNormalWindowRect { false };
     bool windowTransitionActive { false };
+    bool windowTransitionGeometryApplied { false };
     bool windowTransitionTargetMaximized { false };
     ULONGLONG windowTransitionStartTick { 0 };
     RECT windowTransitionStartRect { };
@@ -1253,6 +1263,13 @@ struct BrowserState {
     void loadPreferences()
     {
         std::ifstream file(preferencesPath(), std::ios::binary);
+        const auto parseInteger = [](const std::wstring& text) {
+            wchar_t* end = nullptr;
+            const long parsed = std::wcstol(text.c_str(), &end, 10);
+            if (end == text.c_str() || !end || *end != L'\0')
+                return 0;
+            return static_cast<int>(std::clamp(parsed, -100000L, 100000L));
+        };
         std::string line;
         while (std::getline(file, line)) {
             const size_t split = line.find('\t');
@@ -1289,6 +1306,20 @@ struct BrowserState {
                 showWebsiteIconsInTabs = value == L"1" || value == L"true";
             else if (key == "alwaysShowTabBar")
                 alwaysShowTabBar = value == L"1" || value == L"true";
+            else if (key == "rememberWindowState")
+                rememberWindowState = value == L"1" || value == L"true";
+            else if (key == "lastWindowStateValid")
+                lastWindowStateValid = value == L"1" || value == L"true";
+            else if (key == "lastWindowWasMaximized")
+                lastWindowWasMaximized = value == L"1" || value == L"true";
+            else if (key == "lastWindowLeft")
+                lastWindowRect.left = parseInteger(value);
+            else if (key == "lastWindowTop")
+                lastWindowRect.top = parseInteger(value);
+            else if (key == "lastWindowWidth")
+                lastWindowWidth = parseInteger(value);
+            else if (key == "lastWindowHeight")
+                lastWindowHeight = parseInteger(value);
             else if (key == "javascript")
                 javascriptEnabled = value == L"1" || value == L"true";
             else if (key == "images")
@@ -1299,6 +1330,15 @@ struct BrowserState {
                 localStorageEnabled = value == L"1" || value == L"true";
             else if (key == "developerTools")
                 developerToolsEnabled = value == L"1" || value == L"true";
+        }
+        if (lastWindowStateValid) {
+            if (lastWindowWidth < 780 || lastWindowWidth > 20000
+                || lastWindowHeight < 520 || lastWindowHeight > 12000) {
+                lastWindowStateValid = false;
+            } else {
+                lastWindowRect.right = lastWindowRect.left + lastWindowWidth;
+                lastWindowRect.bottom = lastWindowRect.top + lastWindowHeight;
+            }
         }
         if (homePage.empty())
             homePage = L"https://www.google.com";
@@ -1332,11 +1372,123 @@ struct BrowserState {
              << "newWindowsOpenWithHomepage\t" << (newWindowsOpenWithHomepage ? "1" : "0") << '\n'
              << "showWebsiteIconsInTabs\t" << (showWebsiteIconsInTabs ? "1" : "0") << '\n'
              << "alwaysShowTabBar\t" << (alwaysShowTabBar ? "1" : "0") << '\n'
+             << "rememberWindowState\t" << (rememberWindowState ? "1" : "0") << '\n'
+             << "lastWindowStateValid\t" << (lastWindowStateValid ? "1" : "0") << '\n'
+             << "lastWindowWasMaximized\t" << (lastWindowWasMaximized ? "1" : "0") << '\n'
+             << "lastWindowLeft\t" << lastWindowRect.left << '\n'
+             << "lastWindowTop\t" << lastWindowRect.top << '\n'
+             << "lastWindowWidth\t" << lastWindowWidth << '\n'
+             << "lastWindowHeight\t" << lastWindowHeight << '\n'
              << "javascript\t" << (javascriptEnabled ? "1" : "0") << '\n'
              << "images\t" << (imagesEnabled ? "1" : "0") << '\n'
              << "popups\t" << (allowPopups ? "1" : "0") << '\n'
              << "localStorage\t" << (localStorageEnabled ? "1" : "0") << '\n'
              << "developerTools\t" << (developerToolsEnabled ? "1" : "0") << '\n';
+    }
+
+    bool applySavedWindowState()
+    {
+        if (!window || !rememberWindowState || !lastWindowStateValid)
+            return false;
+        RECT normal = lastWindowRect;
+        HMONITOR monitor = MonitorFromRect(&normal, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info { };
+        info.cbSize = sizeof(info);
+        if (!monitor || !GetMonitorInfoW(monitor, &info))
+            return false;
+        const int workWidth = std::max(1L, info.rcWork.right - info.rcWork.left);
+        const int workHeight = std::max(1L, info.rcWork.bottom - info.rcWork.top);
+        const int minimumWidth = std::min(780, workWidth);
+        const int minimumHeight = std::min(520, workHeight);
+        const int width = std::clamp(lastWindowWidth, minimumWidth, workWidth);
+        const int height = std::clamp(lastWindowHeight, minimumHeight, workHeight);
+        const int visibleWidth = std::min(120, width);
+        const int visibleTop = std::min(80, height);
+        normal.left = std::clamp(normal.left,
+            static_cast<int>(info.rcWork.left) - width + visibleWidth,
+            static_cast<int>(info.rcWork.right) - visibleWidth);
+        normal.top = std::clamp(normal.top,
+            static_cast<int>(info.rcWork.top),
+            static_cast<int>(info.rcWork.bottom) - visibleTop);
+        normal.right = normal.left + width;
+        normal.bottom = normal.top + height;
+        const RECT target = lastWindowWasMaximized ? info.rcWork : normal;
+        const int targetWidth = target.right - target.left;
+        const int targetHeight = target.bottom - target.top;
+        if (targetWidth < 1 || targetHeight < 1
+            || !SetWindowPos(window, HWND_TOP, target.left, target.top,
+                targetWidth, targetHeight,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+            return false;
+        lastWindowRect = normal;
+        lastWindowWidth = width;
+        lastWindowHeight = height;
+        restoredWindowRect = normal;
+        lastNormalWindowRect = normal;
+        hasLastNormalWindowRect = true;
+        customMaximized = lastWindowWasMaximized;
+        return true;
+    }
+
+    void updateLastNormalWindowRect()
+    {
+        if (!window || customMaximized || windowTransitionActive
+            || webFullscreen || IsIconic(window))
+            return;
+        RECT current { };
+        if (GetWindowRect(window, &current)
+            && current.right > current.left && current.bottom > current.top) {
+            lastNormalWindowRect = current;
+            hasLastNormalWindowRect = true;
+        }
+    }
+
+    void saveWindowStateOnExit()
+    {
+        if (!persistWindowStateForThisWindow)
+            return;
+        if (!rememberWindowState) {
+            lastWindowStateValid = false;
+            savePreferences();
+            return;
+        }
+        RECT normal { };
+        bool maximized = customMaximized;
+        if (windowTransitionActive) {
+            if (windowTransitionTargetMaximized) {
+                normal = windowTransitionStartRect;
+                maximized = true;
+            } else {
+                normal = windowTransitionTargetRect;
+                maximized = false;
+            }
+        } else if (webFullscreen) {
+            normal = fullscreenRestoreWindowRect;
+            maximized = fullscreenRestoreWasMaximized;
+            if (maximized)
+                normal = restoredWindowRect;
+        } else if (customMaximized) {
+            normal = restoredWindowRect;
+            maximized = true;
+        } else if (IsIconic(window) && hasLastNormalWindowRect) {
+            normal = lastNormalWindowRect;
+            maximized = false;
+        } else if (!GetWindowRect(window, &normal)) {
+            normal = lastNormalWindowRect;
+        }
+        const int width = normal.right - normal.left;
+        const int height = normal.bottom - normal.top;
+        if (width < 1 || height < 1) {
+            lastWindowStateValid = false;
+            savePreferences();
+            return;
+        }
+        lastWindowRect = normal;
+        lastWindowWidth = width;
+        lastWindowHeight = height;
+        lastWindowWasMaximized = maximized;
+        lastWindowStateValid = true;
+        savePreferences();
     }
 
     void applyEnginePreferences()
