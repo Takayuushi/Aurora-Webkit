@@ -1147,7 +1147,6 @@ struct BrowserState {
     RECT restoredWindowRect { };
     bool windowTransitionActive { false };
     bool windowTransitionTargetMaximized { false };
-    bool windowTransitionWasForeground { false };
     ULONGLONG windowTransitionStartTick { 0 };
     RECT windowTransitionStartRect { };
     RECT windowTransitionTargetRect { };
@@ -6028,21 +6027,28 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         KillTimer(window, kWindowTransitionTimerId);
         const RECT targetRect = windowTransitionTargetRect;
         const bool targetMaximized = windowTransitionTargetMaximized;
-        const bool restoreForeground = windowTransitionWasForeground;
         windowTransitionActive = false;
 
         const int width = targetRect.right - targetRect.left;
         const int height = targetRect.bottom - targetRect.top;
-        if (width > 0 && height > 0
-            && SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+        RECT currentRect { };
+        const bool geometryMatches = GetWindowRect(window, &currentRect)
+            && currentRect.left == targetRect.left
+            && currentRect.top == targetRect.top
+            && currentRect.right == targetRect.right
+            && currentRect.bottom == targetRect.bottom;
+        if (width > 0 && height > 0 && !geometryMatches) {
+            if (!SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+                customMaximized = !targetMaximized;
+            else
+                customMaximized = targetMaximized;
+        } else if (geometryMatches) {
             customMaximized = targetMaximized;
+        }
 
         resize();
         disableNativeWindowBorder(window);
-        ShowWindow(window, SW_SHOWNOACTIVATE);
-        if (restoreForeground)
-            SetForegroundWindow(window);
         redrawAfterLayoutChange();
         releaseWindowTransitionResources();
     }
@@ -6147,11 +6153,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         windowTransitionTargetRect = targetRect;
         windowTransitionTargetMaximized = targetMaximized;
         windowTransitionStartTick = GetTickCount64();
-        windowTransitionWasForeground = GetForegroundWindow() == window;
         windowTransitionActive = true;
 
+        // Keep the real top-level window visible throughout the transition so
+        // the taskbar and foreground activation do not blink. On restore, move
+        // the live window beneath the full-size captured frame before it shrinks;
+        // on maximize, leave it in place until the expanding frame reaches it.
         ShowWindow(windowTransitionOverlay, SW_SHOWNOACTIVATE);
-        ShowWindow(window, SW_HIDE);
+        if (!targetMaximized) {
+            if (!SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top,
+                    targetWidth, targetHeight,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
+                cancelWindowTransition();
+                setWindowBoundsImmediately(targetRect, targetMaximized);
+                return;
+            }
+            resize();
+            disableNativeWindowBorder(window);
+        }
         if (!SetTimer(window, kWindowTransitionTimerId, 16, nullptr))
             finishWindowTransition();
     }
