@@ -277,6 +277,12 @@ WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationA
 void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef, WKArrayRef*, WKHitTestResultRef, WKTypeRef, const void*);
 void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef, const void*);
 
+void forcedPageRepaintFinished(WKErrorRef, void*)
+{
+    // WebKit has completed the requested rendering update. The callback intentionally
+    // does no synchronous Win32 painting; it must not block the browser UI thread.
+}
+
 struct FaviconResult {
     std::wstring url;
     HICON icon { nullptr };
@@ -2068,7 +2074,7 @@ struct BrowserState {
                     ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
                     InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
                     RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
                 } else {
                     // WebKit can raise its accelerated child HWND when a page paints.
                     // Keep the sidebar above that surface even after the first show.
@@ -2143,11 +2149,9 @@ struct BrowserState {
             else
                 resize(false);
             if (windowSurfaceRecoveryRefreshScale) {
-                const double scale = windowScaleFactor(window);
-                for (const auto& tab : tabs) {
-                    auto page = WKViewGetPage(tab->view.get());
-                    if (page)
-                        WKPageSetCustomBackingScaleFactor(page, scale);
+                if (auto* selected = active()) {
+                    if (auto page = WKViewGetPage(selected->view.get()))
+                        WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
                 }
             }
         } else {
@@ -2157,21 +2161,15 @@ struct BrowserState {
         }
 
         if (windowSurfaceRecoveryRefreshView) {
-            if (auto* selected = active()) {
+            if (windowSurfaceRecoveryTicks == 1) {
+                // Ask WebKit itself for a fresh accelerated frame once, asynchronously.
+                requestActivePageRepaint(false);
+            } else if (auto* selected = active()) {
                 HWND viewWindow = WKViewGetWindow(selected->view.get());
-                if (viewWindow && IsWindow(viewWindow)) {
-                    if (!IsWindowVisible(viewWindow))
-                        ShowWindow(viewWindow, SW_SHOWNA);
-                    SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
-                            | SWP_NOREDRAW | SWP_SHOWWINDOW);
-                    InvalidateRect(viewWindow, nullptr, windowSurfaceRecoveryTicks == 1);
-                    UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN;
-                    if (windowSurfaceRecoveryTicks == 1)
-                        redrawFlags |= RDW_UPDATENOW | RDW_ERASE;
-                    else
-                        redrawFlags |= RDW_NOERASE;
-                    RedrawWindow(viewWindow, nullptr, nullptr, redrawFlags);
+                if (viewWindow && IsWindowVisible(viewWindow)) {
+                    InvalidateRect(viewWindow, nullptr, FALSE);
+                    RedrawWindow(viewWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                 }
             }
         }
@@ -2183,20 +2181,16 @@ struct BrowserState {
 
         if (sidebarOpen || sidebarAnimating) {
             if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
-                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-                if (windowSurfaceRecoveryTicks == 1 && !sidebarAnimating
-                    && !tabOverviewAnimating && !tabOverviewClosing && !userSizingWindow)
-                    RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+                InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
+                RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
             }
         }
         if (tabOverviewVisible || tabOverviewClosing) {
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                if (windowSurfaceRecoveryTicks == 1 && !tabOverviewAnimating
-                    && !tabOverviewClosing && !userSizingWindow)
-                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+                InvalidateRect(tabOverviewWindow, nullptr, TRUE);
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
             }
         }
 
@@ -2595,9 +2589,15 @@ struct BrowserState {
                             if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                                 RECT exposedView { 0, 0, exposedWidth,
                                     std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
+                                InvalidateRect(viewWindow, &exposedView, TRUE);
+                                RedrawWindow(viewWindow, &exposedView, nullptr,
+                                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_NOERASE);
                             }
                         }
+                        // The newly uncovered strip can remain stale in WebKit's
+                        // accelerated surface until a pointer event hits that region.
+                        // Request a real page repaint once the sidebar is fully hidden.
+                        requestActivePageRepaint();
                     }
                 }
             }
@@ -6165,6 +6165,37 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
+    void requestActivePageRepaint(bool refreshBackingScale = false)
+    {
+        if (!window || IsIconic(window) || tabOverviewVisible)
+            return;
+        auto* selected = active();
+        if (!selected)
+            return;
+        WKPageRef page = WKViewGetPage(selected->view.get());
+        if (!page)
+            return;
+        if (refreshBackingScale)
+            WKPageSetCustomBackingScaleFactor(page, windowScaleFactor(window));
+
+        HWND viewWindow = WKViewGetWindow(selected->view.get());
+        if (viewWindow && IsWindow(viewWindow)) {
+            if (!IsWindowVisible(viewWindow))
+                ShowWindow(viewWindow, SW_SHOWNA);
+            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                    | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            InvalidateRect(viewWindow, nullptr, TRUE);
+            RedrawWindow(viewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_NOERASE);
+        }
+
+        // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
+        // accelerated page generate a fresh frame. WKPageForceRepaint requests that frame.
+        WKPageForceRepaint(page, nullptr, forcedPageRepaintFinished);
+        positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
+    }
+
     void redrawActiveWebView(bool immediate = false)
     {
         if (!window || IsIconic(window) || tabOverviewVisible)
@@ -6221,14 +6252,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         const int contentTop = this->contentTop();
-        // Every WKView keeps the same viewport for its lifetime. Inactive views sit
-        // behind the active view at the same client bounds instead of being moved
-        // off-screen and forcing WebKit's accelerated backing surface to recompose
-        // whenever the user switches tabs.
+        // Only the selected WKView participates in foreground resizing. Resizing all
+        // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
+        // low-resolution frames. An inactive page is resized when activateTab selects it.
         const int viewLeft = 0;
         const int viewWidth = std::max(0, static_cast<int>(client.right));
         const int viewHeight = std::max(0, static_cast<int>(client.bottom - contentTop));
+        auto* selectedTab = active();
         for (const auto& tab : tabs) {
+            if (tab.get() != selectedTab)
+                continue;
             HWND viewWindow = WKViewGetWindow(tab->view.get());
             if (!viewWindow)
                 continue;
@@ -11062,6 +11095,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->updateLastNormalWindowRect();
             state->resize(false);
             state->beginWindowSurfaceRecovery(true);
+            state->requestActivePageRepaint(true);
             if (state->sidebarOpen) {
                 state->sidebarPaintRecoveryTicks = 3;
                 state->updateSidebarZOrderTimer();
@@ -11091,8 +11125,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 disableNativeWindowBorder(window);
                 state->redrawAfterLayoutChange();
             }
-            if (restoredFromMinimized)
+            if (restoredFromMinimized) {
                 state->beginWindowSurfaceRecovery(true);
+                state->requestActivePageRepaint(true);
+            }
         }
         return 0;
 
