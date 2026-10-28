@@ -2730,7 +2730,7 @@ struct BrowserState {
         DeleteObject(initialCaptureBrush);
 
         const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
-            sourceDC, screenRect.left, screenRect.top, SRCCOPY);
+            sourceDC, screenRect.left, screenRect.top, SRCCOPY | CAPTUREBLT);
         bool looksBlank = false;
         if (copied) {
             int validSamples = 0;
@@ -2843,7 +2843,7 @@ struct BrowserState {
 
         const auto retryCapture = [this]() {
             ++pendingThumbnailCaptureAttempts;
-            if (pendingThumbnailCaptureAttempts >= 8) {
+            if (pendingThumbnailCaptureAttempts >= 12) {
                 clearPendingThumbnailCapture();
                 return;
             }
@@ -10539,7 +10539,7 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
-            tab->browser->scheduleTabThumbnailCapture(tab, 520);
+            tab->browser->scheduleTabThumbnailCapture(tab, 320);
             if (!tab->favicon && tab->faviconRequestURL.empty()
                 && tab->faviconAttempts < 2 && !tab->activeUrl.empty()) {
                 tab->faviconRequestURL = tab->activeUrl;
