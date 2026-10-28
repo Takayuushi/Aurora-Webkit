@@ -165,6 +165,7 @@ constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
 constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
 constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
+constexpr UINT_PTR kSidebarZOrderTimerId = 0xA11A;
 constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
@@ -1260,6 +1261,9 @@ struct BrowserState {
     bool alwaysShowTabBar { false };
     bool hasCreatedInitialTab { false };
     TabState* pendingThumbnailCaptureTab { nullptr };
+    unsigned pendingThumbnailCaptureAttempts { 0 };
+    std::wstring pendingThumbnailCaptureURL;
+    bool sidebarZOrderTimerActive { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -2147,6 +2151,7 @@ struct BrowserState {
             sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
             sidebarAnimationTarget = sidebarAnimationFrom;
             positionOverlayWindows();
+            updateSidebarZOrderTimer();
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
             beginWindowSurfaceRecovery(false, false);
@@ -2166,6 +2171,7 @@ struct BrowserState {
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
         // resize and synchronously repaint the WebKit GPU surface.
         positionOverlayWindows();
+        updateSidebarZOrderTimer();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
         beginWindowSurfaceRecovery(false, false);
@@ -2585,51 +2591,49 @@ struct BrowserState {
             card.right - inset, card.top + inset + size };
     }
 
-    void captureTabThumbnail(TabState& tab)
+    bool captureTabThumbnail(TabState& tab)
     {
-        // Never capture through an overlay: PrintWindow/BitBlt can include the
-        // sidebar or Tab Overview itself in the returned pixels on accelerated WKViews.
+        // Capture only while this tab owns the visible WebKit surface.
         if (!tab.browser || tab.browser->active() != &tab || IsIconic(tab.browser->window)
             || tab.browser->sidebarOpen || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
             || tab.browser->tabOverviewClosing || tab.browser->findBarVisible
             || (tab.browser->downloadsPopoverWindow && IsWindowVisible(tab.browser->downloadsPopoverWindow))
             || (tab.browser->sharePopoverWindow && IsWindowVisible(tab.browser->sharePopoverWindow)))
-            return;
+            return false;
 
         auto page = WKViewGetPage(tab.view.get());
         if (!page || WKPageGetEstimatedProgress(page) < 1.0)
-            return;
+            return false;
         const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
             && tab.internalPage.empty())
-            return;
+            return false;
 
         HWND viewWindow = WKViewGetWindow(tab.view.get());
-        if (!viewWindow)
-            return;
-
+        if (!viewWindow || !IsWindowVisible(viewWindow))
+            return false;
         RECT screenRect { };
         if (!GetWindowRect(viewWindow, &screenRect))
-            return;
+            return false;
+
         const int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
         const int sourceHeight = static_cast<int>(screenRect.bottom - screenRect.top);
         if (sourceWidth < 80 || sourceHeight < 60)
-            return;
+            return false;
 
-        // Capture the composited pixels already on screen. PrintWindow can ask a
-        // GPU-backed WKView to repaint into a synthetic DC, returning blank/stale
-        // content and causing visible renderer stalls on some WebKit builds.
+        // Capture the already-presented pixels. Synthetic PrintWindow paints can
+        // return stale or blank content for accelerated WebKit child windows.
         HDC sourceDC = GetDC(nullptr);
         if (!sourceDC)
-            return;
+            return false;
         HDC captureDC = CreateCompatibleDC(sourceDC);
         HBITMAP captureBitmap = CreateCompatibleBitmap(sourceDC, sourceWidth, sourceHeight);
         if (!captureDC || !captureBitmap) {
             if (captureBitmap) DeleteObject(captureBitmap);
             if (captureDC) DeleteDC(captureDC);
             ReleaseDC(nullptr, sourceDC);
-            return;
+            return false;
         }
 
         HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
@@ -2638,7 +2642,10 @@ struct BrowserState {
         FillRect(captureDC, &captureRect, initialCaptureBrush);
         DeleteObject(initialCaptureBrush);
 
-        const auto captureLooksBlank = [&]() {
+        const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
+            sourceDC, screenRect.left, screenRect.top, SRCCOPY);
+        bool looksBlank = false;
+        if (copied) {
             int validSamples = 0;
             int nearBlackSamples = 0;
             int nearWhiteSamples = 0;
@@ -2662,21 +2669,14 @@ struct BrowserState {
                         ++nearWhiteSamples;
                 }
             }
-            return validSamples >= 20
+            looksBlank = validSamples >= 20
                 && maxLuminance - minLuminance <= 9
                 && (nearBlackSamples * 100 >= validSamples * 94
                     || nearWhiteSamples * 100 >= validSamples * 94);
-        };
+        }
 
-        BOOL captured = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
-            sourceDC, screenRect.left, screenRect.top, SRCCOPY);
-        if (captured && captureLooksBlank())
-            captured = FALSE;
-
-        if (captured) {
-            // This bitmap is enlarged to the full content viewport during the tab-selection zoom.
-            // Keep it near native resolution (up to 1080p) so the transition does not look blurry,
-            // while avoiding pointless upscaling of smaller captures.
+        bool saved = false;
+        if (copied && !looksBlank) {
             const double factor = std::min(1.0,
                 std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
             const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
@@ -2686,20 +2686,24 @@ struct BrowserState {
             if (previewDC && preview) {
                 HGDIOBJ oldPreview = SelectObject(previewDC, preview);
                 SetStretchBltMode(previewDC, HALFTONE);
-                StretchBlt(previewDC, 0, 0, targetWidth, targetHeight,
+                SetBrushOrgEx(previewDC, 0, 0, nullptr);
+                const BOOL scaled = StretchBlt(previewDC, 0, 0, targetWidth, targetHeight,
                     captureDC, 0, 0, sourceWidth, sourceHeight, SRCCOPY);
                 SelectObject(previewDC, oldPreview);
-                if (tab.previewBitmap)
-                    DeleteObject(tab.previewBitmap);
-                tab.previewBitmap = preview;
-                tab.previewWidth = targetWidth;
-                tab.previewHeight = targetHeight;
-                // The tab's URL is the stable cache key. Internal pages can expose
-                // an engine URL that differs from Aurora's address-bar URL.
-                tab.previewURL = tab.activeUrl;
-                if (tabOverviewVisible && tabOverviewWindow) {
-                    tabOverviewAnimationFrameReady = false;
-                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                if (scaled) {
+                    if (tab.previewBitmap)
+                        DeleteObject(tab.previewBitmap);
+                    tab.previewBitmap = preview;
+                    tab.previewWidth = targetWidth;
+                    tab.previewHeight = targetHeight;
+                    tab.previewURL = tab.activeUrl;
+                    saved = true;
+                    if (tab.browser->tabOverviewVisible && tab.browser->tabOverviewWindow) {
+                        tab.browser->tabOverviewAnimationFrameReady = false;
+                        InvalidateRect(tab.browser->tabOverviewWindow, nullptr, FALSE);
+                    }
+                } else {
+                    DeleteObject(preview);
                 }
             } else if (preview) {
                 DeleteObject(preview);
@@ -2712,15 +2716,27 @@ struct BrowserState {
         DeleteObject(captureBitmap);
         DeleteDC(captureDC);
         ReleaseDC(nullptr, sourceDC);
+        return saved;
     }
 
-    void scheduleTabThumbnailCapture(TabState* tab, UINT delayMilliseconds = 180)
+    void scheduleTabThumbnailCapture(TabState* tab, UINT delayMilliseconds = 420)
     {
         if (!window || !tab)
             return;
         pendingThumbnailCaptureTab = tab;
+        pendingThumbnailCaptureAttempts = 0;
+        pendingThumbnailCaptureURL = tab->activeUrl;
         SetTimer(window, kDeferredThumbnailCaptureTimerId,
             std::max<UINT>(1, delayMilliseconds), nullptr);
+    }
+
+    void clearPendingThumbnailCapture()
+    {
+        pendingThumbnailCaptureTab = nullptr;
+        pendingThumbnailCaptureAttempts = 0;
+        pendingThumbnailCaptureURL.clear();
+        if (window)
+            KillTimer(window, kDeferredThumbnailCaptureTimerId);
     }
 
     void servicePendingTabThumbnailCapture()
@@ -2729,14 +2745,30 @@ struct BrowserState {
         if (!window || !pending)
             return;
         if (active() != pending) {
-            pendingThumbnailCaptureTab = nullptr;
-            KillTimer(window, kDeferredThumbnailCaptureTimerId);
+            clearPendingThumbnailCapture();
             return;
         }
 
+        if (pendingThumbnailCaptureURL != pending->activeUrl) {
+            pendingThumbnailCaptureURL = pending->activeUrl;
+            pendingThumbnailCaptureAttempts = 0;
+        }
+
+        const auto retryCapture = [this]() {
+            ++pendingThumbnailCaptureAttempts;
+            if (pendingThumbnailCaptureAttempts >= 8) {
+                clearPendingThumbnailCapture();
+                return;
+            }
+            // Load completion can precede the final GPU presentation. Retry rather
+            // than leaving a failed capture as a permanent skeleton preview.
+            SetTimer(window, kDeferredThumbnailCaptureTimerId,
+                pendingThumbnailCaptureAttempts < 3 ? 100 : 180, nullptr);
+        };
+
         auto page = WKViewGetPage(pending->view.get());
         if (!page || WKPageGetEstimatedProgress(page) < 1.0) {
-            SetTimer(window, kDeferredThumbnailCaptureTimerId, 100, nullptr);
+            retryCapture();
             return;
         }
 
@@ -2746,13 +2778,76 @@ struct BrowserState {
             || (downloadsPopoverWindow && IsWindowVisible(downloadsPopoverWindow))
             || (sharePopoverWindow && IsWindowVisible(sharePopoverWindow));
         if (overlayBusy) {
-            SetTimer(window, kDeferredThumbnailCaptureTimerId, 100, nullptr);
+            SetTimer(window, kDeferredThumbnailCaptureTimerId, 120, nullptr);
             return;
         }
 
-        pendingThumbnailCaptureTab = nullptr;
-        KillTimer(window, kDeferredThumbnailCaptureTimerId);
-        captureTabThumbnail(*pending);
+        if (captureTabThumbnail(*pending)) {
+            clearPendingThumbnailCapture();
+            return;
+        }
+        retryCapture();
+    }
+
+    void maintainSidebarZOrder()
+    {
+        if (!window || !sidebarOpen) {
+            if (window)
+                KillTimer(window, kSidebarZOrderTimerId);
+            sidebarZOrderTimerActive = false;
+            return;
+        }
+        if (IsIconic(window))
+            return;
+
+        if (!sidebarOverlayWindow || !IsWindow(sidebarOverlayWindow)) {
+            positionOverlayWindows(true);
+            return;
+        }
+
+        HWND activeView = nullptr;
+        if (auto* selected = active())
+            activeView = WKViewGetWindow(selected->view.get());
+        if (!activeView || !IsWindow(activeView))
+            return;
+
+        // Child HWNDs are enumerated from the top of the Z order down. WebKit's
+        // accelerated view can overtake the sidebar during a compositor repaint.
+        int sidebarOrder = -1;
+        int viewOrder = -1;
+        int order = 0;
+        for (HWND child = GetWindow(window, GW_CHILD); child;
+             child = GetWindow(child, GW_HWNDNEXT), ++order) {
+            if (child == sidebarOverlayWindow)
+                sidebarOrder = order;
+            if (child == activeView)
+                viewOrder = order;
+            if (sidebarOrder >= 0 && viewOrder >= 0)
+                break;
+        }
+
+        if (sidebarOrder < 0 || viewOrder < 0 || sidebarOrder > viewOrder) {
+            SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                    | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_NOERASE);
+        }
+    }
+
+    void updateSidebarZOrderTimer()
+    {
+        if (!window)
+            return;
+        if (sidebarOpen) {
+            if (!sidebarZOrderTimerActive)
+                sidebarZOrderTimerActive = SetTimer(window, kSidebarZOrderTimerId, 120, nullptr) != 0;
+            maintainSidebarZOrder();
+        } else {
+            KillTimer(window, kSidebarZOrderTimerId);
+            sidebarZOrderTimerActive = false;
+        }
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
@@ -10332,6 +10427,7 @@ void didChangeIsLoading(const void* clientInfo)
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
         tab->browser->beginWindowSurfaceRecovery(false, false);
+        tab->browser->updateSidebarZOrderTimer();
     }
 }
 
@@ -10369,6 +10465,14 @@ void didChangeActiveURL(const void* clientInfo)
     auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
 
     if (tab->activeUrl != url) {
+        // Never draw pixels from the previous URL under the new tab title.
+        if (tab->previewBitmap) {
+            DeleteObject(tab->previewBitmap);
+            tab->previewBitmap = nullptr;
+        }
+        tab->previewWidth = 0;
+        tab->previewHeight = 0;
+        tab->previewURL.clear();
         if (tab->favicon) {
             DestroyIcon(tab->favicon);
             tab->favicon = nullptr;
@@ -10391,6 +10495,7 @@ void didChangeActiveURL(const void* clientInfo)
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
         tab->browser->beginWindowSurfaceRecovery(false, false);
+        tab->browser->updateSidebarZOrderTimer();
     }
     tab->browser->invalidateTabChrome(tab);
 
@@ -10516,6 +10621,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->recoverWindowSurfaceFrame();
             else
                 KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            return 0;
+        }
+        if (state && wParam == kSidebarZOrderTimerId) {
+            state->maintainSidebarZOrder();
             return 0;
         }
         if (state && wParam == kDownloadsAnimationTimerId) {
@@ -10845,7 +10954,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_DESTROY:
         if (state) {
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            KillTimer(window, kSidebarZOrderTimerId);
+            KillTimer(window, kDeferredThumbnailCaptureTimerId);
             state->windowSurfaceRecoveryActive = false;
+            state->sidebarZOrderTimerActive = false;
+            state->pendingThumbnailCaptureTab = nullptr;
             state->saveWindowStateOnExit();
             state->cancelWindowTransition();
             if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
