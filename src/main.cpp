@@ -1166,6 +1166,7 @@ struct TabState {
     std::wstring fallbackURL;
     HICON favicon { nullptr };
     std::wstring faviconRequestURL;
+    unsigned faviconAttempts { 0 };
     HBITMAP previewBitmap { nullptr };
     int previewWidth { 0 };
     int previewHeight { 0 };
@@ -2183,17 +2184,19 @@ struct BrowserState {
         if (sidebarOpen || sidebarAnimating) {
             if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
                 InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-                if (!sidebarAnimating)
+                if (windowSurfaceRecoveryTicks == 1 && !sidebarAnimating
+                    && !tabOverviewAnimating && !tabOverviewClosing && !userSizingWindow)
                     RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
             }
         }
         if (tabOverviewVisible || tabOverviewClosing) {
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                if (!tabOverviewAnimating && !tabOverviewClosing)
+                if (windowSurfaceRecoveryTicks == 1 && !tabOverviewAnimating
+                    && !tabOverviewClosing && !userSizingWindow)
                     RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
             }
         }
 
@@ -10535,8 +10538,10 @@ void didChangeIsLoading(const void* clientInfo)
         }
         if (tab == tab->browser->active()) {
             tab->browser->scheduleTabThumbnailCapture(tab, 520);
-            if (!tab->favicon && tab->faviconRequestURL.empty()) {
+            if (!tab->favicon && tab->faviconRequestURL.empty()
+                && tab->faviconAttempts < 2 && !tab->activeUrl.empty()) {
                 tab->faviconRequestURL = tab->activeUrl;
+                ++tab->faviconAttempts;
                 requestFavicon(tab->browser, tab->activeUrl);
             }
         }
@@ -10588,6 +10593,7 @@ void didChangeActiveURL(const void* clientInfo)
     auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
 
     if (tab->activeUrl != url) {
+        tab->faviconAttempts = 0;
         // Never draw pixels from the previous URL under the new tab title.
         if (tab->previewBitmap) {
             DeleteObject(tab->previewBitmap);
@@ -10617,7 +10623,7 @@ void didChangeActiveURL(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->beginWindowSurfaceRecovery(false, false);
+        tab->browser->sidebarPaintRecoveryTicks = 3;
         tab->browser->updateSidebarZOrderTimer();
     }
     tab->browser->invalidateTabChrome(tab);
@@ -10625,8 +10631,10 @@ void didChangeActiveURL(const void* clientInfo)
     if (url.empty() || url == L"about:blank")
         return;
 
-    if ((url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) && tab->faviconRequestURL != url) {
+    if ((url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)
+        && tab->faviconRequestURL != url && tab->faviconAttempts < 2) {
         tab->faviconRequestURL = url;
+        ++tab->faviconAttempts;
         requestFavicon(tab->browser, url);
     }
 
@@ -10969,6 +10977,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && lParam) {
             auto* result = reinterpret_cast<FaviconResult*>(lParam);
             TabState* updatedTab = nullptr;
+            std::wstring retryFaviconURL;
             for (auto& tab : state->tabs) {
                 if (tab->activeUrl != result->url || tab->faviconRequestURL != result->url)
                     continue;
@@ -10979,9 +10988,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     result->icon = nullptr;
                     updatedTab = tab.get();
                 } else {
-                    // Do not keep a failed attempt marked in-flight forever.
-                    // A completed page-load callback can retry once the site is ready.
                     tab->faviconRequestURL.clear();
+                    if (tab->faviconAttempts < 2) {
+                        ++tab->faviconAttempts;
+                        tab->faviconRequestURL = result->url;
+                        retryFaviconURL = result->url;
+                    }
                 }
                 break;
             }
@@ -10990,6 +11002,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             delete result;
             if (updatedTab)
                 state->invalidateTabChrome(updatedTab);
+            if (!retryFaviconURL.empty())
+                requestFavicon(state, retryFaviconURL);
         }
         return 0;
 
