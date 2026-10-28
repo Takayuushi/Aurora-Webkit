@@ -6154,6 +6154,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (window)
             KillTimer(window, kWindowTransitionTimerId);
         windowTransitionActive = false;
+        windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
     }
 
@@ -6180,31 +6181,45 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return;
 
         KillTimer(window, kWindowTransitionTimerId);
-        const RECT targetRect = windowTransitionTargetRect;
-        const bool targetMaximized = windowTransitionTargetMaximized;
-        windowTransitionActive = false;
-
-        const int width = targetRect.right - targetRect.left;
-        const int height = targetRect.bottom - targetRect.top;
-        RECT currentRect { };
-        const bool geometryMatches = GetWindowRect(window, &currentRect)
-            && currentRect.left == targetRect.left
-            && currentRect.top == targetRect.top
-            && currentRect.right == targetRect.right
-            && currentRect.bottom == targetRect.bottom;
-        if (width > 0 && height > 0 && !geometryMatches) {
-            if (!SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
-                customMaximized = !targetMaximized;
-            else
+        if (!windowTransitionGeometryApplied) {
+            const RECT targetRect = windowTransitionTargetRect;
+            const bool targetMaximized = windowTransitionTargetMaximized;
+            const int width = targetRect.right - targetRect.left;
+            const int height = targetRect.bottom - targetRect.top;
+            RECT currentRect { };
+            const bool geometryMatches = GetWindowRect(window, &currentRect)
+                && currentRect.left == targetRect.left
+                && currentRect.top == targetRect.top
+                && currentRect.right == targetRect.right
+                && currentRect.bottom == targetRect.bottom;
+            if (width > 0 && height > 0 && !geometryMatches) {
+                if (!SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+                    customMaximized = !targetMaximized;
+                else
+                    customMaximized = targetMaximized;
+            } else if (geometryMatches) {
                 customMaximized = targetMaximized;
-        } else if (geometryMatches) {
-            customMaximized = targetMaximized;
+            }
+
+            if (!targetMaximized) {
+                lastNormalWindowRect = targetRect;
+                hasLastNormalWindowRect = true;
+            }
+            resize();
+            disableNativeWindowBorder(window);
+            redrawAfterLayoutChange();
+
+            // Let the resized WebKit surface process a display frame under the
+            // transition snapshot before the live page is revealed.
+            windowTransitionGeometryApplied = true;
+            if (SetTimer(window, kWindowTransitionTimerId, 16, nullptr))
+                return;
         }
 
-        resize();
-        disableNativeWindowBorder(window);
         redrawAfterLayoutChange();
+        windowTransitionActive = false;
+        windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
     }
 
@@ -6308,6 +6323,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         windowTransitionTargetRect = targetRect;
         windowTransitionTargetMaximized = targetMaximized;
         windowTransitionStartTick = GetTickCount64();
+        windowTransitionGeometryApplied = false;
         windowTransitionActive = true;
 
         // Keep the real top-level window visible throughout the transition so
