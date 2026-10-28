@@ -1265,6 +1265,8 @@ struct BrowserState {
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
+    int sidebarPaintRecoveryTicks { 0 };
+    bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -1999,17 +2001,16 @@ struct BrowserState {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
-                if (!alreadyVisible) {
+                        if (!alreadyVisible) {
                     SetWindowPos(sidebarOverlayWindow, HWND_TOP,
                         left, top, width, height,
                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
-                    InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-                    UpdateWindow(sidebarOverlayWindow);
+                    // A hidden child is not guaranteed to complete its WM_PAINT.
+                    // Show it first, then paint the actual visible client surface.
                     ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
-                    // Flush only the cached panel blit. The expensive panel layout
-                    // was prepared by the hidden-window paint above.
+                    InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
                     RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                 } else {
                     // WebKit can raise its accelerated child HWND when a page paints.
                     // Keep the sidebar above that surface even after the first show.
@@ -2017,9 +2018,12 @@ struct BrowserState {
                         left, top, width, height,
                         SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                     InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-                    if (!sidebarAnimating || forceTop)
+                    // Do not synchronously paint overlays on every WM_SIZE during
+                    // live resize or during the tab-overview zoom transition.
+                    if (forceTop && !sidebarAnimating && !userSizingWindow
+                        && !windowTransitionActive && !tabOverviewAnimating && !tabOverviewClosing)
                         RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                            RDW_INVALIDATE | RDW_NOERASE);
                 }
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
@@ -2100,14 +2104,15 @@ struct BrowserState {
                 if (viewWindow && IsWindow(viewWindow)) {
                     if (!IsWindowVisible(viewWindow))
                         ShowWindow(viewWindow, SW_SHOWNA);
-                    // All WKViews overlap. Raising the selected view after minimize/
-                    // restore prevents a stale inactive view from covering it in black.
                     SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
                             | SWP_NOREDRAW | SWP_SHOWWINDOW);
                     InvalidateRect(viewWindow, nullptr, windowSurfaceRecoveryTicks == 1);
-                    UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW;
-                    redrawFlags |= windowSurfaceRecoveryTicks == 1 ? RDW_ERASE : RDW_NOERASE;
+                    UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN;
+                    if (windowSurfaceRecoveryTicks == 1)
+                        redrawFlags |= RDW_UPDATENOW | RDW_ERASE;
+                    else
+                        redrawFlags |= RDW_NOERASE;
                     RedrawWindow(viewWindow, nullptr, nullptr, redrawFlags);
                 }
             }
@@ -2136,11 +2141,11 @@ struct BrowserState {
         }
 
         RedrawWindow(window, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            RDW_INVALIDATE | RDW_NOERASE);
 
-        // Retry briefly: a single synchronous paint can occur before the WebKit
-        // compositor has recreated its backing surface after minimize/restore.
-        if (windowSurfaceRecoveryTicks >= 8) {
+        // Bounded asynchronous retries allow the compositor to publish its new
+        // backing surface without monopolising the UI thread for several seconds.
+        if (windowSurfaceRecoveryTicks >= 5) {
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             windowSurfaceRecoveryActive = false;
             windowSurfaceRecoveryRefreshScale = false;
@@ -2165,10 +2170,10 @@ struct BrowserState {
             sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
             sidebarAnimationTarget = sidebarAnimationFrom;
             positionOverlayWindows();
+            sidebarPaintRecoveryTicks = sidebarOpen ? 4 : 0;
             updateSidebarZOrderTimer();
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
-            beginWindowSurfaceRecovery(false, false);
             return;
         }
 
@@ -2185,10 +2190,10 @@ struct BrowserState {
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
         // resize and synchronously repaint the WebKit GPU surface.
         positionOverlayWindows();
+        sidebarPaintRecoveryTicks = sidebarOpen ? 4 : 0;
         updateSidebarZOrderTimer();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
-        beginWindowSurfaceRecovery(false, false);
     }
 
     void updateToolbarHover(POINT point)
@@ -2821,6 +2826,7 @@ struct BrowserState {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
+            sidebarPaintRecoveryTicks = 0;
             return;
         }
         if (IsIconic(window))
@@ -2857,8 +2863,18 @@ struct BrowserState {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                     | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
             InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_NOERASE);
+        }
+
+        // A few bounded repaint retries handle first-show/compositor black frames
+        // without repeatedly repainting a stationary sidebar for its entire lifetime.
+        if (sidebarPaintRecoveryTicks > 0) {
+            InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
+            UINT flags = RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN;
+            if (!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing
+                && !userSizingWindow && !windowTransitionActive)
+                flags |= RDW_UPDATENOW;
+            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr, flags);
+            --sidebarPaintRecoveryTicks;
         }
     }
 
@@ -2868,7 +2884,7 @@ struct BrowserState {
             return;
         if (sidebarOpen) {
             if (!sidebarZOrderTimerActive)
-                sidebarZOrderTimerActive = SetTimer(window, kSidebarZOrderTimerId, 120, nullptr) != 0;
+                sidebarZOrderTimerActive = SetTimer(window, kSidebarZOrderTimerId, 72, nullptr) != 0;
             maintainSidebarZOrder();
         } else {
             KillTimer(window, kSidebarZOrderTimerId);
@@ -6435,9 +6451,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
-        // The resized page is now visible; keep nudging its paint path briefly
-        // so a stale, low-resolution backing surface cannot linger after handoff.
-        beginWindowSurfaceRecovery();
+        // Rebuild the backing surface at the final dimensions before the next
+        // interaction can expose a stale low-resolution frame.
+        beginWindowSurfaceRecovery(true);
     }
 
     void animateWindowTransition()
@@ -10455,7 +10471,7 @@ void didChangeIsLoading(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->beginWindowSurfaceRecovery(false, false);
+        tab->browser->sidebarPaintRecoveryTicks = 3;
         tab->browser->updateSidebarZOrderTimer();
     }
 }
@@ -10934,6 +10950,24 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
         }
         break;
+
+    case WM_ENTERSIZEMOVE:
+        if (state)
+            state->userSizingWindow = true;
+        return 0;
+
+    case WM_EXITSIZEMOVE:
+        if (state) {
+            state->userSizingWindow = false;
+            state->updateLastNormalWindowRect();
+            state->resize(false);
+            state->beginWindowSurfaceRecovery(true);
+            if (state->sidebarOpen) {
+                state->sidebarPaintRecoveryTicks = 3;
+                state->updateSidebarZOrderTimer();
+            }
+        }
+        return 0;
 
     case WM_MOVE:
         if (state)
