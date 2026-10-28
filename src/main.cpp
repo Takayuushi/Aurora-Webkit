@@ -6217,9 +6217,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (!window || IsIconic(window))
             return;
-        redrawActiveWebView(true);
+        // Never block the browser UI thread waiting for a WebKit/GPU surface.
+        // Force a real WebKit render asynchronously, then queue native chrome paint.
+        requestActivePageRepaint(true);
+        InvalidateRect(window, nullptr, FALSE);
         RedrawWindow(window, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            RDW_INVALIDATE | RDW_NOERASE);
     }
 
     void resize(bool invalidateChrome = true)
@@ -6286,6 +6289,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
+        // Keep the visible page above inactive overlapping WKViews after resizing.
+        // Inactive surfaces are deliberately left alone until their tab is selected.
+        if (selectedTab) {
+            HWND selectedView = WKViewGetWindow(selectedTab->view.get());
+            if (selectedView && IsWindow(selectedView))
+                SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+                        | SWP_NOREDRAW | SWP_SHOWWINDOW);
+        }
         if (findBarVisible)
             positionFindBar();
         positionOverlayWindows(true);
@@ -11122,7 +11134,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->updateLastNormalWindowRect();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
                 disableNativeWindowBorder(window);
-                state->redrawAfterLayoutChange();
+                if (!restoredFromMinimized)
+                    state->redrawAfterLayoutChange();
             }
             if (restoredFromMinimized)
                 state->beginWindowSurfaceRecovery(true);
