@@ -2882,7 +2882,7 @@ struct BrowserState {
 
     void maintainSidebarZOrder()
     {
-        if (!window || !sidebarOpen) {
+        if (!window || (!sidebarOpen && !sidebarAnimating)) {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
@@ -2943,13 +2943,14 @@ struct BrowserState {
     {
         if (!window)
             return;
-        if (sidebarOpen) {
+        if (sidebarOpen || sidebarAnimating) {
             if (!sidebarZOrderTimerActive)
                 sidebarZOrderTimerActive = SetTimer(window, kSidebarZOrderTimerId, 72, nullptr) != 0;
             maintainSidebarZOrder();
         } else {
             KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
+            sidebarPaintRecoveryTicks = 0;
         }
     }
 
