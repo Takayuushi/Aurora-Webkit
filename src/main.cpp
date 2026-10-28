@@ -1104,6 +1104,7 @@ struct TabState {
     bool hasInternalThemeSnapshot { false };
     bool internalDarkTheme { false };
     std::wstring lastRecordedUrl;
+    std::wstring lastCompletedThumbnailURL;
     std::wstring lastExtensionsUrl;
     std::wstring fallbackURL;
     HICON favicon { nullptr };
@@ -2097,12 +2098,25 @@ struct BrowserState {
             if (auto* selected = active()) {
                 HWND viewWindow = WKViewGetWindow(selected->view.get());
                 if (viewWindow && IsWindow(viewWindow)) {
-                    InvalidateRect(viewWindow, nullptr, FALSE);
-                    RedrawWindow(viewWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+                    if (!IsWindowVisible(viewWindow))
+                        ShowWindow(viewWindow, SW_SHOWNA);
+                    // All WKViews overlap. Raising the selected view after minimize/
+                    // restore prevents a stale inactive view from covering it in black.
+                    SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+                            | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                    InvalidateRect(viewWindow, nullptr, windowSurfaceRecoveryTicks == 1);
+                    UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW;
+                    redrawFlags |= windowSurfaceRecoveryTicks == 1 ? RDW_ERASE : RDW_NOERASE;
+                    RedrawWindow(viewWindow, nullptr, nullptr, redrawFlags);
                 }
             }
         }
+
+        // Keep browser chrome and native overlay windows above the just-raised WKView.
+        positionOverlayWindows(!overlayAnimationInProgress);
+        if (sidebarOpen)
+            maintainSidebarZOrder();
 
         if (sidebarOpen || sidebarAnimating) {
             if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
@@ -2591,7 +2605,7 @@ struct BrowserState {
             card.right - inset, card.top + inset + size };
     }
 
-    bool captureTabThumbnail(TabState& tab)
+    bool captureTabThumbnail(TabState& tab, bool allowPreviouslyLoadedPartial = false)
     {
         // Capture only while this tab owns the visible WebKit surface.
         if (!tab.browser || tab.browser->active() != &tab || IsIconic(tab.browser->window)
@@ -2603,7 +2617,15 @@ struct BrowserState {
             return false;
 
         auto page = WKViewGetPage(tab.view.get());
-        if (!page || WKPageGetEstimatedProgress(page) < 1.0)
+        if (!page)
+            return false;
+        const double loadProgress = WKPageGetEstimatedProgress(page);
+        // For a tab-switch capture during a reload, a previously-completed render
+        // of the same URL is safe to reuse. Never label old-page pixels with a URL
+        // that has not completed its first render.
+        if (loadProgress < 1.0
+            && (!allowPreviouslyLoadedPartial
+                || tab.lastCompletedThumbnailURL != tab.activeUrl))
             return false;
         const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
@@ -2771,6 +2793,10 @@ struct BrowserState {
             retryCapture();
             return;
         }
+
+        const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        if (!completedURL.empty())
+            pending->lastCompletedThumbnailURL = completedURL;
 
         const bool overlayBusy = IsIconic(window) || sidebarOpen || sidebarAnimating
             || tabOverviewVisible || tabOverviewAnimating || tabOverviewClosing
@@ -5078,7 +5104,7 @@ search.addEventListener('keydown',e=>{
         if (addressEditing)
             endAddressEditing();
         if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
-            captureTabThumbnail(*tabs[previouslyActive]);
+            captureTabThumbnail(*tabs[previouslyActive], true);
         if (!switchingFromOverview) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
@@ -10406,6 +10432,9 @@ void didChangeIsLoading(const void* clientInfo)
     if (page && WKPageGetEstimatedProgress(page) < 1.0)
         tab->lastExtensionsUrl.clear();
     if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        if (!completedURL.empty())
+            tab->lastCompletedThumbnailURL = completedURL;
         tab->browser->runExtensionScripts(tab);
         auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!url.empty()
