@@ -1405,12 +1405,12 @@ struct BrowserState {
         const int height = std::clamp(lastWindowHeight, minimumHeight, workHeight);
         const int visibleWidth = std::min(120, width);
         const int visibleTop = std::min(80, height);
-        normal.left = std::clamp(normal.left,
+        normal.left = static_cast<LONG>(std::clamp(static_cast<int>(normal.left),
             static_cast<int>(info.rcWork.left) - width + visibleWidth,
-            static_cast<int>(info.rcWork.right) - visibleWidth);
-        normal.top = std::clamp(normal.top,
+            static_cast<int>(info.rcWork.right) - visibleWidth));
+        normal.top = static_cast<LONG>(std::clamp(static_cast<int>(normal.top),
             static_cast<int>(info.rcWork.top),
-            static_cast<int>(info.rcWork.bottom) - visibleTop);
+            static_cast<int>(info.rcWork.bottom) - visibleTop));
         normal.right = normal.left + width;
         normal.bottom = normal.top + height;
         const RECT target = lastWindowWasMaximized ? info.rcWork : normal;
