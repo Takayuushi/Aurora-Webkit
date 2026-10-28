@@ -10874,16 +10874,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(gAuroraAppIcon));
         SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(gAuroraAppIcon));
     }
-    // Retain a normal restore rectangle when Windows starts Aurora maximized.
+    // Keep startup maximization in Aurora's custom geometry state so later
+    // restore actions use the same animated path instead of native WS_MAXIMIZE.
     if (showCommand == SW_MAXIMIZE) {
-        GetWindowRect(window, &browserState.restoredWindowRect);
-        browserState.customMaximized = true;
+        RECT normalRect { };
+        HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info { };
+        info.cbSize = sizeof(info);
+        if (GetWindowRect(window, &normalRect) && monitor && GetMonitorInfoW(monitor, &info)) {
+            if (SetWindowPos(window, HWND_TOP,
+                    info.rcWork.left, info.rcWork.top,
+                    info.rcWork.right - info.rcWork.left,
+                    info.rcWork.bottom - info.rcWork.top,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
+                browserState.restoredWindowRect = normalRect;
+                browserState.customMaximized = true;
+            }
+        }
     }
 
     // Match the DWM border to the selected browser appearance.
     disableNativeWindowBorder(window);
 
-    ShowWindow(window, showCommand == SW_MAXIMIZE ? SW_MAXIMIZE : SW_SHOWNORMAL);
+    ShowWindow(window, SW_SHOWNORMAL);
     UpdateWindow(window);
 
     ACCEL accelerators[] = {
