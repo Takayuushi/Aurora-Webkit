@@ -284,17 +284,74 @@ struct FaviconResult {
 
 std::wstring faviconURLForPage(const std::wstring& pageURL)
 {
-    size_t scheme = pageURL.find(L"://");
+    const size_t scheme = pageURL.find(L"://");
     if (scheme == std::wstring::npos)
         return { };
 
-    size_t hostStart = scheme + 3;
-    size_t hostEnd = pageURL.find_first_of(L"/?#", hostStart);
-    std::wstring host = pageURL.substr(hostStart, hostEnd == std::wstring::npos ? std::wstring::npos : hostEnd - hostStart);
+    const size_t hostStart = scheme + 3;
+    const size_t hostEnd = pageURL.find_first_of(L"/?#", hostStart);
+    std::wstring host = pageURL.substr(hostStart,
+        hostEnd == std::wstring::npos ? std::wstring::npos : hostEnd - hostStart);
+    if (host.empty())
+        return { };
+
+    // Remove URL user-info if present, and strip a trailing dot from a DNS host.
+    const size_t at = host.rfind(L'@');
+    if (at != std::wstring::npos)
+        host.erase(0, at + 1);
+    if (!host.empty() && host.back() == L'.')
+        host.pop_back();
     if (host.empty())
         return { };
 
     return L"https://" + host + L"/favicon.ico";
+}
+
+std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL)
+{
+    const std::wstring first = faviconURLForPage(pageURL);
+    if (first.empty())
+        return { };
+
+    const size_t iconSuffix = first.rfind(L"/favicon.ico");
+    if (iconSuffix == std::wstring::npos)
+        return { };
+    const std::wstring secureOrigin = first.substr(0, iconSuffix);
+    std::wstring host = secureOrigin.substr(std::wstring(L"https://").size());
+    const std::wstring insecureOrigin = L"http://" + host;
+
+    std::vector<std::wstring> candidates {
+        first,
+        secureOrigin + L"/favicon.png",
+        secureOrigin + L"/apple-touch-icon.png",
+        // Google returns a PNG even for sites that do not publish a root favicon.ico.
+        L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=64"
+    };
+    if (pageURL.rfind(L"http://", 0) == 0)
+        candidates.insert(candidates.begin() + 1, insecureOrigin + L"/favicon.ico");
+
+    return candidates;
+}
+
+HICON loadFaviconImageFile(const wchar_t* path)
+{
+    if (!path || !*path)
+        return nullptr;
+
+    HICON icon = static_cast<HICON>(LoadImageW(nullptr, path, IMAGE_ICON,
+        32, 32, LR_LOADFROMFILE));
+    if (icon)
+        return icon;
+
+    // The fallback services and many sites provide PNG rather than ICO images.
+    Gdiplus::Bitmap bitmap(path, FALSE);
+    if (bitmap.GetLastStatus() != Gdiplus::Ok)
+        return nullptr;
+
+    HICON converted = nullptr;
+    if (bitmap.GetHICON(&converted) != Gdiplus::Ok)
+        return nullptr;
+    return converted;
 }
 
 struct VisitEntry {
@@ -8221,24 +8278,40 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
     if (!browser || pageURL.empty())
         return;
 
-    const std::wstring faviconURL = faviconURLForPage(pageURL);
-    if (faviconURL.empty())
+    const std::vector<std::wstring> candidates = faviconCandidatesForPage(pageURL);
+    if (candidates.empty())
         return;
 
     HWND window = browser->window;
-    std::thread([window, pageURL, faviconURL] {
-        wchar_t cacheFile[MAX_PATH] { };
-        HRESULT hr = URLDownloadToCacheFileW(nullptr, faviconURL.c_str(), cacheFile, MAX_PATH, 0, nullptr);
-        if (FAILED(hr) || !cacheFile[0] || !IsWindow(window))
-            return;
+    std::thread([window, pageURL, candidates] {
+        HICON icon = nullptr;
+        for (const auto& candidate : candidates) {
+            if (!IsWindow(window))
+                return;
 
-        HICON icon = static_cast<HICON>(LoadImageW(nullptr, cacheFile, IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-        if (!icon)
-            return;
+            wchar_t cacheFile[MAX_PATH] { };
+            const HRESULT hr = URLDownloadToCacheFileW(nullptr, candidate.c_str(),
+                cacheFile, MAX_PATH, 0, nullptr);
+            if (FAILED(hr) || !cacheFile[0])
+                continue;
 
+            icon = loadFaviconImageFile(cacheFile);
+            if (icon)
+                break;
+        }
+
+        if (!IsWindow(window)) {
+            if (icon)
+                DestroyIcon(icon);
+            return;
+        }
+
+        // Return failures too, so the UI can clear the in-flight marker and allow
+        // a later completed-load callback to retry instead of permanently giving up.
         auto* result = new FaviconResult { pageURL, icon };
         if (!PostMessageW(window, WM_AURORA_FAVICON_READY, 0, reinterpret_cast<LPARAM>(result))) {
-            DestroyIcon(icon);
+            if (icon)
+                DestroyIcon(icon);
             delete result;
         }
     }).detach();
@@ -10460,8 +10533,13 @@ void didChangeIsLoading(const void* clientInfo)
             tab->browser->recordVisit(url, tab->title.empty() ? url : tab->title);
             tab->lastRecordedUrl = url;
         }
-        if (tab == tab->browser->active())
+        if (tab == tab->browser->active()) {
             tab->browser->scheduleTabThumbnailCapture(tab, 520);
+            if (!tab->favicon && tab->faviconRequestURL.empty()) {
+                tab->faviconRequestURL = tab->activeUrl;
+                requestFavicon(tab->browser, tab->activeUrl);
+            }
+        }
     }
 
     // Page thumbnails are refreshed on an explicit tab switch or when overview
@@ -10894,11 +10972,17 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             for (auto& tab : state->tabs) {
                 if (tab->activeUrl != result->url || tab->faviconRequestURL != result->url)
                     continue;
-                if (tab->favicon)
-                    DestroyIcon(tab->favicon);
-                tab->favicon = result->icon;
-                result->icon = nullptr;
-                updatedTab = tab.get();
+                if (result->icon) {
+                    if (tab->favicon)
+                        DestroyIcon(tab->favicon);
+                    tab->favicon = result->icon;
+                    result->icon = nullptr;
+                    updatedTab = tab.get();
+                } else {
+                    // Do not keep a failed attempt marked in-flight forever.
+                    // A completed page-load callback can retry once the site is ready.
+                    tab->faviconRequestURL.clear();
+                }
                 break;
             }
             if (result->icon)
