@@ -164,6 +164,7 @@ constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
 constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
+constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
 constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
@@ -1158,6 +1159,9 @@ struct BrowserState {
     bool windowTransitionActive { false };
     bool windowTransitionGeometryApplied { false };
     bool windowTransitionTargetMaximized { false };
+    bool windowSurfaceRecoveryActive { false };
+    bool windowSurfaceRecoveryRefreshScale { false };
+    int windowSurfaceRecoveryTicks { 0 };
     ULONGLONG windowTransitionStartTick { 0 };
     RECT windowTransitionStartRect { };
     RECT windowTransitionTargetRect { };
@@ -2039,6 +2043,81 @@ struct BrowserState {
         }
     }
 
+    void beginWindowSurfaceRecovery(bool refreshBackingScale = false)
+    {
+        if (!window || IsIconic(window))
+            return;
+        windowSurfaceRecoveryTicks = 0;
+        windowSurfaceRecoveryRefreshScale = refreshBackingScale;
+        windowSurfaceRecoveryActive = SetTimer(
+            window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
+        recoverWindowSurfaceFrame();
+    }
+
+    void recoverWindowSurfaceFrame()
+    {
+        if (!window)
+            return;
+        if (IsIconic(window)) {
+            KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            windowSurfaceRecoveryActive = false;
+            return;
+        }
+
+        ++windowSurfaceRecoveryTicks;
+        if (windowSurfaceRecoveryTicks == 1) {
+            // Reconcile child geometry once before asking WebKit to repaint.
+            resize(false);
+            if (windowSurfaceRecoveryRefreshScale) {
+                const double scale = std::round(windowScaleFactor(window));
+                for (const auto& tab : tabs) {
+                    auto page = WKViewGetPage(tab->view.get());
+                    if (page)
+                        WKPageSetCustomBackingScaleFactor(page, scale);
+                }
+            }
+        } else {
+            // WebKit's accelerated child can repaint after the parent is restored;
+            // reassert the overlays' sibling z-order throughout that recovery window.
+            positionOverlayWindows(true);
+        }
+
+        if (auto* selected = active()) {
+            HWND viewWindow = WKViewGetWindow(selected->view.get());
+            if (viewWindow && IsWindow(viewWindow)) {
+                InvalidateRect(viewWindow, nullptr, FALSE);
+                RedrawWindow(viewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+            }
+        }
+
+        if (sidebarOpen || sidebarAnimating) {
+            if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
+                InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+                RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            }
+        }
+        if (tabOverviewVisible || tabOverviewClosing) {
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            }
+        }
+
+        RedrawWindow(window, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+
+        // Retry briefly: a single synchronous paint can occur before the WebKit
+        // compositor has recreated its backing surface after minimize/restore.
+        if (windowSurfaceRecoveryTicks >= 8) {
+            KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            windowSurfaceRecoveryActive = false;
+            windowSurfaceRecoveryRefreshScale = false;
+        }
+    }
+
     void toggleSidebar()
     {
         if (!window)
@@ -2058,6 +2137,7 @@ struct BrowserState {
             positionOverlayWindows();
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
+            beginWindowSurfaceRecovery();
             return;
         }
 
@@ -2076,6 +2156,7 @@ struct BrowserState {
         positionOverlayWindows();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
+        beginWindowSurfaceRecovery();
     }
 
     void updateToolbarHover(POINT point)
@@ -6221,6 +6302,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
+        // The resized page is now visible; keep nudging its paint path briefly
+        // so a stale, low-resolution backing surface cannot linger after handoff.
+        beginWindowSurfaceRecovery();
     }
 
     void animateWindowTransition()
@@ -10233,8 +10317,10 @@ void didChangeIsLoading(const void* clientInfo)
     // here can stall/flicker the active WebKit surface at navigation completion.
     tab->browser->invalidateTabChrome(tab);
     if (tab == tab->browser->active()
-        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating))
+        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
+        tab->browser->beginWindowSurfaceRecovery();
+    }
 }
 
 void didChangeTitle(const void* clientInfo)
@@ -10290,8 +10376,10 @@ void didChangeActiveURL(const void* clientInfo)
     }
 
     if (tab == tab->browser->active()
-        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating))
+        && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
+        tab->browser->beginWindowSurfaceRecovery();
+    }
     tab->browser->invalidateTabChrome(tab);
 
     if (url.empty() || url == L"about:blank")
@@ -10409,6 +10497,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         if (state && wParam == kWindowTransitionTimerId) {
             state->animateWindowTransition();
+            return 0;
+        }
+        if (state && wParam == kWindowSurfaceRecoveryTimerId) {
+            if (state->windowSurfaceRecoveryActive)
+                state->recoverWindowSurfaceFrame();
+            else
+                KillTimer(window, kWindowSurfaceRecoveryTimerId);
             return 0;
         }
         if (state && wParam == kDownloadsAnimationTimerId) {
@@ -10712,6 +10807,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 disableNativeWindowBorder(window);
                 state->redrawAfterLayoutChange();
             }
+            if (restoredFromMinimized)
+                state->beginWindowSurfaceRecovery(true);
         }
         return 0;
 
@@ -10735,6 +10832,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            state->windowSurfaceRecoveryActive = false;
             state->saveWindowStateOnExit();
             state->cancelWindowTransition();
             if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
