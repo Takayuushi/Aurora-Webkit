@@ -159,6 +159,7 @@ constexpr UINT kSidebarBookmarks = 2230;
 constexpr UINT kSidebarReadingList = 2231;
 constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
+constexpr UINT WM_AURORA_TRANSITION_REPAINT_READY = WM_APP + 21;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
@@ -277,10 +278,15 @@ WKPageRef createNewTabForWebKit(WKPageRef, WKPageConfigurationRef, WKNavigationA
 void getContextMenuFromProposedMenu(WKPageRef, WKArrayRef, WKArrayRef*, WKHitTestResultRef, WKTypeRef, const void*);
 void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef, const void*);
 
-void forcedPageRepaintFinished(WKErrorRef, void*)
+void forcedPageRepaintFinished(WKErrorRef, void* context)
 {
-    // WebKit has completed the requested rendering update. The callback intentionally
-    // does no synchronous Win32 painting; it must not block the browser UI thread.
+    // Only transition handoff requests pass a context. Report completion to the
+    // browser window; never synchronously draw from WebKit's completion callback.
+    if (!context)
+        return;
+    HWND window = static_cast<HWND>(context);
+    if (IsWindow(window))
+        PostMessageW(window, WM_AURORA_TRANSITION_REPAINT_READY, 0, 0);
 }
 
 struct FaviconResult {
@@ -1224,6 +1230,7 @@ struct BrowserState {
     bool hasLastNormalWindowRect { false };
     bool windowTransitionActive { false };
     bool windowTransitionGeometryApplied { false };
+    bool windowTransitionWaitingForRepaint { false };
     bool windowTransitionTargetMaximized { false };
     bool windowSurfaceRecoveryActive { false };
     bool windowSurfaceRecoveryRefreshScale { false };
@@ -6165,7 +6172,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return { left, top, left + width, top + height };
     }
 
-    void requestActivePageRepaint(bool refreshBackingScale = false)
+    void requestActivePageRepaint(bool refreshBackingScale = false, bool signalTransitionReady = false)
     {
         if (!window || IsIconic(window) || tabOverviewVisible)
             return;
@@ -6192,7 +6199,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
         // accelerated page generate a fresh frame. WKPageForceRepaint requests that frame.
-        WKPageForceRepaint(page, nullptr, forcedPageRepaintFinished);
+        WKPageForceRepaint(page, signalTransitionReady ? static_cast<void*>(window) : nullptr,
+            forcedPageRepaintFinished);
         positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
     }
 
@@ -6492,6 +6500,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             KillTimer(window, kWindowTransitionTimerId);
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
+        windowTransitionWaitingForRepaint = false;
         releaseWindowTransitionResources();
     }
 
@@ -6545,21 +6554,26 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
             resize();
             disableNativeWindowBorder(window);
-            redrawAfterLayoutChange();
+            InvalidateRect(window, nullptr, FALSE);
 
-            // Let the resized WebKit surface process a display frame under the
-            // transition snapshot before the live page is revealed.
+            // Keep the captured transition frame over the live page until WebKit
+            // confirms that a fresh render has completed. Use a bounded timer as a
+            // fallback so the window cannot remain covered if the callback is delayed.
             windowTransitionGeometryApplied = true;
-            if (SetTimer(window, kWindowTransitionTimerId, 16, nullptr))
+            windowTransitionWaitingForRepaint = true;
+            requestActivePageRepaint(true, true);
+            if (SetTimer(window, kWindowTransitionTimerId, 96, nullptr))
                 return;
+            windowTransitionWaitingForRepaint = false;
         }
 
-        redrawAfterLayoutChange();
+        windowTransitionWaitingForRepaint = false;
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
-        // Rebuild the backing surface at the final dimensions before the next
-        // interaction can expose a stale low-resolution frame.
+        InvalidateRect(window, nullptr, FALSE);
+        // A fallback repaint covers unusual delayed callbacks; when WebKit finishes
+        // promptly the callback path reaches here with the new backing frame ready.
         beginWindowSurfaceRecovery(true);
     }
 
@@ -11018,6 +11032,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_AURORA_WEBSITE_DATA_CLEARED:
         if (state)
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
+        return 0;
+
+    case WM_AURORA_TRANSITION_REPAINT_READY:
+        if (state && state->windowTransitionActive && state->windowTransitionWaitingForRepaint)
+            state->finishWindowTransition();
         return 0;
 
     case WM_AURORA_FAVICON_READY:
