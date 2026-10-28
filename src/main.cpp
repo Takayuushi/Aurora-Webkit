@@ -163,6 +163,8 @@ constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
 constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
+constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
+constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
 constexpr WKContextMenuItemTag kAuroraOpenLinkInNewTabTag = kWKContextMenuItemBaseApplicationTag + 1;
@@ -1143,6 +1145,15 @@ struct BrowserState {
     bool customMaximized { false };
     bool wasMinimized { false };
     RECT restoredWindowRect { };
+    bool windowTransitionActive { false };
+    bool windowTransitionTargetMaximized { false };
+    bool windowTransitionWasForeground { false };
+    ULONGLONG windowTransitionStartTick { 0 };
+    RECT windowTransitionStartRect { };
+    RECT windowTransitionTargetRect { };
+    HWND windowTransitionOverlay { nullptr };
+    HBITMAP windowTransitionBitmap { nullptr };
+    SIZE windowTransitionBitmapSize { 0, 0 };
     bool webFullscreen { false };
     bool fullscreenRestoreWasMaximized { false };
     RECT fullscreenRestoreWindowRect { };
@@ -5803,44 +5814,346 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             InvalidateRect(window, nullptr, FALSE);
     }
 
-    void toggleMaximizeWindow()
+    HBITMAP captureWindowTransitionBitmap(const RECT& rect)
     {
-        // Keep maximize state changes deterministic; animation is handled as a
-        // separate window-transition task rather than by synchronous layout work.
-        if (!customMaximized) {
-            GetWindowRect(window, &restoredWindowRect);
+        const int width = rect.right - rect.left;
+        const int height = rect.bottom - rect.top;
+        if (width < 1 || height < 1)
+            return nullptr;
 
-            HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO info { };
-            info.cbSize = sizeof(info);
-            if (monitor && GetMonitorInfoW(monitor, &info)) {
-                SetWindowPos(
-                    window,
-                    HWND_TOP,
-                    info.rcWork.left,
-                    info.rcWork.top,
-                    info.rcWork.right - info.rcWork.left,
-                    info.rcWork.bottom - info.rcWork.top,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
-                );
-                customMaximized = true;
-            }
-        } else {
-            SetWindowPos(
-                window,
-                HWND_TOP,
-                restoredWindowRect.left,
-                restoredWindowRect.top,
-                restoredWindowRect.right - restoredWindowRect.left,
-                restoredWindowRect.bottom - restoredWindowRect.top,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
-            );
-            customMaximized = false;
+        HDC screenDC = GetDC(nullptr);
+        if (!screenDC)
+            return nullptr;
+
+        HDC bitmapDC = CreateCompatibleDC(screenDC);
+        BITMAPINFO bitmapInfo { };
+        bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bitmapInfo.bmiHeader.biWidth = width;
+        bitmapInfo.bmiHeader.biHeight = -height;
+        bitmapInfo.bmiHeader.biPlanes = 1;
+        bitmapInfo.bmiHeader.biBitCount = 32;
+        bitmapInfo.bmiHeader.biCompression = BI_RGB;
+        void* bitmapPixels = nullptr;
+        HBITMAP bitmap = CreateDIBSection(screenDC, &bitmapInfo, DIB_RGB_COLORS,
+            &bitmapPixels, nullptr, 0);
+
+        if (!bitmapDC || !bitmap || !bitmapPixels) {
+            if (bitmapDC)
+                DeleteDC(bitmapDC);
+            if (bitmap)
+                DeleteObject(bitmap);
+            ReleaseDC(nullptr, screenDC);
+            return nullptr;
         }
 
+        HGDIOBJ previousBitmap = SelectObject(bitmapDC, bitmap);
+        const BOOL copied = BitBlt(bitmapDC, 0, 0, width, height, screenDC,
+            rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+        if (copied) {
+            auto* pixels = static_cast<DWORD*>(bitmapPixels);
+            const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+            for (size_t index = 0; index < pixelCount; ++index)
+                pixels[index] = (pixels[index] & 0x00FFFFFFu) | 0xFF000000u;
+        }
+
+        if (previousBitmap)
+            SelectObject(bitmapDC, previousBitmap);
+        DeleteDC(bitmapDC);
+        ReleaseDC(nullptr, screenDC);
+        if (!copied) {
+            DeleteObject(bitmap);
+            return nullptr;
+        }
+        return bitmap;
+    }
+
+    bool renderWindowTransitionFrame(const RECT& rect)
+    {
+        if (!windowTransitionOverlay || !windowTransitionBitmap
+            || windowTransitionBitmapSize.cx < 1 || windowTransitionBitmapSize.cy < 1)
+            return false;
+
+        const int width = rect.right - rect.left;
+        const int height = rect.bottom - rect.top;
+        const int sourceWidth = windowTransitionBitmapSize.cx;
+        const int sourceHeight = windowTransitionBitmapSize.cy;
+        if (width < 1 || height < 1)
+            return false;
+
+        HDC screenDC = GetDC(nullptr);
+        if (!screenDC)
+            return false;
+        HDC sourceDC = CreateCompatibleDC(screenDC);
+        HDC outputDC = CreateCompatibleDC(screenDC);
+        if (!sourceDC || !outputDC) {
+            if (sourceDC)
+                DeleteDC(sourceDC);
+            if (outputDC)
+                DeleteDC(outputDC);
+            ReleaseDC(nullptr, screenDC);
+            return false;
+        }
+
+        BITMAPINFO bitmapInfo { };
+        bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bitmapInfo.bmiHeader.biWidth = width;
+        bitmapInfo.bmiHeader.biHeight = -height;
+        bitmapInfo.bmiHeader.biPlanes = 1;
+        bitmapInfo.bmiHeader.biBitCount = 32;
+        bitmapInfo.bmiHeader.biCompression = BI_RGB;
+        void* outputPixels = nullptr;
+        HBITMAP outputBitmap = CreateDIBSection(screenDC, &bitmapInfo, DIB_RGB_COLORS,
+            &outputPixels, nullptr, 0);
+        if (!outputBitmap || !outputPixels) {
+            if (outputBitmap)
+                DeleteObject(outputBitmap);
+            DeleteDC(sourceDC);
+            DeleteDC(outputDC);
+            ReleaseDC(nullptr, screenDC);
+            return false;
+        }
+
+        HGDIOBJ previousSource = SelectObject(sourceDC, windowTransitionBitmap);
+        HGDIOBJ previousOutput = SelectObject(outputDC, outputBitmap);
+        SetStretchBltMode(outputDC, HALFTONE);
+        SetBrushOrgEx(outputDC, 0, 0, nullptr);
+        const BOOL stretched = StretchBlt(outputDC, 0, 0, width, height,
+            sourceDC, 0, 0, sourceWidth, sourceHeight, SRCCOPY);
+
+        BOOL updated = FALSE;
+        if (stretched) {
+            auto* pixels = static_cast<DWORD*>(outputPixels);
+            const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+            for (size_t index = 0; index < pixelCount; ++index)
+                pixels[index] = (pixels[index] & 0x00FFFFFFu) | 0xFF000000u;
+
+            // Keep the window's rounded silhouette while the captured frame scales.
+            const int baseRadius = std::max(1, scaleForDpi(window, 9));
+            const int radiusX = std::clamp(
+                static_cast<int>(std::lround(static_cast<double>(baseRadius) * width / sourceWidth)),
+                1, width / 2);
+            const int radiusY = std::clamp(
+                static_cast<int>(std::lround(static_cast<double>(baseRadius) * height / sourceHeight)),
+                1, height / 2);
+            const int antialiasWidth = std::max(1, std::min(radiusX, radiusY));
+
+            auto setCornerAlpha = [&](int x, int y, float coverage) {
+                const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width)
+                    + static_cast<size_t>(x);
+                DWORD pixel = pixels[index];
+                const unsigned int alpha = static_cast<unsigned int>(
+                    std::lround(std::clamp(coverage, 0.0f, 1.0f) * 255.0f));
+                const unsigned int blue = (pixel & 0xFFu) * alpha / 255u;
+                const unsigned int green = ((pixel >> 8) & 0xFFu) * alpha / 255u;
+                const unsigned int red = ((pixel >> 16) & 0xFFu) * alpha / 255u;
+                pixels[index] = (alpha << 24) | (red << 16) | (green << 8) | blue;
+            };
+
+            for (int y = 0; y < radiusY; ++y) {
+                for (int x = 0; x < radiusX; ++x) {
+                    const float dx = (static_cast<float>(radiusX) - (x + 0.5f)) / radiusX;
+                    const float dy = (static_cast<float>(radiusY) - (y + 0.5f)) / radiusY;
+                    const float distance = std::sqrt(dx * dx + dy * dy);
+                    const float coverage = std::clamp(
+                        (1.0f - distance) * antialiasWidth + 0.5f, 0.0f, 1.0f);
+
+                    setCornerAlpha(x, y, coverage);
+                    setCornerAlpha(width - 1 - x, y, coverage);
+                    setCornerAlpha(x, height - 1 - y, coverage);
+                    setCornerAlpha(width - 1 - x, height - 1 - y, coverage);
+                }
+            }
+
+            POINT destination { rect.left, rect.top };
+            SIZE destinationSize { width, height };
+            POINT source { 0, 0 };
+            BLENDFUNCTION blend { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+            updated = UpdateLayeredWindow(windowTransitionOverlay, screenDC,
+                &destination, &destinationSize, outputDC, &source, 0, &blend, ULW_ALPHA);
+        }
+
+        if (previousSource)
+            SelectObject(sourceDC, previousSource);
+        if (previousOutput)
+            SelectObject(outputDC, previousOutput);
+        DeleteObject(outputBitmap);
+        DeleteDC(sourceDC);
+        DeleteDC(outputDC);
+        ReleaseDC(nullptr, screenDC);
+        return stretched && updated;
+    }
+
+    void releaseWindowTransitionResources()
+    {
+        if (windowTransitionOverlay && IsWindow(windowTransitionOverlay))
+            DestroyWindow(windowTransitionOverlay);
+        windowTransitionOverlay = nullptr;
+
+        if (windowTransitionBitmap)
+            DeleteObject(windowTransitionBitmap);
+        windowTransitionBitmap = nullptr;
+        windowTransitionBitmapSize = SIZE { 0, 0 };
+    }
+
+    void cancelWindowTransition()
+    {
+        if (window)
+            KillTimer(window, kWindowTransitionTimerId);
+        windowTransitionActive = false;
+        releaseWindowTransitionResources();
+    }
+
+    void setWindowBoundsImmediately(const RECT& targetRect, bool maximized)
+    {
+        if (!window)
+            return;
+        const int width = targetRect.right - targetRect.left;
+        const int height = targetRect.bottom - targetRect.top;
+        if (width < 1 || height < 1)
+            return;
+
+        if (SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+            customMaximized = maximized;
         resize();
         disableNativeWindowBorder(window);
         redrawAfterLayoutChange();
+    }
+
+    void finishWindowTransition()
+    {
+        if (!windowTransitionActive || !window)
+            return;
+
+        KillTimer(window, kWindowTransitionTimerId);
+        const RECT targetRect = windowTransitionTargetRect;
+        const bool targetMaximized = windowTransitionTargetMaximized;
+        const bool restoreForeground = windowTransitionWasForeground;
+        windowTransitionActive = false;
+
+        const int width = targetRect.right - targetRect.left;
+        const int height = targetRect.bottom - targetRect.top;
+        if (width > 0 && height > 0
+            && SetWindowPos(window, HWND_TOP, targetRect.left, targetRect.top, width, height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+            customMaximized = targetMaximized;
+
+        resize();
+        disableNativeWindowBorder(window);
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        if (restoreForeground)
+            SetForegroundWindow(window);
+        redrawAfterLayoutChange();
+        releaseWindowTransitionResources();
+    }
+
+    void animateWindowTransition()
+    {
+        if (!windowTransitionActive)
+            return;
+
+        const ULONGLONG elapsed = GetTickCount64() - windowTransitionStartTick;
+        const float progress = std::clamp(
+            static_cast<float>(elapsed) / static_cast<float>(kWindowTransitionDurationMs),
+            0.0f, 1.0f);
+        // Ease out cubic for the quick, controlled zoom used by Safari's window controls.
+        const float inverse = 1.0f - progress;
+        const float eased = 1.0f - inverse * inverse * inverse;
+
+        const int startWidth = windowTransitionStartRect.right - windowTransitionStartRect.left;
+        const int startHeight = windowTransitionStartRect.bottom - windowTransitionStartRect.top;
+        const int targetWidth = windowTransitionTargetRect.right - windowTransitionTargetRect.left;
+        const int targetHeight = windowTransitionTargetRect.bottom - windowTransitionTargetRect.top;
+        auto interpolate = [eased](int from, int to) {
+            return static_cast<int>(std::lround(from + (to - from) * eased));
+        };
+
+        const int left = interpolate(windowTransitionStartRect.left, windowTransitionTargetRect.left);
+        const int top = interpolate(windowTransitionStartRect.top, windowTransitionTargetRect.top);
+        const int width = std::max(1, interpolate(startWidth, targetWidth));
+        const int height = std::max(1, interpolate(startHeight, targetHeight));
+        const RECT frame { left, top, left + width, top + height };
+
+        if (!renderWindowTransitionFrame(frame) || progress >= 1.0f)
+            finishWindowTransition();
+    }
+
+    void toggleMaximizeWindow()
+    {
+        if (!window || webFullscreen || windowTransitionActive)
+            return;
+
+        RECT startRect { };
+        if (!GetWindowRect(window, &startRect))
+            return;
+
+        RECT targetRect { };
+        const bool targetMaximized = !customMaximized;
+        if (targetMaximized) {
+            restoredWindowRect = startRect;
+            HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO info { };
+            info.cbSize = sizeof(info);
+            if (!monitor || !GetMonitorInfoW(monitor, &info))
+                return;
+            targetRect = info.rcWork;
+        } else {
+            targetRect = restoredWindowRect;
+            if (targetRect.right <= targetRect.left || targetRect.bottom <= targetRect.top)
+                return;
+        }
+
+        const int startWidth = startRect.right - startRect.left;
+        const int startHeight = startRect.bottom - startRect.top;
+        const int targetWidth = targetRect.right - targetRect.left;
+        const int targetHeight = targetRect.bottom - targetRect.top;
+        if (startWidth < 1 || startHeight < 1 || targetWidth < 1 || targetHeight < 1)
+            return;
+        if (startRect.left == targetRect.left && startRect.top == targetRect.top
+            && startWidth == targetWidth && startHeight == targetHeight) {
+            customMaximized = targetMaximized;
+            return;
+        }
+
+        HBITMAP capturedFrame = captureWindowTransitionBitmap(startRect);
+        if (!capturedFrame) {
+            setWindowBoundsImmediately(targetRect, targetMaximized);
+            return;
+        }
+
+        windowTransitionBitmap = capturedFrame;
+        windowTransitionBitmapSize = SIZE { startWidth, startHeight };
+        windowTransitionOverlay = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            L"STATIC",
+            L"",
+            WS_POPUP,
+            startRect.left,
+            startRect.top,
+            startWidth,
+            startHeight,
+            nullptr,
+            nullptr,
+            GetModuleHandleW(nullptr),
+            nullptr
+        );
+        if (!windowTransitionOverlay || !renderWindowTransitionFrame(startRect)) {
+            releaseWindowTransitionResources();
+            setWindowBoundsImmediately(targetRect, targetMaximized);
+            return;
+        }
+
+        windowTransitionStartRect = startRect;
+        windowTransitionTargetRect = targetRect;
+        windowTransitionTargetMaximized = targetMaximized;
+        windowTransitionStartTick = GetTickCount64();
+        windowTransitionWasForeground = GetForegroundWindow() == window;
+        windowTransitionActive = true;
+
+        ShowWindow(windowTransitionOverlay, SW_SHOWNOACTIVATE);
+        ShowWindow(window, SW_HIDE);
+        if (!SetTimer(window, kWindowTransitionTimerId, 16, nullptr))
+            finishWindowTransition();
     }
 
     void handleCommand(UINT command)
@@ -9888,6 +10201,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->servicePendingTabThumbnailCapture();
             return 0;
         }
+        if (state && wParam == kWindowTransitionTimerId) {
+            state->animateWindowTransition();
+            return 0;
+        }
         if (state && wParam == kDownloadsAnimationTimerId) {
             state->animateDownloadsPopup();
             return 0;
@@ -10153,6 +10470,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->applyTheme();
         return 0;
 
+    case WM_SYSCOMMAND:
+        if (state) {
+            const UINT systemCommand = static_cast<UINT>(wParam) & 0xFFF0u;
+            if (systemCommand == SC_MAXIMIZE) {
+                state->toggleMaximizeWindow();
+                return 0;
+            }
+            if (systemCommand == SC_RESTORE && !IsIconic(window) && state->customMaximized) {
+                state->toggleMaximizeWindow();
+                return 0;
+            }
+        }
+        break;
+
     case WM_SIZE:
         if (state) {
             const bool minimizing = wParam == SIZE_MINIMIZED;
@@ -10192,6 +10523,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            state->cancelWindowTransition();
             if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
                 DestroyWindow(state->downloadsPopoverWindow);
                 state->downloadsPopoverWindow = nullptr;
@@ -10523,6 +10855,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(gAuroraAppIcon));
         SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(gAuroraAppIcon));
     }
+    // Retain a normal restore rectangle when Windows starts Aurora maximized.
+    if (showCommand == SW_MAXIMIZE) {
+        GetWindowRect(window, &browserState.restoredWindowRect);
+        browserState.customMaximized = true;
+    }
+
     // Match the DWM border to the selected browser appearance.
     disableNativeWindowBorder(window);
 
