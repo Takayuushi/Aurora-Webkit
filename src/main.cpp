@@ -2930,7 +2930,8 @@ struct BrowserState {
         if (sidebarPaintRecoveryTicks > 0) {
             InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
             UINT flags = RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN;
-            if (!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing
+            if (!sidebarAnimating && !tabOverviewVisible
+                && !tabOverviewAnimating && !tabOverviewClosing
                 && !userSizingWindow && !windowTransitionActive)
                 flags |= RDW_UPDATENOW;
             RedrawWindow(sidebarOverlayWindow, nullptr, nullptr, flags);
