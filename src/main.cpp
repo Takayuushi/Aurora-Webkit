@@ -1161,6 +1161,7 @@ struct BrowserState {
     bool windowTransitionTargetMaximized { false };
     bool windowSurfaceRecoveryActive { false };
     bool windowSurfaceRecoveryRefreshScale { false };
+    bool windowSurfaceRecoveryRefreshView { true };
     int windowSurfaceRecoveryTicks { 0 };
     ULONGLONG windowTransitionStartTick { 0 };
     RECT windowTransitionStartRect { };
@@ -2043,12 +2044,13 @@ struct BrowserState {
         }
     }
 
-    void beginWindowSurfaceRecovery(bool refreshBackingScale = false)
+    void beginWindowSurfaceRecovery(bool refreshBackingScale = false, bool refreshWebView = true)
     {
         if (!window || IsIconic(window))
             return;
         windowSurfaceRecoveryTicks = 0;
         windowSurfaceRecoveryRefreshScale = refreshBackingScale;
+        windowSurfaceRecoveryRefreshView = refreshWebView;
         windowSurfaceRecoveryActive = SetTimer(
             window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
         recoverWindowSurfaceFrame();
@@ -2065,9 +2067,14 @@ struct BrowserState {
         }
 
         ++windowSurfaceRecoveryTicks;
+        const bool overlayAnimationInProgress = sidebarAnimating
+            || tabOverviewAnimating || tabOverviewClosing;
         if (windowSurfaceRecoveryTicks == 1) {
-            // Reconcile child geometry once before asking WebKit to repaint.
-            resize(false);
+            // Avoid a synchronous layout/redraw pass during the sidebar slide.
+            if (overlayAnimationInProgress && !windowSurfaceRecoveryRefreshView)
+                positionOverlayWindows(false);
+            else
+                resize(false);
             if (windowSurfaceRecoveryRefreshScale) {
                 const double scale = std::round(windowScaleFactor(window));
                 for (const auto& tab : tabs) {
@@ -2078,36 +2085,40 @@ struct BrowserState {
             }
         } else {
             // WebKit's accelerated child can repaint after the parent is restored;
-            // reassert the overlays' sibling z-order throughout that recovery window.
-            positionOverlayWindows(true);
+            // reassert overlay z-order without forcing an animation frame synchronously.
+            positionOverlayWindows(!overlayAnimationInProgress);
         }
 
-        if (auto* selected = active()) {
-            HWND viewWindow = WKViewGetWindow(selected->view.get());
-            if (viewWindow && IsWindow(viewWindow)) {
-                InvalidateRect(viewWindow, nullptr, FALSE);
-                RedrawWindow(viewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+        if (windowSurfaceRecoveryRefreshView) {
+            if (auto* selected = active()) {
+                HWND viewWindow = WKViewGetWindow(selected->view.get());
+                if (viewWindow && IsWindow(viewWindow)) {
+                    InvalidateRect(viewWindow, nullptr, FALSE);
+                    RedrawWindow(viewWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+                }
             }
         }
 
         if (sidebarOpen || sidebarAnimating) {
             if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
                 InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-                RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                if (!sidebarAnimating)
+                    RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
         }
         if (tabOverviewVisible || tabOverviewClosing) {
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                if (!tabOverviewAnimating && !tabOverviewClosing)
+                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
             }
         }
 
         RedrawWindow(window, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
 
         // Retry briefly: a single synchronous paint can occur before the WebKit
         // compositor has recreated its backing surface after minimize/restore.
@@ -2115,6 +2126,7 @@ struct BrowserState {
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             windowSurfaceRecoveryActive = false;
             windowSurfaceRecoveryRefreshScale = false;
+            windowSurfaceRecoveryRefreshView = true;
         }
     }
 
@@ -2137,7 +2149,7 @@ struct BrowserState {
             positionOverlayWindows();
             const RECT buttonRect = sidebarButtonRect();
             InvalidateRect(window, &buttonRect, FALSE);
-            beginWindowSurfaceRecovery();
+            beginWindowSurfaceRecovery(false, false);
             return;
         }
 
@@ -2156,7 +2168,7 @@ struct BrowserState {
         positionOverlayWindows();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
-        beginWindowSurfaceRecovery();
+        beginWindowSurfaceRecovery(false, false);
     }
 
     void updateToolbarHover(POINT point)
@@ -10319,7 +10331,7 @@ void didChangeIsLoading(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->beginWindowSurfaceRecovery();
+        tab->browser->beginWindowSurfaceRecovery(false, false);
     }
 }
 
@@ -10378,7 +10390,7 @@ void didChangeActiveURL(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->beginWindowSurfaceRecovery();
+        tab->browser->beginWindowSurfaceRecovery(false, false);
     }
     tab->browser->invalidateTabChrome(tab);
 
