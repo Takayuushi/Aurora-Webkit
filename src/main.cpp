@@ -220,6 +220,7 @@ constexpr UINT kSettingsLocalStorage = 7113;
 constexpr UINT kSettingsDeveloperTools = 7114;
 constexpr UINT kSettingsBrowseBackground = 7115;
 constexpr UINT kSettingsClearBackground = 7116;
+constexpr UINT kSettingsRememberWindowState = 7117;
 constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
@@ -7335,11 +7336,13 @@ bool openNewBrowserWindow(BrowserState* source, bool privateMode)
 {
     auto browser = std::make_unique<BrowserState>();
     browser->privateBrowsing = privateMode;
+    browser->persistWindowStateForThisWindow = false;
     if (source) {
         browser->themeMode = source->themeMode;
         browser->homePage = source->homePage;
         browser->searchEngine = source->searchEngine;
         browser->downloadLocation = source->downloadLocation;
+        browser->rememberWindowState = source->rememberWindowState;
         browser->showStartPageFavorites = source->showStartPageFavorites;
         browser->showStartPageFrequentlyVisited = source->showStartPageFrequentlyVisited;
         browser->showStartPageReadingList = source->showStartPageReadingList;
@@ -7395,6 +7398,7 @@ struct SettingsDialogState {
     HWND searchCombo { nullptr };
     HWND homeEdit { nullptr };
     HWND downloadsEdit { nullptr };
+    HWND rememberWindowStateCheck { nullptr };
     HWND javascriptCheck { nullptr };
     HWND imagesCheck { nullptr };
     HWND popupsCheck { nullptr };
@@ -7503,6 +7507,11 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
         dialog->downloadsEdit = edit(0, kSettingsDownloadsEdit, 32, 288, 620, downloads);
         actionButton(0, L"Choose…", kSettingsBrowse, 666, 287, 156);
         label(0, L"Downloaded files are saved to this folder.", 32, 328, 790, 22);
+        dialog->rememberWindowStateCheck = check(0,
+            L"Remember window size and state between launches",
+            kSettingsRememberWindowState, 32, 374, 620, browser->rememberWindowState);
+        label(0, L"Restore Aurora to its previous normal or maximized state when it opens.",
+            32, 408, 790, 24);
 
         // Appearance
         label(1, L"Browser appearance", 32, 174, 790, 22);
@@ -7754,6 +7763,8 @@ LRESULT CALLBACK settingsWindowProcedure(HWND window, UINT message, WPARAM wPara
                 }
             }
             browser->downloadLocation = folder;
+            browser->rememberWindowState = SendMessageW(
+                dialog->rememberWindowStateCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             browser->javascriptEnabled = SendMessageW(dialog->javascriptCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             browser->imagesEnabled = SendMessageW(dialog->imagesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             browser->allowPopups = SendMessageW(dialog->popupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -10655,6 +10666,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         break;
 
+    case WM_MOVE:
+        if (state)
+            state->updateLastNormalWindowRect();
+        break;
+
     case WM_SIZE:
         if (state) {
             const bool minimizing = wParam == SIZE_MINIMIZED;
@@ -10667,6 +10683,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 return 0;
 
             state->resize();
+            state->updateLastNormalWindowRect();
             if (wParam == SIZE_MAXIMIZED || restoredFromMinimized) {
                 disableNativeWindowBorder(window);
                 state->redrawAfterLayoutChange();
@@ -10694,6 +10711,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            state->saveWindowStateOnExit();
             state->cancelWindowTransition();
             if (state->downloadsPopoverWindow && IsWindow(state->downloadsPopoverWindow)) {
                 DestroyWindow(state->downloadsPopoverWindow);
@@ -11026,9 +11044,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(gAuroraAppIcon));
         SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(gAuroraAppIcon));
     }
+    // Restore the previous placement when enabled; otherwise respect Windows'
+    // requested startup command.
+    const bool restoredSavedWindowState = browserState.applySavedWindowState();
     // Keep startup maximization in Aurora's custom geometry state so later
     // restore actions use the same animated path instead of native WS_MAXIMIZE.
-    if (showCommand == SW_MAXIMIZE) {
+    if (!restoredSavedWindowState && showCommand == SW_MAXIMIZE) {
         RECT normalRect { };
         HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
         MONITORINFO info { };
@@ -11040,6 +11061,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     info.rcWork.bottom - info.rcWork.top,
                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
                 browserState.restoredWindowRect = normalRect;
+                browserState.lastNormalWindowRect = normalRect;
+                browserState.hasLastNormalWindowRect = true;
                 browserState.customMaximized = true;
             }
         }
