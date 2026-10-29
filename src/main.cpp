@@ -1341,6 +1341,7 @@ struct BrowserState {
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
     int sidebarPaintRecoveryTicks { 0 };
+    int sidebarSurfaceRecoveryTicks { 0 };
     bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
@@ -2125,15 +2126,39 @@ struct BrowserState {
                     : (sidebarOpen ? scaleForDpi(window, 300) : 0);
                 const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
-                UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-                if (alreadyVisible && !forceTop)
-                    flags |= SWP_NOZORDER;
-                else if (!alreadyVisible)
-                    flags |= SWP_SHOWWINDOW;
-                SetWindowPos(tabOverviewWindow,
-                    alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                    left, top, width, height, flags);
-                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                RECT currentRect { };
+                bool geometryChanged = true;
+                if (alreadyVisible && GetWindowRect(tabOverviewWindow, &currentRect)) {
+                    MapWindowPoints(nullptr, window,
+                        reinterpret_cast<POINT*>(&currentRect), 2);
+                    geometryChanged = currentRect.left != left || currentRect.top != top
+                        || currentRect.right - currentRect.left != width
+                        || currentRect.bottom - currentRect.top != height;
+                }
+
+                // The overview is a full-page native canvas. While the drawer animates,
+                // its target geometry is constant; repeatedly SetWindowPos + invalidating
+                // this entire canvas makes every 16 ms drawer frame redraw every tab card.
+                // Only move/paint the canvas when its actual geometry changes, or when a
+                // settled layout explicitly needs its z-order restored.
+                const bool freezeOverviewDuringSidebarSlide = alreadyVisible
+                    && sidebarAnimating && tabOverviewVisible
+                    && !tabOverviewAnimating && !tabOverviewClosing;
+                const bool shouldPosition = !alreadyVisible || geometryChanged
+                    || (forceTop && !freezeOverviewDuringSidebarSlide);
+                if (shouldPosition) {
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                    if (alreadyVisible && !forceTop)
+                        flags |= SWP_NOZORDER;
+                    else if (!alreadyVisible)
+                        flags |= SWP_SHOWWINDOW;
+                    SetWindowPos(tabOverviewWindow,
+                        alreadyVisible && !forceTop ? nullptr : HWND_TOP,
+                        left, top, width, height, flags);
+                }
+                if (!alreadyVisible || geometryChanged
+                    || (forceTop && !freezeOverviewDuringSidebarSlide))
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
             }
         } else if (tabOverviewWindow && IsWindow(tabOverviewWindow)
             && IsWindowVisible(tabOverviewWindow)) {
@@ -2250,6 +2275,7 @@ struct BrowserState {
         hoveredSidebarRow = -1;
         hoveredSidebarSettings = false;
         sidebarOverlayAnimationFrameReady = false;
+        sidebarSurfaceRecoveryTicks = 0;
 
         const float from = sidebarProgress();
         sidebarOpen = !sidebarOpen;
@@ -2621,8 +2647,9 @@ struct BrowserState {
                     }
                 } else {
                     // Showing the drawer also changes sibling-window composition.
-                    // Request a fresh WebKit frame so the Start Page does not stay white
-                    // until the pointer happens to trigger a page repaint.
+                    // Request a fresh WebKit frame immediately, then retry through the
+                    // existing sidebar z-order timer if the GPU surface still shows white.
+                    sidebarSurfaceRecoveryTicks = tabOverviewVisible ? 0 : 5;
                     requestActivePageRepaint();
                 }
             }
@@ -2910,6 +2937,7 @@ struct BrowserState {
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
             sidebarPaintRecoveryTicks = 0;
+            sidebarSurfaceRecoveryTicks = 0;
             return;
         }
         if (IsIconic(window))
@@ -2960,6 +2988,16 @@ struct BrowserState {
             RedrawWindow(sidebarOverlayWindow, nullptr, nullptr, flags);
             --sidebarPaintRecoveryTicks;
         }
+
+        // An accelerated WebKit page can stay white after the drawer has opened until
+        // a pointer event lands over the page. Retry page-level frame requests briefly
+        // after the animation, but never do this while Tab Overview owns the canvas.
+        if (sidebarSurfaceRecoveryTicks > 0) {
+            if (sidebarOpen && !sidebarAnimating && !tabOverviewVisible
+                && !tabOverviewAnimating && !tabOverviewClosing)
+                requestActivePageRepaint();
+            --sidebarSurfaceRecoveryTicks;
+        }
     }
 
     void updateSidebarZOrderTimer()
@@ -2974,6 +3012,7 @@ struct BrowserState {
             KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
             sidebarPaintRecoveryTicks = 0;
+            sidebarSurfaceRecoveryTicks = 0;
         }
     }
 
