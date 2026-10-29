@@ -1340,7 +1340,6 @@ struct BrowserState {
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
-    int sidebarPaintRecoveryTicks { 0 };
     bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
@@ -2056,7 +2055,7 @@ struct BrowserState {
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD | WS_CLIPSIBLINGS,
+        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
         return handle != nullptr;
     }
@@ -2134,45 +2133,7 @@ struct BrowserState {
                             RDW_INVALIDATE | RDW_NOERASE);
                 }
 
-                // Moving the drawer does not reliably repaint the sibling surface left
-                // exposed behind it. On close, invalidate only the strip being uncovered.
-                if (sidebarAnimating && geometryChanged && havePreviousRect
-                    && left < previousRect.left) {
-                    RECT clientRect { };
-                    if (GetClientRect(window, &clientRect)) {
-                        RECT exposed { left + width, top,
-                            previousRect.left + width, top + height };
-                        RECT clipped { };
-                        if (IntersectRect(&clipped, &exposed, &clientRect)) {
-                            if (tabOverviewVisible && tabOverviewWindow
-                                && IsWindowVisible(tabOverviewWindow)) {
-                                RECT overviewRect { };
-                                if (GetWindowRect(tabOverviewWindow, &overviewRect)) {
-                                    MapWindowPoints(nullptr, window,
-                                        reinterpret_cast<POINT*>(&overviewRect), 2);
-                                    RECT local = clipped;
-                                    OffsetRect(&local, -overviewRect.left, -overviewRect.top);
-                                    InvalidateRect(tabOverviewWindow, &local, FALSE);
-                                }
-                            } else if (!sidebarOpen) {
-                                if (auto* selected = active()) {
-                                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                                    RECT viewRect { };
-                                    if (viewWindow && IsWindow(viewWindow)
-                                        && GetWindowRect(viewWindow, &viewRect)) {
-                                        MapWindowPoints(nullptr, window,
-                                            reinterpret_cast<POINT*>(&viewRect), 2);
-                                        RECT local = clipped;
-                                        OffsetRect(&local, -viewRect.left, -viewRect.top);
-                                        InvalidateRect(viewWindow, &local, FALSE);
-                                        RedrawWindow(viewWindow, &local, nullptr,
-                                            RDW_INVALIDATE | RDW_NOERASE);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
@@ -2359,7 +2320,6 @@ struct BrowserState {
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
         // resize and synchronously repaint the WebKit GPU surface.
         positionOverlayWindows();
-        sidebarPaintRecoveryTicks = sidebarOpen ? 4 : 0;
         updateSidebarZOrderTimer();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
@@ -2683,6 +2643,9 @@ struct BrowserState {
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
+            // WebKit can change sibling z-order while submitting accelerated frames.
+            // Repair only the order during the slide; do not repaint the drawer.
+            maintainSidebarZOrder();
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
@@ -2690,35 +2653,7 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                if (!sidebarOpen) {
-                    RECT client { };
-                    if (GetClientRect(window, &client)) {
-                        const int exposedWidth = std::min(
-                            scaleForDpi(window, 300), static_cast<int>(client.right));
-                        RECT exposedParent { 0, contentTop(), exposedWidth, client.bottom };
-                        InvalidateRect(window, &exposedParent, FALSE);
-                        // The sidebar is a sibling HWND. Invalidating only the parent
-                        // does not refresh the WebKit child region previously hidden by it.
-                        // Queue an asynchronous child repaint after the overlay is hidden.
-                        if (auto* selected = active()) {
-                            if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
-                                RECT exposedView { 0, 0, exposedWidth,
-                                    std::max(0, static_cast<int>(client.bottom) - contentTop()) };
-                                InvalidateRect(viewWindow, &exposedView, FALSE);
-                                RedrawWindow(viewWindow, &exposedView, nullptr,
-                                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-                            }
-                        }
-                        // The newly uncovered strip can remain stale in WebKit's
-                        // accelerated surface until a pointer event hits that region.
-                        // Request a real page repaint once the sidebar is fully hidden.
-                        refreshActivePageAfterSidebarTransition();
-                    }
-                } else {
-                    // Force a page layout/paint pass after the drawer settles; HWND
-                    // invalidation alone did not restore the accelerated surface.
-                    refreshActivePageAfterSidebarTransition();
-                }
+                refreshActivePageAfterSidebarTransition();
             }
         }
 
@@ -3003,8 +2938,7 @@ struct BrowserState {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
-            sidebarPaintRecoveryTicks = 0;
-            return;
+                return;
         }
         if (IsIconic(window))
             return;
@@ -3020,10 +2954,13 @@ struct BrowserState {
         if (!activeView || !IsWindow(activeView))
             return;
 
-        // Child HWNDs are enumerated from the top of the Z order down. WebKit's
-        // accelerated view can overtake the sidebar during a compositor repaint.
+        // Child HWNDs are enumerated from the top of the Z order down.
+        // The drawer must sit above both WebKit and the overview canvas; checking only
+        // WebKit allowed the overview HWND to cover the sidebar during its slide.
+        const bool overviewVisible = tabOverviewWindow && IsWindowVisible(tabOverviewWindow);
         int sidebarOrder = -1;
         int viewOrder = -1;
+        int overviewOrder = -1;
         int order = 0;
         for (HWND child = GetWindow(window, GW_CHILD); child;
              child = GetWindow(child, GW_HWNDNEXT), ++order) {
@@ -3031,30 +2968,23 @@ struct BrowserState {
                 sidebarOrder = order;
             if (child == activeView)
                 viewOrder = order;
-            if (sidebarOrder >= 0 && viewOrder >= 0)
+            if (overviewVisible && child == tabOverviewWindow)
+                overviewOrder = order;
+            if (sidebarOrder >= 0 && viewOrder >= 0
+                && (!overviewVisible || overviewOrder >= 0))
                 break;
         }
 
-        if (sidebarOrder < 0 || viewOrder < 0 || sidebarOrder > viewOrder) {
+        const bool behindActiveView = viewOrder >= 0 && sidebarOrder > viewOrder;
+        const bool behindOverview = overviewVisible && overviewOrder >= 0
+            && sidebarOrder > overviewOrder;
+        if (sidebarOrder < 0 || behindActiveView || behindOverview) {
+            // The cached sidebar bitmap is retained. Restore sibling order without
+            // invalidating or synchronously repainting the panel.
             SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                     | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
         }
-
-        // A few bounded repaint retries handle first-show/compositor black frames
-        // without repeatedly repainting a stationary sidebar for its entire lifetime.
-        if (sidebarPaintRecoveryTicks > 0) {
-            InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
-            UINT flags = RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN;
-            if (!sidebarAnimating && !tabOverviewVisible
-                && !tabOverviewAnimating && !tabOverviewClosing
-                && !userSizingWindow && !windowTransitionActive)
-                flags |= RDW_UPDATENOW;
-            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr, flags);
-            --sidebarPaintRecoveryTicks;
-        }
-
     }
 
     void updateSidebarZOrderTimer()
@@ -3068,8 +2998,7 @@ struct BrowserState {
         } else {
             KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
-            sidebarPaintRecoveryTicks = 0;
-        }
+            }
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
@@ -6309,9 +6238,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                         | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            InvalidateRect(viewWindow, nullptr, FALSE);
-            RedrawWindow(viewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            if (!preserveOverlayStack) {
+                InvalidateRect(viewWindow, nullptr, FALSE);
+                RedrawWindow(viewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            }
         }
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
@@ -6333,12 +6264,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!page)
             return;
 
-        // Dispatching resize provokes a WebKit page layout/paint without rebuilding
-        // the WKView or changing native child-window order.
-        auto script = adoptWK(WKStringCreateWithUTF8CString(
-            "window.dispatchEvent(new Event('resize'));"));
-        if (script)
-            WKPageEvaluateJavaScriptInMainFrame(page, script.get(), nullptr, nullptr);
+        // Request a new accelerated WebKit frame without a synthetic DOM resize,
+        // which can cause site-wide layout and a visible white/black flash.
         requestActivePageRepaint(false, false, true);
     }
 
@@ -10791,7 +10718,6 @@ void didChangeIsLoading(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->sidebarPaintRecoveryTicks = 3;
         tab->browser->updateSidebarZOrderTimer();
     }
 }
@@ -10860,7 +10786,6 @@ void didChangeActiveURL(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->sidebarPaintRecoveryTicks = 3;
         tab->browser->updateSidebarZOrderTimer();
     }
     tab->browser->invalidateTabChrome(tab);
@@ -11305,7 +11230,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->resize(false);
             state->beginWindowSurfaceRecovery(true);
             if (state->sidebarOpen) {
-                state->sidebarPaintRecoveryTicks = 3;
                 state->updateSidebarZOrderTimer();
             }
         }
