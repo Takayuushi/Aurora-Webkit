@@ -266,7 +266,7 @@ void diagnosticLogEvent(const wchar_t* category, const wchar_t* event, const wch
         static_cast<unsigned long>(GetCurrentThreadId()),
         category ? category : L"general",
         event ? event : L"event",
-        details && *details ? L" " : "",
+        details && *details ? L" " : L"",
         details ? details : L"");
     {
         std::lock_guard<std::mutex> lock(gDiagnosticMutex);
