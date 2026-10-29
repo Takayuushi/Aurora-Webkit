@@ -2938,7 +2938,7 @@ struct BrowserState {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
-                return;
+            return;
         }
         if (IsIconic(window))
             return;
@@ -2998,7 +2998,7 @@ struct BrowserState {
         } else {
             KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
-            }
+        }
     }
 
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
