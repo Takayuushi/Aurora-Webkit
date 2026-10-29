@@ -47,6 +47,9 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <cwchar>
 #include <cwctype>
 #include <cstddef>
@@ -90,6 +93,213 @@ std::wstring auroraExecutableDirectory()
     path.resize(separator);
     return path;
 }
+constexpr ULONGLONG kDiagnosticLogRotateBytes = 8ULL * 1024ULL * 1024ULL;
+constexpr size_t kDiagnosticLogQueueLimit = 8192;
+
+std::mutex gDiagnosticMutex;
+std::condition_variable gDiagnosticCondition;
+std::deque<std::wstring> gDiagnosticQueue;
+std::thread gDiagnosticWriter;
+std::wstring gDiagnosticLogPath;
+ULONGLONG gDiagnosticSessionStartTick { 0 };
+bool gDiagnosticReady { false };
+bool gDiagnosticStopRequested { false };
+
+void diagnosticLogEvent(const wchar_t* category, const wchar_t* event, const wchar_t* details = L"");
+
+void rotateDiagnosticLogIfNeeded()
+{
+    if (gDiagnosticLogPath.empty())
+        return;
+    WIN32_FILE_ATTRIBUTE_DATA info { };
+    if (!GetFileAttributesExW(gDiagnosticLogPath.c_str(), GetFileExInfoStandard, &info))
+        return;
+    const ULONGLONG size = (static_cast<ULONGLONG>(info.nFileSizeHigh) << 32)
+        | static_cast<ULONGLONG>(info.nFileSizeLow);
+    if (size < kDiagnosticLogRotateBytes)
+        return;
+    const std::wstring previous = gDiagnosticLogPath + L".1";
+    DeleteFileW(previous.c_str());
+    MoveFileExW(gDiagnosticLogPath.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
+bool writeDiagnosticLine(HANDLE file, const std::wstring& line)
+{
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    const int needed = WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+        static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0)
+        return false;
+    std::string utf8(static_cast<size_t>(needed), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()),
+            utf8.data(), needed, nullptr, nullptr) != needed)
+        return false;
+    DWORD written = 0;
+    return WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr)
+        != FALSE && written == utf8.size();
+}
+
+bool rotateOpenDiagnosticFile(HANDLE& file)
+{
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    LARGE_INTEGER size { };
+    if (!GetFileSizeEx(file, &size)
+        || size.QuadPart < static_cast<LONGLONG>(kDiagnosticLogRotateBytes))
+        return true;
+    FlushFileBuffers(file);
+    CloseHandle(file);
+    file = INVALID_HANDLE_VALUE;
+    const std::wstring previous = gDiagnosticLogPath + L".1";
+    DeleteFileW(previous.c_str());
+    if (!MoveFileExW(gDiagnosticLogPath.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        file = CreateFileW(gDiagnosticLogPath.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        return file != INVALID_HANDLE_VALUE;
+    }
+    file = CreateFileW(gDiagnosticLogPath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    return file != INVALID_HANDLE_VALUE;
+}
+
+void diagnosticWriterMain()
+{
+    HANDLE file = CreateFileW(gDiagnosticLogPath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        OutputDebugStringW(L"Aurora diagnostics: unable to open the diagnostic log file.\n");
+        return;
+    }
+
+    for (;;) {
+        std::deque<std::wstring> batch;
+        bool stopping = false;
+        {
+            std::unique_lock<std::mutex> lock(gDiagnosticMutex);
+            gDiagnosticCondition.wait(lock, [] {
+                return gDiagnosticStopRequested || !gDiagnosticQueue.empty();
+            });
+            batch.swap(gDiagnosticQueue);
+            stopping = gDiagnosticStopRequested && batch.empty();
+        }
+        if (stopping)
+            break;
+        for (const auto& line : batch) {
+            if (!writeDiagnosticLine(file, line))
+                OutputDebugStringW(L"Aurora diagnostics: write to the diagnostic log failed.\n");
+        }
+        // Disk I/O stays on this worker, never on the browser's UI/rendering thread.
+        FlushFileBuffers(file);
+        if (!rotateOpenDiagnosticFile(file)) {
+            OutputDebugStringW(L"Aurora diagnostics: log rotation/reopen failed.\n");
+            break;
+        }
+    }
+    FlushFileBuffers(file);
+    CloseHandle(file);
+}
+
+void initializeDiagnosticsLog()
+{
+    wchar_t localAppData[32768] { };
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
+        static_cast<DWORD>(std::size(localAppData)));
+    if (!length || length >= std::size(localAppData)) {
+        OutputDebugStringW(L"Aurora diagnostics: LOCALAPPDATA is unavailable.\n");
+        return;
+    }
+
+    const std::wstring root = std::wstring(localAppData, length) + L"\\Aurora";
+    const std::wstring logs = root + L"\\Logs";
+    CreateDirectoryW(root.c_str(), nullptr);
+    CreateDirectoryW(logs.c_str(), nullptr);
+    gDiagnosticLogPath = logs + L"\\Aurora-diagnostics.log";
+    rotateDiagnosticLogIfNeeded();
+
+    HANDLE probe = CreateFileW(gDiagnosticLogPath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (probe == INVALID_HANDLE_VALUE) {
+        OutputDebugStringW(L"Aurora diagnostics: unable to create the log file.\n");
+        gDiagnosticLogPath.clear();
+        return;
+    }
+    CloseHandle(probe);
+
+    gDiagnosticSessionStartTick = GetTickCount64();
+    {
+        std::lock_guard<std::mutex> lock(gDiagnosticMutex);
+        gDiagnosticStopRequested = false;
+        gDiagnosticReady = true;
+    }
+    try {
+        gDiagnosticWriter = std::thread(diagnosticWriterMain);
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(gDiagnosticMutex);
+        gDiagnosticReady = false;
+        gDiagnosticStopRequested = true;
+        OutputDebugStringW(L"Aurora diagnostics: could not start the background writer.\n");
+        return;
+    }
+    diagnosticLogEvent(L"lifecycle", L"session_start",
+        L"async_log=1; page_urls=omitted; page_content=omitted; keystrokes=omitted");
+}
+
+void diagnosticLogEvent(const wchar_t* category, const wchar_t* event, const wchar_t* details)
+{
+    SYSTEMTIME now { };
+    GetLocalTime(&now);
+    const ULONGLONG elapsed = gDiagnosticSessionStartTick
+        ? GetTickCount64() - gDiagnosticSessionStartTick : 0;
+    wchar_t buffer[2048] { };
+    swprintf_s(buffer, std::size(buffer),
+        L"%04u-%02u-%02uT%02u:%02u:%02u.%03u +%llu ms pid=%lu tid=%lu [%s] %s%s%s\r\n",
+        static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
+        static_cast<unsigned>(now.wDay), static_cast<unsigned>(now.wHour),
+        static_cast<unsigned>(now.wMinute), static_cast<unsigned>(now.wSecond),
+        static_cast<unsigned>(now.wMilliseconds), static_cast<unsigned long long>(elapsed),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        category ? category : L"general",
+        event ? event : L"event",
+        details && *details ? L" " : "",
+        details ? details : L"");
+    {
+        std::lock_guard<std::mutex> lock(gDiagnosticMutex);
+        if (!gDiagnosticReady || gDiagnosticStopRequested)
+            return;
+        if (gDiagnosticQueue.size() >= kDiagnosticLogQueueLimit)
+            return;
+        gDiagnosticQueue.emplace_back(buffer);
+    }
+    gDiagnosticCondition.notify_one();
+}
+
+std::wstring diagnosticLogPath()
+{
+    return gDiagnosticLogPath;
+}
+
+void shutdownDiagnosticsLog()
+{
+    {
+        std::lock_guard<std::mutex> lock(gDiagnosticMutex);
+        if (!gDiagnosticReady)
+            return;
+        gDiagnosticStopRequested = true;
+    }
+    gDiagnosticCondition.notify_all();
+    if (gDiagnosticWriter.joinable())
+        gDiagnosticWriter.join();
+    std::lock_guard<std::mutex> lock(gDiagnosticMutex);
+    gDiagnosticReady = false;
+    gDiagnosticQueue.clear();
+}
+
 std::wstring auroraResourcePath(const wchar_t* filename)
 {
     return auroraExecutableDirectory() + L"\\Resources\\" + (filename ? filename : L"");
@@ -194,6 +404,7 @@ constexpr UINT kMenuClearHistory = 2019;
 constexpr UINT kMenuExtensions = 2020;
 constexpr UINT kMenuAddReadingList = 2034;
 constexpr UINT kMenuOpenExtensionsFolder = 2035;
+constexpr UINT kMenuOpenDiagnosticsLog = 2036;
 constexpr UINT kFindPrevious = 2101;
 constexpr UINT kFindNext = 2102;
 constexpr UINT kFindClose = 2103;
@@ -1183,6 +1394,7 @@ struct TabState {
     int previewWidth { 0 };
     int previewHeight { 0 };
     std::wstring previewURL;
+    ULONGLONG diagnosticLoadStartTick { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
 
@@ -1340,6 +1552,7 @@ struct BrowserState {
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
+    ULONGLONG diagnosticLastChromeTick { 0 };
     bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
@@ -2098,6 +2311,15 @@ struct BrowserState {
                     || previousRect.right - previousRect.left != width
                     || previousRect.bottom - previousRect.top != height;
 
+                if (sidebarAnimating && geometryChanged && havePreviousRect) {
+                    std::wostringstream detail;
+                    detail << L"elapsed_ms=" << (GetTickCount64() - sidebarAnimationStart)
+                        << L";left=" << left
+                        << L";step_px=" << (left - previousRect.left)
+                        << L";overview=" << (tabOverviewVisible ? 1 : 0);
+                    diagnosticLogEvent(L"render", L"sidebar_overlay_position", detail.str().c_str());
+                }
+
                 if (!alreadyVisible) {
                     // Show the drawer once; its cached bitmap then moves without
                     // repeatedly changing sibling HWND order during the animation.
@@ -2207,6 +2429,14 @@ struct BrowserState {
         windowSurfaceRecoveryRefreshView = refreshWebView;
         windowSurfaceRecoveryActive = SetTimer(
             window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
+        {
+            std::wostringstream detail;
+            detail << L"refresh_scale=" << (refreshBackingScale ? 1 : 0)
+                << L";refresh_view=" << (refreshWebView ? 1 : 0)
+                << L";sidebar_open=" << (sidebarOpen ? 1 : 0)
+                << L";overview=" << (tabOverviewVisible ? 1 : 0);
+            diagnosticLogEvent(L"render", L"window_surface_recovery_started", detail.str().c_str());
+        }
         recoverWindowSurfaceFrame();
     }
 
@@ -2224,6 +2454,12 @@ struct BrowserState {
         const bool overlayAnimationInProgress = sidebarAnimating
             || tabOverviewAnimating || tabOverviewClosing;
         if (windowSurfaceRecoveryTicks == 1) {
+            {
+                std::wostringstream detail;
+                detail << L"refresh_scale=" << (windowSurfaceRecoveryRefreshScale ? 1 : 0)
+                    << L";refresh_view=" << (windowSurfaceRecoveryRefreshView ? 1 : 0);
+                diagnosticLogEvent(L"render", L"window_surface_recovery_first_tick", detail.str().c_str());
+            }
             // Avoid a synchronous layout/redraw pass during the sidebar slide.
             if (overlayAnimationInProgress && !windowSurfaceRecoveryRefreshView)
                 positionOverlayWindows(false);
@@ -2291,6 +2527,13 @@ struct BrowserState {
         // Bounded asynchronous retries allow the compositor to publish its new
         // backing surface without monopolising the UI thread for several seconds.
         if (windowSurfaceRecoveryTicks >= 18) {
+            {
+                std::wostringstream detail;
+                detail << L"ticks=" << windowSurfaceRecoveryTicks
+                    << L";sidebar_open=" << (sidebarOpen ? 1 : 0)
+                    << L";overview=" << (tabOverviewVisible ? 1 : 0);
+                diagnosticLogEvent(L"render", L"window_surface_recovery_finished", detail.str().c_str());
+            }
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             windowSurfaceRecoveryActive = false;
             windowSurfaceRecoveryRefreshScale = false;
@@ -2313,6 +2556,15 @@ struct BrowserState {
         sidebarAnimationTarget = sidebarOpen ? 1.0f : 0.0f;
         sidebarAnimationStart = GetTickCount64();
         sidebarAnimating = std::abs(sidebarAnimationTarget - sidebarAnimationFrom) > 0.001f;
+        diagnosticLastChromeTick = GetTickCount64();
+        {
+            std::wostringstream detail;
+            detail << L"open=" << (sidebarOpen ? 1 : 0)
+                << L";overview=" << (tabOverviewVisible ? 1 : 0)
+                << L";tabs=" << tabs.size()
+                << L";animating=" << (sidebarAnimating ? 1 : 0);
+            diagnosticLogEvent(L"ui", L"sidebar_toggle", detail.str().c_str());
+        }
         if (sidebarAnimating)
             startChromeAnimationTimer();
 
@@ -2534,6 +2786,21 @@ struct BrowserState {
     {
         if (!window)
             return;
+        const ULONGLONG diagnosticTickStart = GetTickCount64();
+        const ULONGLONG diagnosticTickGap = diagnosticLastChromeTick
+            ? diagnosticTickStart - diagnosticLastChromeTick : 0;
+        diagnosticLastChromeTick = diagnosticTickStart;
+        const bool diagnosticTrackAnimation = sidebarAnimating || tabOverviewAnimating
+            || tabOverviewClosing || windowTransitionActive;
+        if (diagnosticTrackAnimation && diagnosticTickGap > 24) {
+            std::wostringstream detail;
+            detail << L"gap_ms=" << diagnosticTickGap
+                << L";sidebar_anim=" << (sidebarAnimating ? 1 : 0)
+                << L";overview_anim=" << (tabOverviewAnimating ? 1 : 0)
+                << L";overview_closing=" << (tabOverviewClosing ? 1 : 0)
+                << L";window_transition=" << (windowTransitionActive ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"animation_frame_gap", detail.str().c_str());
+        }
 
         bool continueAnimation = false;
         for (int i = 0; i < 4; ++i) {
@@ -2649,6 +2916,15 @@ struct BrowserState {
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
+                {
+                    const ULONGLONG elapsed = GetTickCount64() - sidebarAnimationStart;
+                    std::wostringstream detail;
+                    detail << L"elapsed_ms=" << elapsed
+                        << L";open=" << (sidebarOpen ? 1 : 0)
+                        << L";overview=" << (tabOverviewVisible ? 1 : 0)
+                        << L";tabs=" << tabs.size();
+                    diagnosticLogEvent(L"ui", L"sidebar_animation_completed", detail.str().c_str());
+                }
                 sidebarAnimating = false;
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
@@ -2662,6 +2938,16 @@ struct BrowserState {
         if (!continueAnimation) {
             KillTimer(window, kChromeAnimationTimerId);
             chromeAnimationTimerActive = false;
+        }
+        const ULONGLONG diagnosticWorkMs = GetTickCount64() - diagnosticTickStart;
+        if (diagnosticTrackAnimation && diagnosticWorkMs >= 8) {
+            std::wostringstream detail;
+            detail << L"work_ms=" << diagnosticWorkMs
+                << L";tick_gap_ms=" << diagnosticTickGap
+                << L";sidebar_anim=" << (sidebarAnimating ? 1 : 0)
+                << L";overview_anim=" << (tabOverviewAnimating ? 1 : 0)
+                << L";overview_closing=" << (tabOverviewClosing ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"slow_animation_tick", detail.str().c_str());
         }
     }
 
@@ -2979,6 +3265,13 @@ struct BrowserState {
         const bool behindOverview = overviewVisible && overviewOrder >= 0
             && sidebarOrder > overviewOrder;
         if (sidebarOrder < 0 || behindActiveView || behindOverview) {
+            std::wostringstream detail;
+            detail << L"sidebar_order=" << sidebarOrder
+                << L";webview_order=" << viewOrder
+                << L";overview_order=" << overviewOrder
+                << L";overview_visible=" << (overviewVisible ? 1 : 0)
+                << L";sidebar_animating=" << (sidebarAnimating ? 1 : 0);
+            diagnosticLogEvent(L"render", L"sidebar_z_order_corrected", detail.str().c_str());
             // The cached sidebar bitmap is retained. Restore sibling order without
             // invalidating or synchronously repainting the panel.
             SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
@@ -4296,6 +4589,7 @@ struct BrowserState {
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(extensionMenu), L"Extensions");
         AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings");
         AppendMenuW(menu, MF_STRING, kMenuAbout, L"About Aurora");
+        AppendMenuW(menu, MF_STRING, kMenuOpenDiagnosticsLog, L"Open Diagnostic Log\tCtrl+Shift+L");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit Aurora\tCtrl+Shift+Q");
@@ -5193,6 +5487,14 @@ search.addEventListener('keydown',e=>{
 
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
+        if (switchingFromOverview) {
+            std::wostringstream detail;
+            detail << L"target_tab=" << index
+                << L";previous_tab=" << previouslyActive
+                << L";overview_animating=" << (tabOverviewAnimating ? 1 : 0)
+                << L";sidebar_open=" << (sidebarOpen ? 1 : 0);
+            diagnosticLogEvent(L"ui", L"tab_selected_from_overview", detail.str().c_str());
+        }
         // Preserve the current animation position if a tab is selected while the
         // overview is still opening. Resetting this to zero causes a visible jump
         // back to the card before the selected-tab zoom can continue.
@@ -6061,6 +6363,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             tabOverviewClosingSettling = false;
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewClosingTab = -1;
+            {
+                std::wostringstream detail;
+                detail << L"tabs=" << tabs.size()
+                    << L";sidebar_open=" << (sidebarOpen ? 1 : 0)
+                    << L";sidebar_animating=" << (sidebarAnimating ? 1 : 0);
+                diagnosticLogEvent(L"ui", L"tab_overview_open", detail.str().c_str());
+            }
+            diagnosticLastChromeTick = GetTickCount64();
             tabOverviewVisible = true;
             tabOverviewAnimating = true;
             tabOverviewAnimationStart = GetTickCount64();
@@ -6104,6 +6414,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         tabOverviewZoomFrom = 1.0f;
         tabOverviewZoomTo = 0.0f;
         tabOverviewTransitionDuration = 420;
+        {
+            std::wostringstream detail;
+            detail << L"tabs=" << tabs.size()
+                << L";sidebar_open=" << (sidebarOpen ? 1 : 0)
+                << L";sidebar_animating=" << (sidebarAnimating ? 1 : 0);
+            diagnosticLogEvent(L"ui", L"tab_overview_open", detail.str().c_str());
+        }
+        diagnosticLastChromeTick = GetTickCount64();
         tabOverviewVisible = true;
         tabOverviewAnimating = true;
         tabOverviewAnimationStart = GetTickCount64();
@@ -6217,6 +6535,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     {
         if (!window || IsIconic(window) || tabOverviewVisible)
             return;
+        const ULONGLONG diagnosticStart = GetTickCount64();
         auto* selected = active();
         if (!selected)
             return;
@@ -6251,6 +6570,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             forcedPageRepaintFinished);
         if (!preserveOverlayStack)
             positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
+        const ULONGLONG elapsed = GetTickCount64() - diagnosticStart;
+        if (elapsed >= 8) {
+            std::wostringstream detail;
+            detail << L"elapsed_ms=" << elapsed
+                << L";scale_refresh=" << (refreshBackingScale ? 1 : 0)
+                << L";transition_callback=" << (signalTransitionReady ? 1 : 0)
+                << L";preserve_overlay_stack=" << (preserveOverlayStack ? 1 : 0)
+                << L";sidebar_animating=" << (sidebarAnimating ? 1 : 0)
+                << L";overview=" << (tabOverviewVisible ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"slow_page_repaint_request", detail.str().c_str());
+        }
     }
 
     void refreshActivePageAfterSidebarTransition()
@@ -7002,6 +7332,19 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kMenuAbout:
             openBrowserSettings(this, 12);
             break;
+        case kMenuOpenDiagnosticsLog: {
+            diagnosticLogEvent(L"ui", L"diagnostic_log_open_requested");
+            const std::wstring path = diagnosticLogPath();
+            const INT_PTR result = path.empty() ? 0
+                : reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", path.c_str(),
+                    nullptr, nullptr, SW_SHOWNORMAL));
+            if (result <= 32) {
+                MessageBoxW(window,
+                    L"The Aurora diagnostic log is unavailable. Check that the user profile's Local AppData folder is writable.",
+                    L"Aurora Diagnostics", MB_OK | MB_ICONWARNING);
+            }
+            break;
+        }
         case 5997: {
             std::wstring folder = downloadsDirectory();
             if (!folder.empty())
@@ -10685,9 +11028,33 @@ void didChangeIsLoading(const void* clientInfo)
         return;
 
     auto page = WKViewGetPage(tab->view.get());
-    if (page && WKPageGetEstimatedProgress(page) < 1.0)
+    const double loadProgress = page ? WKPageGetEstimatedProgress(page) : 0.0;
+    if (page && loadProgress < 1.0) {
         tab->lastExtensionsUrl.clear();
-    if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        if (!tab->diagnosticLoadStartTick) {
+            tab->diagnosticLoadStartTick = GetTickCount64();
+            std::wostringstream detail;
+            detail << L"active=" << (tab == tab->browser->active() ? 1 : 0)
+                << L";tab_index=" << tab->browser->activeTab
+                << L";tab_count=" << tab->browser->tabs.size()
+                << L";sidebar_open=" << (tab->browser->sidebarOpen ? 1 : 0)
+                << L";overview=" << (tab->browser->tabOverviewVisible ? 1 : 0);
+            diagnosticLogEvent(L"navigation", L"load_started", detail.str().c_str());
+        }
+    }
+    if (page && loadProgress >= 1.0) {
+        if (tab->diagnosticLoadStartTick) {
+            const ULONGLONG duration = GetTickCount64() - tab->diagnosticLoadStartTick;
+            std::wostringstream detail;
+            detail << L"elapsed_ms=" << duration
+                << L";active=" << (tab == tab->browser->active() ? 1 : 0)
+                << L";tab_index=" << tab->browser->activeTab
+                << L";tab_count=" << tab->browser->tabs.size()
+                << L";sidebar_open=" << (tab->browser->sidebarOpen ? 1 : 0)
+                << L";overview=" << (tab->browser->tabOverviewVisible ? 1 : 0);
+            diagnosticLogEvent(L"navigation", L"load_completed", detail.str().c_str());
+            tab->diagnosticLoadStartTick = 0;
+        }
         const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!completedURL.empty())
             tab->lastCompletedThumbnailURL = completedURL;
@@ -10991,6 +11358,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_PAINT: {
+        const ULONGLONG diagnosticPaintStart = GetTickCount64();
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(window, &paint);
         if (state) {
@@ -11023,6 +11391,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
         }
         EndPaint(window, &paint);
+        const ULONGLONG diagnosticPaintMs = GetTickCount64() - diagnosticPaintStart;
+        if (diagnosticPaintMs >= 8) {
+            std::wostringstream detail;
+            detail << L"elapsed_ms=" << diagnosticPaintMs
+                << L";sidebar_open=" << (state && state->sidebarOpen ? 1 : 0)
+                << L";sidebar_animating=" << (state && state->sidebarAnimating ? 1 : 0)
+                << L";overview=" << (state && state->tabOverviewVisible ? 1 : 0)
+                << L";window_transition=" << (state && state->windowTransitionActive ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"slow_chrome_paint", detail.str().c_str());
+        }
         return 0;
     }
 
@@ -11284,6 +11662,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            {
+                std::wostringstream detail;
+                detail << L"sidebar_open=" << (state->sidebarOpen ? 1 : 0)
+                    << L";overview=" << (state->tabOverviewVisible ? 1 : 0)
+                    << L";tabs=" << state->tabs.size();
+                diagnosticLogEvent(L"lifecycle", L"browser_window_destroyed", detail.str().c_str());
+            }
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             KillTimer(window, kSidebarZOrderTimerId);
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
@@ -11370,6 +11755,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         return 1;
 
     case WM_PAINT: {
+        const ULONGLONG diagnosticPaintStart = GetTickCount64();
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(overlay, &paint);
         RECT client { };
@@ -11505,6 +11891,19 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         }
 
         EndPaint(overlay, &paint);
+        const ULONGLONG diagnosticPaintMs = GetTickCount64() - diagnosticPaintStart;
+        if (diagnosticPaintMs >= 8) {
+            std::wostringstream detail;
+            detail << L"surface=" << (overlay == state->sidebarOverlayWindow ? L"sidebar" : L"tab_overview")
+                << L";elapsed_ms=" << diagnosticPaintMs
+                << L";width=" << width << L";height=" << height
+                << L";bitmap_recreated=" << (recreatedBitmap ? 1 : 0)
+                << L";cached_frame_reused=" << (reuseOverlayFrame ? 1 : 0)
+                << L";sidebar_animating=" << (state->sidebarAnimating ? 1 : 0)
+                << L";overview_animating=" << (state->tabOverviewAnimating ? 1 : 0)
+                << L";overview_closing=" << (state->tabOverviewClosing ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"slow_overlay_paint", detail.str().c_str());
+        }
         return 0;
     }
 
@@ -11568,6 +11967,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     }
     gAuroraAppIcon = createAuroraIcon();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    initializeDiagnosticsLog();
 
     WNDCLASSEXW windowClass { };
     windowClass.cbSize = sizeof(windowClass);
@@ -11580,6 +11980,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     windowClass.lpszClassName = windowClassName;
 
     if (!RegisterClassExW(&windowClass)) {
+        diagnosticLogEvent(L"error", L"register_window_class_failed");
+        shutdownDiagnosticsLog();
         MessageBoxW(nullptr, L"Could not register the Aurora window class.", windowTitle, MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
@@ -11593,6 +11995,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     overlayClass.hbrBackground = nullptr;
     overlayClass.lpszClassName = overlayWindowClassName;
     if (!RegisterClassExW(&overlayClass)) {
+        diagnosticLogEvent(L"error", L"register_overlay_class_failed");
+        shutdownDiagnosticsLog();
         MessageBoxW(nullptr, L"Could not register the Aurora overlay window class.", windowTitle, MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
@@ -11616,6 +12020,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     );
 
     if (!window) {
+        diagnosticLogEvent(L"error", L"create_browser_window_failed");
+        shutdownDiagnosticsLog();
         MessageBoxW(nullptr, L"Could not create the Aurora window.", windowTitle, MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 1;
@@ -11666,6 +12072,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         { FCONTROL | FSHIFT, 'P', kMenuNewPrivateWindow },
         { FCONTROL, 'W', kCommandCloseTab },
         { FCONTROL | FSHIFT, 'Q', kMenuQuit },
+        { FCONTROL | FSHIFT, 'L', kMenuOpenDiagnosticsLog },
         { FCONTROL, 'H', kMenuHistory },
         { FCONTROL | FSHIFT, 'B', kMenuBookmarks },
         { FCONTROL, 'D', kMenuAddBookmark },
@@ -11681,6 +12088,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     MSG message { };
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        const ULONGLONG diagnosticDispatchStart = GetTickCount64();
         // Browser shortcuts must only be translated for actual key-down messages
         // while a required Ctrl/Alt modifier is held. This keeps ordinary text
         // entry in the address bar from being interpreted as a browser command.
@@ -11705,11 +12113,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        const ULONGLONG dispatchMs = GetTickCount64() - diagnosticDispatchStart;
+        if (dispatchMs >= 25) {
+            std::wostringstream detail;
+            detail << L"message=0x" << std::hex << message.message << std::dec
+                << L";elapsed_ms=" << dispatchMs
+                << L";target_main_window=" << (message.hwnd == window ? 1 : 0);
+            diagnosticLogEvent(L"performance", L"slow_message_dispatch", detail.str().c_str());
+        }
     }
 
     if (acceleratorTable)
         DestroyAcceleratorTable(acceleratorTable);
 
+    diagnosticLogEvent(L"lifecycle", L"process_stop");
+    shutdownDiagnosticsLog();
     Gdiplus::GdiplusShutdown(gdiplusToken);
     return static_cast<int>(message.wParam);
 }
