@@ -1231,6 +1231,10 @@ struct BrowserState {
     bool windowTransitionActive { false };
     bool windowTransitionGeometryApplied { false };
     bool windowTransitionWaitingForRepaint { false };
+    bool windowTransitionRepaintReady { false };
+    int windowTransitionSettleTicks { 0 };
+    ULONGLONG windowTransitionRepaintWaitStartTick { 0 };
+    ULONGLONG windowTransitionLastRepaintRequestTick { 0 };
     bool windowTransitionTargetMaximized { false };
     bool windowSurfaceRecoveryActive { false };
     bool windowSurfaceRecoveryRefreshScale { false };
@@ -1330,7 +1334,7 @@ struct BrowserState {
     bool newTabsOpenWithHomepage { false };
     bool newWindowsOpenWithHomepage { false };
     bool showWebsiteIconsInTabs { true };
-    bool alwaysShowTabBar { false };
+    bool alwaysShowTabBar { true };
     bool hasCreatedInitialTab { false };
     TabState* pendingThumbnailCaptureTab { nullptr };
     unsigned pendingThumbnailCaptureAttempts { 0 };
@@ -1354,6 +1358,7 @@ struct BrowserState {
                 return 0;
             return static_cast<int>(std::clamp(parsed, -100000L, 100000L));
         };
+        bool hasTabBarPreferenceVersion = false;
         std::string line;
         while (std::getline(file, line)) {
             const size_t split = line.find('\t');
@@ -1390,6 +1395,8 @@ struct BrowserState {
                 showWebsiteIconsInTabs = value == L"1" || value == L"true";
             else if (key == "alwaysShowTabBar")
                 alwaysShowTabBar = value == L"1" || value == L"true";
+            else if (key == "alwaysShowTabBarPreferenceVersion")
+                hasTabBarPreferenceVersion = value == L"1" || value == L"true";
             else if (key == "rememberWindowState")
                 rememberWindowState = value == L"1" || value == L"true";
             else if (key == "lastWindowStateValid")
@@ -1415,6 +1422,12 @@ struct BrowserState {
             else if (key == "developerTools")
                 developerToolsEnabled = value == L"1" || value == L"true";
         }
+        // Older builds persisted the default false value even when the user had
+        // never changed it. Migrate those profiles to the Safari-like single-tab bar
+        // once; the version marker below preserves subsequent explicit choices.
+        if (!hasTabBarPreferenceVersion)
+            alwaysShowTabBar = true;
+
         if (lastWindowStateValid) {
             if (lastWindowWidth < 780 || lastWindowWidth > 20000
                 || lastWindowHeight < 520 || lastWindowHeight > 12000) {
@@ -1456,6 +1469,7 @@ struct BrowserState {
              << "newWindowsOpenWithHomepage\t" << (newWindowsOpenWithHomepage ? "1" : "0") << '\n'
              << "showWebsiteIconsInTabs\t" << (showWebsiteIconsInTabs ? "1" : "0") << '\n'
              << "alwaysShowTabBar\t" << (alwaysShowTabBar ? "1" : "0") << '\n'
+             << "alwaysShowTabBarPreferenceVersion\t1\n'
              << "rememberWindowState\t" << (rememberWindowState ? "1" : "0") << '\n'
              << "lastWindowStateValid\t" << (lastWindowStateValid ? "1" : "0") << '\n'
              << "lastWindowWasMaximized\t" << (lastWindowWasMaximized ? "1" : "0") << '\n'
@@ -2104,7 +2118,7 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                const int left = sidebarOffset();
                 const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2174,9 +2188,13 @@ struct BrowserState {
         }
 
         if (windowSurfaceRecoveryRefreshView) {
-            if (windowSurfaceRecoveryTicks == 1) {
-                // Ask WebKit itself for a fresh accelerated frame once, asynchronously.
-                requestActivePageRepaint(false);
+            if (windowSurfaceRecoveryTicks == 1
+                || (windowSurfaceRecoveryTicks % 3) == 0) {
+                // Re-request real WebKit frames through the settle period. A single
+                // request plus a few HWND invalidations can leave the accelerated
+                // surface stale until a mouse event happens to hit the page.
+                requestActivePageRepaint(windowSurfaceRecoveryTicks == 1
+                    && windowSurfaceRecoveryRefreshScale);
             } else if (auto* selected = active()) {
                 HWND viewWindow = WKViewGetWindow(selected->view.get());
                 if (viewWindow && IsWindowVisible(viewWindow)) {
@@ -2212,7 +2230,7 @@ struct BrowserState {
 
         // Bounded asynchronous retries allow the compositor to publish its new
         // backing surface without monopolising the UI thread for several seconds.
-        if (windowSurfaceRecoveryTicks >= 5) {
+        if (windowSurfaceRecoveryTicks >= 18) {
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             windowSurfaceRecoveryActive = false;
             windowSurfaceRecoveryRefreshScale = false;
@@ -2228,21 +2246,6 @@ struct BrowserState {
         hoveredSidebarRow = -1;
         hoveredSidebarSettings = false;
         sidebarOverlayAnimationFrameReady = false;
-
-        // The overview owns the content canvas; update its overlay layout without
-        // asking the WebKit surface to resize or repaint.
-        if (tabOverviewVisible) {
-            sidebarOpen = !sidebarOpen;
-            sidebarAnimating = false;
-            sidebarAnimationFrom = sidebarOpen ? 1.0f : 0.0f;
-            sidebarAnimationTarget = sidebarAnimationFrom;
-            positionOverlayWindows();
-            sidebarPaintRecoveryTicks = sidebarOpen ? 4 : 0;
-            updateSidebarZOrderTimer();
-            const RECT buttonRect = sidebarButtonRect();
-            InvalidateRect(window, &buttonRect, FALSE);
-            return;
-        }
 
         const float from = sidebarProgress();
         sidebarOpen = !sidebarOpen;
@@ -2517,7 +2520,7 @@ struct BrowserState {
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                    const int left = sidebarOffset();
                     SetWindowPos(tabOverviewWindow, nullptr, left, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
@@ -2612,6 +2615,11 @@ struct BrowserState {
                         // Request a real page repaint once the sidebar is fully hidden.
                         requestActivePageRepaint();
                     }
+                } else {
+                    // Showing the drawer also changes sibling-window composition.
+                    // Request a fresh WebKit frame so the Start Page does not stay white
+                    // until the pointer happens to trigger a page repaint.
+                    requestActivePageRepaint();
                 }
             }
         }
@@ -2628,7 +2636,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+        const int left = sidebarOffset();
         return { left, contentTop(), client.right, client.bottom };
     }
 
@@ -2705,11 +2713,6 @@ struct BrowserState {
             && (!allowPreviouslyLoadedPartial
                 || tab.lastCompletedThumbnailURL != tab.activeUrl))
             return false;
-        const std::wstring pageURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
-        if (!pageURL.empty() && !tab.activeUrl.empty() && pageURL != tab.activeUrl
-            && tab.internalPage.empty())
-            return false;
-
         HWND viewWindow = WKViewGetWindow(tab.view.get());
         if (!viewWindow || !IsWindowVisible(viewWindow))
             return false;
@@ -6510,6 +6513,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
         windowTransitionWaitingForRepaint = false;
+        windowTransitionRepaintReady = false;
+        windowTransitionSettleTicks = 0;
+        windowTransitionRepaintWaitStartTick = 0;
+        windowTransitionLastRepaintRequestTick = 0;
         releaseWindowTransitionResources();
     }
 
@@ -6570,13 +6577,47 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             // fallback so the window cannot remain covered if the callback is delayed.
             windowTransitionGeometryApplied = true;
             windowTransitionWaitingForRepaint = true;
+            windowTransitionRepaintReady = false;
+            windowTransitionSettleTicks = 0;
+            windowTransitionRepaintWaitStartTick = GetTickCount64();
+            windowTransitionLastRepaintRequestTick = windowTransitionRepaintWaitStartTick;
             requestActivePageRepaint(true, true);
-            if (SetTimer(window, kWindowTransitionTimerId, 96, nullptr))
+            if (SetTimer(window, kWindowTransitionTimerId, 48, nullptr))
                 return;
             windowTransitionWaitingForRepaint = false;
         }
 
+        // Do not uncover the live WebKit child after one short timeout. Keep the
+        // captured frame visible while requesting fresh frames and letting the GPU
+        // compositor settle after restore/maximize and minimize/restore transitions.
+        if (windowTransitionGeometryApplied && windowTransitionWaitingForRepaint) {
+            const ULONGLONG now = GetTickCount64();
+            if (windowTransitionRepaintReady) {
+                if (windowTransitionSettleTicks < 3) {
+                    ++windowTransitionSettleTicks;
+                    requestActivePageRepaint(false, false);
+                    if (windowTransitionSettleTicks < 3) {
+                        SetTimer(window, kWindowTransitionTimerId, 48, nullptr);
+                        return;
+                    }
+                }
+            } else {
+                if (now - windowTransitionLastRepaintRequestTick >= 160) {
+                    windowTransitionLastRepaintRequestTick = now;
+                    requestActivePageRepaint(false, true);
+                }
+                if (now - windowTransitionRepaintWaitStartTick < 2400) {
+                    SetTimer(window, kWindowTransitionTimerId, 48, nullptr);
+                    return;
+                }
+            }
+        }
+
         windowTransitionWaitingForRepaint = false;
+        windowTransitionRepaintReady = false;
+        windowTransitionSettleTicks = 0;
+        windowTransitionRepaintWaitStartTick = 0;
+        windowTransitionLastRepaintRequestTick = 0;
         windowTransitionActive = false;
         windowTransitionGeometryApplied = false;
         releaseWindowTransitionResources();
@@ -11044,8 +11085,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_AURORA_TRANSITION_REPAINT_READY:
-        if (state && state->windowTransitionActive && state->windowTransitionWaitingForRepaint)
-            state->finishWindowTransition();
+        if (state && state->windowTransitionActive && state->windowTransitionWaitingForRepaint) {
+            state->windowTransitionRepaintReady = true;
+            SetTimer(window, kWindowTransitionTimerId, 48, nullptr);
+        }
         return 0;
 
     case WM_AURORA_FAVICON_READY:
