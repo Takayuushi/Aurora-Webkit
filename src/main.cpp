@@ -6290,11 +6290,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                         | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            if (!preserveOverlayStack) {
-                InvalidateRect(viewWindow, nullptr, FALSE);
-                RedrawWindow(viewWindow, nullptr, nullptr,
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-            }
+            // preserveOverlayStack only suppresses the WebKit HWND z-order change.
+            // The view still needs a queued, non-erasing paint request after the
+            // sidebar transition; otherwise the accelerated page can remain black.
+            InvalidateRect(viewWindow, nullptr, FALSE);
+            RedrawWindow(viewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
         }
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
