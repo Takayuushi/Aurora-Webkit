@@ -2134,46 +2134,10 @@ struct BrowserState {
                             RDW_INVALIDATE | RDW_NOERASE);
                 }
 
-                // When the drawer closes, invalidate only the strip it uncovered.
-                // Keep the request asynchronous and local so the entire WebKit surface
-                // is not synchronously repainted during the sidebar animation.
-                if (sidebarAnimating && geometryChanged && havePreviousRect
-                    && left < previousRect.left) {
-                    RECT clientRect { };
-                    if (GetClientRect(window, &clientRect)) {
-                        RECT exposed { left + width, top,
-                            previousRect.left + width, top + height };
-                        RECT clipped { };
-                        if (IntersectRect(&clipped, &exposed, &clientRect)) {
-                            if (tabOverviewVisible && tabOverviewWindow
-                                && IsWindowVisible(tabOverviewWindow)) {
-                                RECT overviewRect { };
-                                if (GetWindowRect(tabOverviewWindow, &overviewRect)) {
-                                    MapWindowPoints(nullptr, window,
-                                        reinterpret_cast<POINT*>(&overviewRect), 2);
-                                    RECT local = clipped;
-                                    OffsetRect(&local, -overviewRect.left, -overviewRect.top);
-                                    InvalidateRect(tabOverviewWindow, &local, FALSE);
-                                }
-                            } else if (!sidebarOpen) {
-                                if (auto* selected = active()) {
-                                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                                    RECT viewRect { };
-                                    if (viewWindow && IsWindow(viewWindow)
-                                        && GetWindowRect(viewWindow, &viewRect)) {
-                                        MapWindowPoints(nullptr, window,
-                                            reinterpret_cast<POINT*>(&viewRect), 2);
-                                        RECT local = clipped;
-                                        OffsetRect(&local, -viewRect.left, -viewRect.top);
-                                        InvalidateRect(viewWindow, &local, FALSE);
-                                        RedrawWindow(viewWindow, &local, nullptr,
-                                            RDW_INVALIDATE | RDW_NOERASE);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // Do not repaint the exposed WebKit strip on every animation tick.
+                // The per-frame invalidation repeatedly wakes the accelerated surface
+                // while the drawer is moving, causing flicker and dragging the slide.
+                // The active page is refreshed once, asynchronously, when the slide ends.
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
@@ -2684,9 +2648,8 @@ struct BrowserState {
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
-            // WebKit can change sibling z-order while submitting accelerated frames.
-            // Repair only the order during the slide; do not repaint the drawer.
-            maintainSidebarZOrder();
+            // The dedicated sidebar z-order timer checks sibling order independently.
+            // Avoid enumerating child HWNDs again on every 16 ms animation tick.
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
