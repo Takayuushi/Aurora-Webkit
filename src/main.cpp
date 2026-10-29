@@ -2118,10 +2118,11 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                // Keep the overview canvas size stable during the drawer animation;
-                // resize/recreate its full-page backing bitmap only when the settled
-                // sidebar state changes, not on every animation frame.
-                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+                // Keep the overview canvas full-width while the sidebar slides over it.
+                // Shift to the settled content inset only once the drawer animation ends;
+                // resizing its full-page backing bitmap on every frame would reintroduce lag.
+                const int left = sidebarAnimating ? 0
+                    : (sidebarOpen ? scaleForDpi(window, 300) : 0);
                 const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2639,7 +2640,10 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
+        // During the sidebar slide, keep the overview's backing canvas at the same
+        // origin and let the sidebar overlay cover it. Apply the inset after settling.
+        const int left = sidebarAnimating ? 0
+            : (sidebarOpen ? scaleForDpi(window, 300) : 0);
         return { left, contentTop(), client.right, client.bottom };
     }
 
