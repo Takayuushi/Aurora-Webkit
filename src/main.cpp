@@ -1239,6 +1239,8 @@ struct BrowserState {
     bool windowSurfaceRecoveryActive { false };
     bool windowSurfaceRecoveryRefreshScale { false };
     bool windowSurfaceRecoveryRefreshView { true };
+    bool windowSurfaceRecoveryRefreshLayout { true };
+    bool windowSurfaceRecoveryPreserveOverlayStack { false };
     int windowSurfaceRecoveryTicks { 0 };
     ULONGLONG windowTransitionStartTick { 0 };
     RECT windowTransitionStartRect { };
@@ -2202,13 +2204,16 @@ struct BrowserState {
         }
     }
 
-    void beginWindowSurfaceRecovery(bool refreshBackingScale = false, bool refreshWebView = true)
+    void beginWindowSurfaceRecovery(bool refreshBackingScale = false, bool refreshWebView = true,
+        bool refreshLayout = true, bool preserveOverlayStack = false)
     {
         if (!window || IsIconic(window))
             return;
         windowSurfaceRecoveryTicks = 0;
         windowSurfaceRecoveryRefreshScale = refreshBackingScale;
         windowSurfaceRecoveryRefreshView = refreshWebView;
+        windowSurfaceRecoveryRefreshLayout = refreshLayout;
+        windowSurfaceRecoveryPreserveOverlayStack = preserveOverlayStack;
         windowSurfaceRecoveryActive = SetTimer(
             window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
         recoverWindowSurfaceFrame();
@@ -2231,8 +2236,10 @@ struct BrowserState {
             // Avoid a synchronous layout/redraw pass during the sidebar slide.
             if (overlayAnimationInProgress && !windowSurfaceRecoveryRefreshView)
                 positionOverlayWindows(false);
-            else
+            else if (windowSurfaceRecoveryRefreshLayout)
                 resize(false);
+            else
+                positionOverlayWindows(false);
             if (windowSurfaceRecoveryRefreshScale) {
                 if (auto* selected = active()) {
                     if (auto page = WKViewGetPage(selected->view.get())) {
@@ -2258,7 +2265,8 @@ struct BrowserState {
                 // request plus a few HWND invalidations can leave the accelerated
                 // surface stale until a mouse event happens to hit the page.
                 requestActivePageRepaint(windowSurfaceRecoveryTicks == 1
-                    && windowSurfaceRecoveryRefreshScale);
+                    && windowSurfaceRecoveryRefreshScale, false,
+                    windowSurfaceRecoveryPreserveOverlayStack);
             } else if (auto* selected = active()) {
                 HWND viewWindow = WKViewGetWindow(selected->view.get());
                 if (viewWindow && IsWindowVisible(viewWindow)) {
@@ -2299,6 +2307,8 @@ struct BrowserState {
             windowSurfaceRecoveryActive = false;
             windowSurfaceRecoveryRefreshScale = false;
             windowSurfaceRecoveryRefreshView = true;
+            windowSurfaceRecoveryRefreshLayout = true;
+            windowSurfaceRecoveryPreserveOverlayStack = false;
         }
     }
 
@@ -2657,7 +2667,10 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                refreshActivePageAfterSidebarTransition();
+                // Keep requesting asynchronous WebKit frames after the drawer has
+                // stopped moving. A single forced repaint is not enough on some GPU
+                // surfaces; the page otherwise stays black until a mouse hover paints it.
+                beginWindowSurfaceRecovery(false, true, false, true);
             }
         }
 
