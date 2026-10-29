@@ -226,7 +226,7 @@ constexpr UINT kSettingsClearBackground = 7116;
 constexpr UINT kSettingsRememberWindowState = 7117;
 constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
-constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 21;
+constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
