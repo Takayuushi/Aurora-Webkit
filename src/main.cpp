@@ -236,15 +236,9 @@ void initializeDiagnosticsLog()
         gDiagnosticStopRequested = false;
         gDiagnosticReady = true;
     }
-    try {
-        gDiagnosticWriter = std::thread(diagnosticWriterMain);
-    } catch (...) {
-        std::lock_guard<std::mutex> lock(gDiagnosticMutex);
-        gDiagnosticReady = false;
-        gDiagnosticStopRequested = true;
-        OutputDebugStringW(L"Aurora diagnostics: could not start the background writer.\n");
-        return;
-    }
+    // Aurora is compiled with C++ exceptions disabled, so do not wrap this
+    // standard-library thread start in a try/catch block.
+    gDiagnosticWriter = std::thread(diagnosticWriterMain);
     diagnosticLogEvent(L"lifecycle", L"session_start",
         L"async_log=1; page_urls=omitted; page_content=omitted; keystrokes=omitted");
 }
