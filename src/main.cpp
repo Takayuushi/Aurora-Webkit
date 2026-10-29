@@ -2118,7 +2118,10 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                const int left = sidebarOffset();
+                // Keep the overview canvas size stable during the drawer animation;
+                // resize/recreate its full-page backing bitmap only when the settled
+                // sidebar state changes, not on every animation frame.
+                const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                 const int width = std::max(0, static_cast<int>(client.right) - left);
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
@@ -2520,7 +2523,7 @@ struct BrowserState {
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    const int left = sidebarOffset();
+                    const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
                     SetWindowPos(tabOverviewWindow, nullptr, left, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
@@ -2636,7 +2639,7 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        const int left = sidebarOffset();
+        const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
         return { left, contentTop(), client.right, client.bottom };
     }
 
