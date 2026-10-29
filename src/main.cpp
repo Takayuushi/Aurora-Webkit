@@ -1340,6 +1340,7 @@ struct BrowserState {
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
+    int sidebarPaintRecoveryTicks { 0 };
     bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
@@ -2055,7 +2056,7 @@ struct BrowserState {
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD | WS_CLIPSIBLINGS,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
         return handle != nullptr;
     }
@@ -2315,6 +2316,7 @@ struct BrowserState {
         sidebarAnimating = std::abs(sidebarAnimationTarget - sidebarAnimationFrom) > 0.001f;
         if (sidebarAnimating)
             startChromeAnimationTimer();
+        sidebarPaintRecoveryTicks = sidebarOpen ? 3 : 0;
 
         // Only the independent sidebar overlay changes geometry during this
         // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
@@ -2938,6 +2940,7 @@ struct BrowserState {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
+            sidebarPaintRecoveryTicks = 0;
             return;
         }
         if (IsIconic(window))
@@ -2979,11 +2982,21 @@ struct BrowserState {
         const bool behindOverview = overviewVisible && overviewOrder >= 0
             && sidebarOrder > overviewOrder;
         if (sidebarOrder < 0 || behindActiveView || behindOverview) {
-            // The cached sidebar bitmap is retained. Restore sibling order without
-            // invalidating or synchronously repainting the panel.
+            // Restore the drawer above WebKit/overview. Since NOREDRAW is used to
+            // avoid a synchronous erase flash, explicitly queue a paint afterward.
             SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                     | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
+        }
+
+        // Retry only a few asynchronous paints when the drawer is newly opened.
+        // Never force an immediate paint here: that can stall animation or flash
+        // the WebKit surface underneath.
+        if (sidebarPaintRecoveryTicks > 0 && IsWindowVisible(sidebarOverlayWindow)) {
+            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            --sidebarPaintRecoveryTicks;
         }
     }
 
