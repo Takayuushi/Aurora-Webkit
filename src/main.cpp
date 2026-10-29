@@ -1469,7 +1469,7 @@ struct BrowserState {
              << "newWindowsOpenWithHomepage\t" << (newWindowsOpenWithHomepage ? "1" : "0") << '\n'
              << "showWebsiteIconsInTabs\t" << (showWebsiteIconsInTabs ? "1" : "0") << '\n'
              << "alwaysShowTabBar\t" << (alwaysShowTabBar ? "1" : "0") << '\n'
-             << "alwaysShowTabBarPreferenceVersion\t1\n'
+             << "alwaysShowTabBarPreferenceVersion\t1\n"
              << "rememberWindowState\t" << (rememberWindowState ? "1" : "0") << '\n'
              << "lastWindowStateValid\t" << (lastWindowStateValid ? "1" : "0") << '\n'
              << "lastWindowWasMaximized\t" << (lastWindowWasMaximized ? "1" : "0") << '\n'
