@@ -2138,10 +2138,46 @@ struct BrowserState {
                             RDW_INVALIDATE | RDW_NOERASE);
                 }
 
-                // Do not repaint the exposed WebKit strip on every animation tick.
-                // The per-frame invalidation repeatedly wakes the accelerated surface
-                // while the drawer is moving, causing flicker and dragging the slide.
-                // The active page is refreshed once, asynchronously, when the slide ends.
+                // When the drawer closes, invalidate only the strip it uncovered.
+                // Keep the request asynchronous and local so the entire WebKit surface
+                // is not synchronously repainted during the sidebar animation.
+                if (sidebarAnimating && geometryChanged && havePreviousRect
+                    && left < previousRect.left) {
+                    RECT clientRect { };
+                    if (GetClientRect(window, &clientRect)) {
+                        RECT exposed { left + width, top,
+                            previousRect.left + width, top + height };
+                        RECT clipped { };
+                        if (IntersectRect(&clipped, &exposed, &clientRect)) {
+                            if (tabOverviewVisible && tabOverviewWindow
+                                && IsWindowVisible(tabOverviewWindow)) {
+                                RECT overviewRect { };
+                                if (GetWindowRect(tabOverviewWindow, &overviewRect)) {
+                                    MapWindowPoints(nullptr, window,
+                                        reinterpret_cast<POINT*>(&overviewRect), 2);
+                                    RECT local = clipped;
+                                    OffsetRect(&local, -overviewRect.left, -overviewRect.top);
+                                    InvalidateRect(tabOverviewWindow, &local, FALSE);
+                                }
+                            } else if (!sidebarOpen) {
+                                if (auto* selected = active()) {
+                                    HWND viewWindow = WKViewGetWindow(selected->view.get());
+                                    RECT viewRect { };
+                                    if (viewWindow && IsWindow(viewWindow)
+                                        && GetWindowRect(viewWindow, &viewRect)) {
+                                        MapWindowPoints(nullptr, window,
+                                            reinterpret_cast<POINT*>(&viewRect), 2);
+                                        RECT local = clipped;
+                                        OffsetRect(&local, -viewRect.left, -viewRect.top);
+                                        InvalidateRect(viewWindow, &local, FALSE);
+                                        RedrawWindow(viewWindow, &local, nullptr,
+                                            RDW_INVALIDATE | RDW_NOERASE);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
@@ -2314,19 +2350,6 @@ struct BrowserState {
         }
     }
 
-    void updateActiveStartPageSidebarOffset()
-    {
-        auto* tab = active();
-        if (!tab || tab->internalPage != L"start")
-            return;
-        const int offset = sidebarOpen ? 150 : 0;
-        const std::string script = "(function(){var p=document.querySelector('.page');if(p)p.style.left='"
-            + std::to_string(offset) + "px';})();";
-        auto js = adoptWK(WKStringCreateWithUTF8CString(script.c_str()));
-        if (js)
-            WKPageEvaluateJavaScriptInMainFrame(WKViewGetPage(tab->view.get()), js.get(), nullptr, nullptr);
-    }
-
     void toggleSidebar()
     {
         if (!window)
@@ -2341,7 +2364,6 @@ struct BrowserState {
         sidebarAnimationFrom = from;
         sidebarAnimationTarget = sidebarOpen ? 1.0f : 0.0f;
         sidebarAnimationStart = GetTickCount64();
-        updateActiveStartPageSidebarOffset();
         sidebarAnimating = std::abs(sidebarAnimationTarget - sidebarAnimationFrom) > 0.001f;
         if (sidebarAnimating)
             startChromeAnimationTimer();
@@ -2674,8 +2696,9 @@ struct BrowserState {
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
-            // The dedicated sidebar z-order timer checks sibling order independently.
-            // Avoid enumerating child HWNDs again on every 16 ms animation tick.
+            // WebKit can change sibling z-order while submitting accelerated frames.
+            // Repair only the order during the slide; do not repaint the drawer.
+            maintainSidebarZOrder();
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
@@ -2683,10 +2706,7 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                // Keep requesting asynchronous WebKit frames after the drawer has
-                // stopped moving. A single forced repaint is not enough on some GPU
-                // surfaces; the page otherwise stays black until a mouse hover paints it.
-                beginWindowSurfaceRecovery(false, true, false, true);
+                refreshActivePageAfterSidebarTransition();
             }
         }
 
@@ -4759,7 +4779,7 @@ radial-gradient(ellipse at 52% 43%,rgba(44,151,207,.36) 0%,rgba(44,151,207,0) 42
 linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cover;background-position:center}
 .wallpaper:before{content:"";position:absolute;left:-3%;right:-3%;bottom:0;height:48%;opacity:.78;background:linear-gradient(180deg,rgba(27,76,96,.42),rgba(4,13,27,.96));clip-path:polygon(0 37%,7% 27%,14% 43%,22% 12%,31% 36%,39% 25%,48% 48%,57% 14%,65% 35%,74% 8%,83% 40%,91% 21%,100% 38%,100% 100%,0 100%)}
 .wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
-.page{position:relative;left:0;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;transition:left .24s cubic-bezier(.16,1,.3,1);animation:start-page-enter .38s cubic-bezier(.2,.75,.25,1) both}
+.page{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;animation:start-page-enter .38s cubic-bezier(.2,.75,.25,1) both}
 .branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2);animation:start-page-enter .42s cubic-bezier(.2,.75,.25,1) both}
 .brand-mark{width:80px;height:80px;margin:0 auto 10px;border:0;border-radius:0;background:transparent;box-shadow:none;display:grid;place-items:center}
 .brand-mark img{width:80px;height:80px;display:block;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(0,0,0,.22))}
