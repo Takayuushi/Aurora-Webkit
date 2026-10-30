@@ -1183,6 +1183,7 @@ struct TabState {
     int previewWidth { 0 };
     int previewHeight { 0 };
     std::wstring previewURL;
+    bool thumbnailCaptureNeeded { true };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
 
@@ -2350,6 +2351,22 @@ struct BrowserState {
         }
     }
 
+    void updateActiveStartPageSidebarOffset()
+    {
+        auto* tab = active();
+        if (!tab || tab->internalPage != L"start")
+            return;
+
+        const int offset = sidebarOpen ? 150 : 0;
+        const std::string script = "(()=>{const p=document.querySelector('.page');if(p)p.style.transform='translate3d("
+            + std::to_string(offset) + "px,0,0)';})();";
+        auto javascript = adoptWK(WKStringCreateWithUTF8CString(script.c_str()));
+        if (javascript) {
+            if (auto page = WKViewGetPage(tab->view.get()))
+                WKPageEvaluateJavaScriptInMainFrame(page, javascript.get(), nullptr, nullptr);
+        }
+    }
+
     void toggleSidebar()
     {
         if (!window)
@@ -2361,6 +2378,7 @@ struct BrowserState {
 
         const float from = sidebarProgress();
         sidebarOpen = !sidebarOpen;
+        updateActiveStartPageSidebarOffset();
         sidebarAnimationFrom = from;
         sidebarAnimationTarget = sidebarOpen ? 1.0f : 0.0f;
         sidebarAnimationStart = GetTickCount64();
@@ -2889,6 +2907,7 @@ struct BrowserState {
                     tab.previewWidth = targetWidth;
                     tab.previewHeight = targetHeight;
                     tab.previewURL = tab.activeUrl;
+                    tab.thumbnailCaptureNeeded = false;
                     saved = true;
                     if (tab.browser->tabOverviewVisible && tab.browser->tabOverviewWindow) {
                         tab.browser->tabOverviewAnimationFrameReady = false;
@@ -2916,6 +2935,7 @@ struct BrowserState {
         if (!window || !tab)
             return;
         pendingThumbnailCaptureTab = tab;
+        tab->thumbnailCaptureNeeded = true;
         pendingThumbnailCaptureAttempts = 0;
         pendingThumbnailCaptureURL = tab->activeUrl;
         SetTimer(window, kDeferredThumbnailCaptureTimerId,
@@ -4779,7 +4799,7 @@ radial-gradient(ellipse at 52% 43%,rgba(44,151,207,.36) 0%,rgba(44,151,207,0) 42
 linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cover;background-position:center}
 .wallpaper:before{content:"";position:absolute;left:-3%;right:-3%;bottom:0;height:48%;opacity:.78;background:linear-gradient(180deg,rgba(27,76,96,.42),rgba(4,13,27,.96));clip-path:polygon(0 37%,7% 27%,14% 43%,22% 12%,31% 36%,39% 25%,48% 48%,57% 14%,65% 35%,74% 8%,83% 40%,91% 21%,100% 38%,100% 100%,0 100%)}
 .wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
-.page{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;animation:start-page-enter .38s cubic-bezier(.2,.75,.25,1) both}
+.page{position:relative;transform:translate3d(0,0,0);z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;transition:transform .24s cubic-bezier(.16,1,.3,1);animation:start-page-enter .38s cubic-bezier(.2,.75,.25,1) both}
 .branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2);animation:start-page-enter .42s cubic-bezier(.2,.75,.25,1) both}
 .brand-mark{width:80px;height:80px;margin:0 auto 10px;border:0;border-radius:0;background:transparent;box-shadow:none;display:grid;place-items:center}
 .brand-mark img{width:80px;height:80px;display:block;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(0,0,0,.22))}
@@ -5284,6 +5304,11 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
+            updateActiveStartPageSidebarOffset();
+            if (auto* selected = active()) {
+                if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
+                    scheduleTabThumbnailCapture(selected, 420);
+            }
             // Keep focus on the browser while the overview snapshot animates away.
             // Focusing WebKit here can synchronously wake its renderer mid-transition.
             if (auto* selected = active())
@@ -5324,6 +5349,7 @@ search.addEventListener('keydown',e=>{
         if (!tab)
             return;
 
+        updateActiveStartPageSidebarOffset();
 
         if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
             SetWindowTextW(addressBar, L"");
@@ -5390,6 +5416,8 @@ search.addEventListener('keydown',e=>{
         // activateTab raises the selected WKView last; restore overlay z-order after
         // that so an open sidebar remains above it without touching the renderer.
         positionOverlayWindows(true);
+        if (tab->thumbnailCaptureNeeded || tab->previewURL != tab->activeUrl)
+            scheduleTabThumbnailCapture(tab, 420);
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -7725,10 +7753,27 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
                 const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
                 const COLORREF activeBorder = dark ? RGB(91, 91, 95) : RGB(211, 214, 216);
-                drawRoundedControl(dc, tabRect,
-                    blendColor(inactiveFill, activeFill, activeWeight),
-                    blendColor(inactiveBorder, activeBorder, activeWeight),
-                    static_cast<float>(tabRect.bottom - tabRect.top) / 2.0f);
+                const COLORREF tabFill = blendColor(inactiveFill, activeFill, activeWeight);
+                const COLORREF tabBorder = blendColor(inactiveBorder, activeBorder, activeWeight);
+                const int tabRadius = static_cast<int>((tabRect.bottom - tabRect.top) / 2.0f);
+                drawRoundedControl(dc, tabRect, tabFill, tabBorder,
+                    static_cast<float>(tabRadius));
+                if (i == activeTab && activeWeight > 0.04f) {
+                    // Square the lower corners so the active tab meets the page surface.
+                    RECT tabJoin { tabRect.left, tabRect.bottom - tabRadius,
+                        tabRect.right, tabRect.bottom };
+                    HBRUSH joinBrush = CreateSolidBrush(tabFill);
+                    FillRect(dc, &tabJoin, joinBrush);
+                    DeleteObject(joinBrush);
+                    HPEN joinPen = CreatePen(PS_SOLID, 1, tabBorder);
+                    HGDIOBJ oldJoinPen = SelectObject(dc, joinPen);
+                    MoveToEx(dc, tabRect.left, tabRect.top + tabRadius, nullptr);
+                    LineTo(dc, tabRect.left, tabRect.bottom);
+                    MoveToEx(dc, tabRect.right - 1, tabRect.top + tabRadius, nullptr);
+                    LineTo(dc, tabRect.right - 1, tabRect.bottom);
+                    SelectObject(dc, oldJoinPen);
+                    DeleteObject(joinPen);
+                }
                 if (activeWeight > 0.04f) {
                     const int inset = MulDiv(10, dpi, 96);
                     RECT tabSheen { tabRect.left + inset, tabRect.top + MulDiv(2, dpi, 96),
@@ -10754,6 +10799,7 @@ void didChangeIsLoading(const void* clientInfo)
     if (page && WKPageGetEstimatedProgress(page) < 1.0)
         tab->lastExtensionsUrl.clear();
     if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        tab->thumbnailCaptureNeeded = true;
         const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!completedURL.empty())
             tab->lastCompletedThumbnailURL = completedURL;
@@ -10767,6 +10813,7 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
+            tab->browser->updateActiveStartPageSidebarOffset();
             tab->browser->scheduleTabThumbnailCapture(tab, 320);
             if (!tab->favicon && tab->faviconRequestURL.empty()
                 && tab->faviconAttempts < 2 && !tab->activeUrl.empty()) {
