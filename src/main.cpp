@@ -5323,7 +5323,7 @@ search.addEventListener('keydown',e=>{
         auto* tab = active();
         if (!tab)
             return;
-        updateActiveStartPageSidebarOffset();
+
 
         if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
             SetWindowTextW(addressBar, L"");
