@@ -2060,7 +2060,7 @@ struct BrowserState {
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD | WS_CLIPSIBLINGS,
+        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
             0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
         return handle != nullptr;
     }
