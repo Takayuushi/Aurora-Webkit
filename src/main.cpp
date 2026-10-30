@@ -5266,6 +5266,22 @@ search.addEventListener('keydown',e=>{
             SetTimer(window, kDeferredTabLoadTimerId, 48, nullptr);
     }
 
+    void invalidateTabStrip()
+    {
+        if (!window || webFullscreen)
+            return;
+        RECT client { };
+        if (!GetClientRect(window, &client))
+            return;
+        const int top = titleBarHeight() + toolbarHeight();
+        const int height = scaleForDpi(window, kTabsBarHeight);
+        const RECT row { 0, top, client.right, top + height };
+        // Tab widths and horizontal positions are recomputed from the tab count.
+        // Invalidate the complete band so stale pixels from the previous layout
+        // cannot remain beside the newly positioned tabs.
+        InvalidateRect(window, &row, FALSE);
+    }
+
     void invalidateTabChrome(TabState* tab)
     {
         if (!window || !tab)
@@ -5319,6 +5335,7 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
+            invalidateTabStrip();
             updateActiveStartPageSidebarOffset();
             if (auto* selected = active()) {
                 if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
@@ -5436,6 +5453,7 @@ search.addEventListener('keydown',e=>{
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
+        invalidateTabStrip();
     }
 
     void closeTab(size_t index)
@@ -5465,6 +5483,7 @@ search.addEventListener('keydown',e=>{
             ShowWindow(viewWindow, SW_HIDE);
         retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
+        invalidateTabStrip();
 
         if (activeTab >= tabs.size())
             activeTab = tabs.size() - 1;
