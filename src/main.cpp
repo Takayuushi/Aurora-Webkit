@@ -4799,7 +4799,7 @@ radial-gradient(ellipse at 52% 43%,rgba(44,151,207,.36) 0%,rgba(44,151,207,0) 42
 linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cover;background-position:center}
 .wallpaper:before{content:"";position:absolute;left:-3%;right:-3%;bottom:0;height:48%;opacity:.78;background:linear-gradient(180deg,rgba(27,76,96,.42),rgba(4,13,27,.96));clip-path:polygon(0 37%,7% 27%,14% 43%,22% 12%,31% 36%,39% 25%,48% 48%,57% 14%,65% 35%,74% 8%,83% 40%,91% 21%,100% 38%,100% 100%,0 100%)}
 .wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
-.page{position:relative;transform:translate3d(0,0,0);z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;transition:transform .24s cubic-bezier(.16,1,.3,1);animation:start-page-enter .38s cubic-bezier(.2,.75,.25,1) both}
+.page{position:relative;transform:translate3d(0,0,0);z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;transition:transform .24s cubic-bezier(.16,1,.3,1);animation:start-page-fade .38s cubic-bezier(.2,.75,.25,1) both}
 .branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2);animation:start-page-enter .42s cubic-bezier(.2,.75,.25,1) both}
 .brand-mark{width:80px;height:80px;margin:0 auto 10px;border:0;border-radius:0;background:transparent;box-shadow:none;display:grid;place-items:center}
 .brand-mark img{width:80px;height:80px;display:block;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(0,0,0,.22))}
@@ -4826,7 +4826,7 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
 .footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
 .footer a{color:rgba(245,248,255,.82);text-decoration:none;margin-left:8px}
 .footer a:hover{color:#fff;text-decoration:underline}
-@keyframes start-page-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}</style>
+@keyframes start-page-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@keyframes start-page-fade{from{opacity:0}to{opacity:1}}@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}</style>
 </head>
 <body>
 <div class="wallpaper" id="wallpaper" style="__AURORA_BACKGROUND_IMAGE__"></div>
