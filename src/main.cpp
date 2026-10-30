@@ -2803,7 +2803,7 @@ struct BrowserState {
     {
         // Capture only while this tab owns the visible WebKit surface.
         if (!tab.browser || tab.browser->active() != &tab || IsIconic(tab.browser->window)
-            || tab.browser->sidebarOpen || tab.browser->sidebarAnimating
+            || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
             || tab.browser->tabOverviewClosing || tab.browser->findBarVisible
             || (tab.browser->downloadsPopoverWindow && IsWindowVisible(tab.browser->downloadsPopoverWindow))
@@ -2828,8 +2828,22 @@ struct BrowserState {
         if (!GetWindowRect(viewWindow, &screenRect))
             return false;
 
-        const int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
+        int captureLeft = screenRect.left;
+        int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
         const int sourceHeight = static_cast<int>(screenRect.bottom - screenRect.top);
+        if (tab.browser->sidebarOpen && tab.browser->sidebarOverlayWindow
+            && IsWindowVisible(tab.browser->sidebarOverlayWindow)) {
+            // The drawer is a sibling HWND over the left part of WebKit. Capture only
+            // the unobscured part of the already-presented page; copying the covered
+            // pixels would put the sidebar itself into every tab preview.
+            RECT drawerRect { };
+            if (GetWindowRect(tab.browser->sidebarOverlayWindow, &drawerRect)) {
+                const int obscuredLeft = std::clamp(
+                    static_cast<int>(drawerRect.right - screenRect.left), 0, sourceWidth);
+                captureLeft += obscuredLeft;
+                sourceWidth -= obscuredLeft;
+            }
+        }
         if (sourceWidth < 80 || sourceHeight < 60)
             return false;
 
@@ -2854,7 +2868,7 @@ struct BrowserState {
         DeleteObject(initialCaptureBrush);
 
         const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
-            sourceDC, screenRect.left, screenRect.top, SRCCOPY | CAPTUREBLT);
+            sourceDC, captureLeft, screenRect.top, SRCCOPY | CAPTUREBLT);
         bool looksBlank = false;
         if (copied) {
             int validSamples = 0;
@@ -2989,7 +3003,7 @@ struct BrowserState {
         if (!completedURL.empty())
             pending->lastCompletedThumbnailURL = completedURL;
 
-        const bool overlayBusy = IsIconic(window) || sidebarOpen || sidebarAnimating
+        const bool overlayBusy = IsIconic(window) || sidebarAnimating
             || tabOverviewVisible || tabOverviewAnimating || tabOverviewClosing
             || findBarVisible
             || (downloadsPopoverWindow && IsWindowVisible(downloadsPopoverWindow))
