@@ -6360,7 +6360,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (viewWindow && IsWindow(viewWindow)) {
             if (!IsWindowVisible(viewWindow))
                 ShowWindow(viewWindow, SW_SHOWNA);
-            if (!preserveOverlayStack) {
+            // While the drawer is visible or moving, keep its native overlay
+            // above WebKit. Promoting the accelerated WKView here races the
+            // sidebar's 72 ms z-order maintenance timer and can expose/black out
+            // the page surface during navigation and forced repaints.
+            if (!preserveOverlayStack && !sidebarOpen && !sidebarAnimating) {
                 SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                         | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
@@ -6456,12 +6460,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         const int contentTop = this->contentTop();
+        // Extend the WebKit surface one physical pixel beneath the tab-strip edge.
+        // The native tab row and the accelerated child HWND are separate surfaces;
+        // exact edge-to-edge placement can leave a one-pixel parent-background seam
+        // after DPI rounding or a compositor resize.
+        const int viewTop = std::max(0, contentTop - scaleForDpi(window, 1));
         // Only the selected WKView participates in foreground resizing. Resizing all
         // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
         // low-resolution frames. An inactive page is resized when activateTab selects it.
         const int viewLeft = 0;
         const int viewWidth = std::max(0, static_cast<int>(client.right));
-        const int viewHeight = std::max(0, static_cast<int>(client.bottom - contentTop));
+        const int viewHeight = std::max(0, static_cast<int>(client.bottom - viewTop));
         auto* selectedTab = active();
         for (const auto& tab : tabs) {
             if (tab.get() != selectedTab)
@@ -6475,13 +6484,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (!geometryChanged) {
                 MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&current), 2);
                 geometryChanged = current.left != viewLeft
-                    || current.top != contentTop
+                    || current.top != viewTop
                     || current.right - current.left != viewWidth
                     || current.bottom - current.top != viewHeight;
             }
 
             if (geometryChanged) {
-                MoveWindow(viewWindow, viewLeft, contentTop, viewWidth, viewHeight, FALSE);
+                MoveWindow(viewWindow, viewLeft, viewTop, viewWidth, viewHeight, FALSE);
                 // Only the visible active page needs a repaint after a genuine
                 // viewport change. Repainting every overlapping inactive WKView can
                 // expose its surface during z-order/compositor updates.
