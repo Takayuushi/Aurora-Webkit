@@ -2714,9 +2714,6 @@ struct BrowserState {
             // Animate only the independent sidebar overlay. The WebKit HWND is
             // deliberately untouched both during the motion and at completion.
             positionOverlayWindows();
-            // WebKit can change sibling z-order while submitting accelerated frames.
-            // Repair only the order during the slide; do not repaint the drawer.
-            maintainSidebarZOrder();
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
@@ -2724,7 +2721,11 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                refreshActivePageAfterSidebarTransition();
+                // Opening only covers the existing page; forcing a WebKit repaint here
+                // can blank its accelerated surface underneath the drawer. Refresh only
+                // after closing, when page pixels are exposed again.
+                if (!sidebarOpen)
+                    refreshActivePageAfterSidebarTransition();
             }
         }
 
