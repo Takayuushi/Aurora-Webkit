@@ -60,12 +60,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Repair WinGet source and install dependencies
+      - name: Repair WinGet source and install missing dependencies
         shell: powershell
         run: |
-          # GitHub-hosted Windows images can occasionally have incomplete WinGet
-          # source metadata. Reset the community source and explicitly use it so
-          # installs do not query the Microsoft Store source.
+          # Reset only the community source metadata. GitHub-hosted images already
+          # contain several build tools; do not ask WinGet to "upgrade" those tools,
+          # because its no-upgrade-available result can have a non-zero exit code.
           winget source reset --force
           if ($LASTEXITCODE -ne 0) { throw "WinGet source reset failed." }
 
@@ -81,19 +81,27 @@ jobs:
           )
           $machineScope = @("--scope=machine")
           $packages = @(
-            "Git.Git",
-            "Kitware.CMake",
-            "Ninja-build.Ninja",
-            "RubyInstallerTeam.Ruby.3.2",
-            "ApacheFriends.Xampp.8.2",
-            "LLVM.LLVM"
+            @{ Id = "Git.Git"; Check = { [bool](Get-Command git -ErrorAction SilentlyContinue) } },
+            @{ Id = "Kitware.CMake"; Check = { (Test-Path "C:\Program Files\CMake\bin\cmake.exe") -or [bool](Get-Command cmake -ErrorAction SilentlyContinue) } },
+            @{ Id = "Ninja-build.Ninja"; Check = { (Test-Path "C:\Program Files\Ninja\ninja.exe") -or [bool](Get-Command ninja -ErrorAction SilentlyContinue) } },
+            @{ Id = "RubyInstallerTeam.Ruby.3.2"; Check = { [bool](Get-Command ruby -ErrorAction SilentlyContinue) } },
+            @{ Id = "ApacheFriends.Xampp.8.2"; Check = { Test-Path "C:\xampp\perl\bin\perl.exe" } },
+            @{ Id = "LLVM.LLVM"; Check = { Test-Path "$env:ProgramFiles\LLVM\bin\clang-cl.exe" } },
+            @{ Id = "GnuWin32.Gperf"; Check = { Test-Path "C:\Program Files (x86)\GnuWin32\bin\gperf.exe" } }
           )
-          foreach ($pkg in $packages) {
-            winget install @common @machineScope --id $pkg
-            if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install $pkg from the winget source." }
+
+          foreach ($package in $packages) {
+            if (& $package.Check) {
+              Write-Host "$($package.Id) is already present; skipping installation."
+              continue
+            }
+
+            Write-Host "Installing missing dependency: $($package.Id)"
+            $scope = if ($package.Id -eq "GnuWin32.Gperf") { @() } else { $machineScope }
+            winget install @common @scope --id $package.Id
+            if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install missing dependency $($package.Id)." }
+            if (-not (& $package.Check)) { throw "$($package.Id) installation completed but its required executable was not found." }
           }
-          winget install @common --id GnuWin32.Gperf
-          if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install GnuWin32.Gperf from the winget source." }
 
       - name: Resolve WebKit SHA (pinned default)
         id: webkit-sha
