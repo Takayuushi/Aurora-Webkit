@@ -6499,9 +6499,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        // Keep the visible page above inactive overlapping WKViews after resizing.
-        // Inactive surfaces are deliberately left alone until their tab is selected.
-        if (selectedTab) {
+        // Keep the active page above inactive WKViews, but do not raise it
+        // over the sidebar or tab-overview child windows. resize() runs for
+        // layout/animation changes; an unconditional HWND_TOP here defeats the
+        // overlay z-order established by positionOverlayWindows().
+        if (selectedTab && !sidebarOpen && !sidebarAnimating
+            && !tabOverviewVisible && !tabOverviewClosing) {
             HWND selectedView = WKViewGetWindow(selectedTab->view.get());
             if (selectedView && IsWindow(selectedView))
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
