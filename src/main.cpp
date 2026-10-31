@@ -6499,13 +6499,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        // Keep the selected WebKit surface above inactive pages, but never
-        // promote it over native overlays. resize() is called during navigation,
-        // DPI changes and sidebar transitions; raising WKView here was undoing the
-        // overlay's z-order and exposing a strip of its backing surface at the
-        // sidebar edge. The overlay stack is explicitly restored below.
-        if (selectedTab && !sidebarOpen && !sidebarAnimating
-            && !tabOverviewVisible && !tabOverviewClosing) {
+        // Keep the visible page above inactive overlapping WKViews after resizing.
+        // Inactive surfaces are deliberately left alone until their tab is selected.
+        if (selectedTab) {
             HWND selectedView = WKViewGetWindow(selectedTab->view.get());
             if (selectedView && IsWindow(selectedView))
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
