@@ -60,14 +60,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies (WinGet)
+      - name: Repair WinGet source and install dependencies
         shell: powershell
         run: |
+          # GitHub-hosted Windows images can occasionally have incomplete WinGet
+          # source metadata. Reset the community source and explicitly use it so
+          # installs do not query the Microsoft Store source.
+          winget source reset --force
+          if ($LASTEXITCODE -ne 0) { throw "WinGet source reset failed." }
+
+          winget source update --name winget
+          if ($LASTEXITCODE -ne 0) { throw "WinGet community source update failed." }
+
           $common = @(
             "--accept-package-agreements",
             "--accept-source-agreements",
             "--disable-interactivity",
-            "--silent"
+            "--silent",
+            "--source", "winget"
           )
           $machineScope = @("--scope=machine")
           $packages = @(
@@ -80,8 +90,10 @@ jobs:
           )
           foreach ($pkg in $packages) {
             winget install @common @machineScope --id $pkg
+            if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install $pkg from the winget source." }
           }
           winget install @common --id GnuWin32.Gperf
+          if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install GnuWin32.Gperf from the winget source." }
 
       - name: Resolve WebKit SHA (pinned default)
         id: webkit-sha
