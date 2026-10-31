@@ -80,9 +80,6 @@ jobs:
           # Set the workflow input when intentionally upgrading WebKit.
           $knownGoodSha = "a4e704f79fccaab616b4aadd590d3360bcae4b70"
           $inputSha = $env:WEBKIT_SHA_INPUT
-          if ($env:REBUILD_WEBKIT -eq "true" -and [string]::IsNullOrWhiteSpace($inputSha)) {
-            throw "A WebKit rebuild requires an explicit new webkit_sha. Supply the new full commit SHA and enable Rebuild WebKit."
-          }
           if (-not [string]::IsNullOrWhiteSpace($inputSha)) {
             $sha = $inputSha.Trim()
             if ($sha -notmatch '^[0-9a-fA-F]{40}$') {
@@ -94,9 +91,6 @@ jobs:
             Write-Host "Using the last successful WebKit revision: $sha"
           }
           if ($sha -notmatch '^[0-9a-fA-F]{40}$') { throw "Resolved WebKit revision is not a full 40-character Git commit SHA." }
-          if ($env:REBUILD_WEBKIT -eq "true" -and $sha -eq $knownGoodSha) {
-            throw "The requested WebKit SHA is already the saved revision. Use a different WebKit SHA to replace the saved engine build."
-          }
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "sha=$sha$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
       # One cache contains the matching WebKit source, compiled output, and libraries.
