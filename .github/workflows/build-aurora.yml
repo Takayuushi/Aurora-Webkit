@@ -97,8 +97,11 @@ jobs:
             }
 
             Write-Host "Installing missing dependency: $($package.Id)"
-            $scope = if ($package.Id -eq "GnuWin32.Gperf") { @() } else { $machineScope }
-            winget install @common @scope --id $package.Id
+            if ($package.Id -eq "GnuWin32.Gperf") {
+              winget install @common --id $package.Id
+            } else {
+              winget install @common @machineScope --id $package.Id
+            }
             if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install missing dependency $($package.Id)." }
             if (-not (& $package.Check)) { throw "$($package.Id) installation completed but its required executable was not found." }
           }
