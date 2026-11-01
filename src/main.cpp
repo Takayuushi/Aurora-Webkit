@@ -5144,9 +5144,18 @@ search.addEventListener('keydown',e=>{
         // Windows sends WM_SHOWWINDOW to WebKit, which marks the page non-visible and
         // can release a video renderer that is not correctly restored on tab return.
         HWND newViewWindow = WKViewGetWindow(tab->view.get());
-        if (newViewWindow)
+        if (newViewWindow) {
+            // The WebKit view and the browser's sidebar are overlapping sibling
+            // child windows. Both sides must participate in sibling clipping:
+            // clipping only the overlay still lets WebKit paint through/over it
+            // during accelerated-surface invalidation and z-order changes.
+            const LONG_PTR viewStyle = GetWindowLongPtrW(newViewWindow, GWL_STYLE);
+            if ((viewStyle & WS_CLIPSIBLINGS) == 0)
+                SetWindowLongPtrW(newViewWindow, GWL_STYLE, viewStyle | WS_CLIPSIBLINGS);
+
             SetWindowPos(newViewWindow, HWND_BOTTOM, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+        }
 
         WKViewSetIsInWindow(tab->view.get(), true);
 
