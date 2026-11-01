@@ -435,20 +435,20 @@ jobs:
             Write-Host "A normal build will not trust this legacy cache; explicitly rebuild WebKit to create a verified snapshot."
           }
 
-          # Never silently turn a normal Aurora/UI build into an engine rebuild.
-          # For an explicitly requested rebuild, a fallback cache may have a different compiler, SDK, or
-          # CMake graph; cmake --build can then regenerate the graph and compile thousands
-          # of JavaScriptCore/WebCore objects even when Rebuild WebKit was not requested.
-          if (-not $allowIncremental -and $env:REBUILD_WEBKIT -ne "true") {
+          if (-not $allowIncremental) {
             $cachedFingerprint = if ($metadata.ContainsKey("fingerprint")) { $metadata["fingerprint"] } else { "legacy/missing" }
             $cachedCMakeHash = if ($metadata.ContainsKey("cmake_hash")) { $metadata["cmake_hash"] } else { "legacy/missing" }
             Write-Host "Cached toolchain fingerprint: $cachedFingerprint"
             Write-Host "Current toolchain fingerprint: $env:CURRENT_BUILD_FINGERPRINT"
             Write-Host "Cached CMake graph hash: $cachedCMakeHash"
             Write-Host "Current CMake graph hash: $env:CURRENT_CMAKE_HASH"
-            throw "Refusing an implicit WebKit rebuild. This normal Aurora build needs an exact compatible WebKit cache. Select Rebuild WebKit only when you intentionally want to compile the engine."
+            Write-Host "Legacy or mismatched cache will be checked by graph-only regeneration and the Ninja dry-run guard."
+            Write-Host "No WebKit compilation is permitted unless Rebuild WebKit was explicitly requested."
           }
 
+          # Metadata is stored with the snapshot only if the entire workflow succeeds.
+          # For a legacy cache, the later Ninja dry-run guard must first prove that this
+          # graph can build Aurora without compiling WebKit objects.
           $metadataText = "fingerprint=$env:CURRENT_BUILD_FINGERPRINT$([Environment]::NewLine)cmake_hash=$env:CURRENT_CMAKE_HASH$([Environment]::NewLine)"
           [System.IO.File]::WriteAllText($metadataPath, $metadataText, [System.Text.UTF8Encoding]::new($false))
           New-Item -ItemType Directory -Force -Path (Join-Path $env:WEBKIT_DIR "VcpkgBinaryCache") | Out-Null
