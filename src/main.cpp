@@ -2212,12 +2212,11 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                // Keep the overview canvas full-width while the sidebar slides over it.
-                // Shift to the settled content inset only once the drawer animation ends;
-                // resizing its full-page backing bitmap on every frame would reintroduce lag.
-                const int left = sidebarAnimating ? 0
-                    : (sidebarOpen ? scaleForDpi(window, 300) : 0);
-                const int width = std::max(0, static_cast<int>(client.right) - left);
+                // Keep the overview canvas full-width even when the sidebar is open.
+                // The sidebar is an independently composed owned popup above this
+                // canvas; shifting the canvas right creates an exposed seam at the edge.
+                const int left = 0;
+                const int width = std::max(0, static_cast<int>(client.right));
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 RECT currentRect { };
                 bool geometryChanged = true;
@@ -2659,8 +2658,7 @@ struct BrowserState {
             } else {
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                    const int left = sidebarOpen ? scaleForDpi(window, 300) : 0;
-                    SetWindowPos(tabOverviewWindow, nullptr, left, contentTop(), 0, 0,
+                    SetWindowPos(tabOverviewWindow, nullptr, 0, contentTop(), 0, 0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 }
@@ -2750,11 +2748,9 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        // During the sidebar slide, keep the overview's backing canvas at the same
-        // origin and let the sidebar overlay cover it. Apply the inset after settling.
-        const int left = sidebarAnimating ? 0
-            : (sidebarOpen ? scaleForDpi(window, 300) : 0);
-        return { left, contentTop(), client.right, client.bottom };
+        // The overview always spans the full content viewport. The sidebar popup
+        // is composed above it, so no horizontal inset or exposed sliver is needed.
+        return { 0, contentTop(), client.right, client.bottom };
     }
 
     int tabOverviewColumns() const
