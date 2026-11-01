@@ -2183,6 +2183,19 @@ struct BrowserState {
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
             ShowWindow(sidebarOverlayWindow, SW_HIDE);
+
+            // The sidebar is a separate child HWND layered above WebKit. When it
+            // disappears, explicitly invalidate the page area it covered so stale
+            // pixels from the overlay cannot remain until the next mouse movement.
+            RECT pageArea { 0, top, client.right, client.bottom };
+            InvalidateRect(window, &pageArea, FALSE);
+            if (!tabOverviewVisible && !tabOverviewClosing) {
+                if (auto* selected = active()) {
+                    HWND viewWindow = WKViewGetWindow(selected->view.get());
+                    if (viewWindow && IsWindow(viewWindow))
+                        InvalidateRect(viewWindow, nullptr, FALSE);
+                }
+            }
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
