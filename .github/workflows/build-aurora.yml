@@ -431,7 +431,7 @@ jobs:
           }
 
           # Never silently turn a normal Aurora/UI build into an engine rebuild.
-          # A fallback cache may have been built with a different compiler, SDK, or
+          # For an explicitly requested rebuild, a fallback cache may have a different compiler, SDK, or
           # CMake graph; cmake --build can then regenerate the graph and compile thousands
           # of JavaScriptCore/WebCore objects even when Rebuild WebKit was not requested.
           if (-not $allowIncremental -and $env:REBUILD_WEBKIT -ne "true") {
