@@ -5145,10 +5145,9 @@ search.addEventListener('keydown',e=>{
         // can release a video renderer that is not correctly restored on tab return.
         HWND newViewWindow = WKViewGetWindow(tab->view.get());
         if (newViewWindow) {
-            // The WebKit view and the browser's sidebar are overlapping sibling
-            // child windows. Both sides must participate in sibling clipping:
-            // clipping only the overlay still lets WebKit paint through/over it
-            // during accelerated-surface invalidation and z-order changes.
+            // The WebKit view overlaps the browser's sidebar and tab-overview
+            // child windows. Clip the accelerated WebKit surface against siblings
+            // above it so its repaint region cannot spill into those overlay HWNDs.
             const LONG_PTR viewStyle = GetWindowLongPtrW(newViewWindow, GWL_STYLE);
             if ((viewStyle & WS_CLIPSIBLINGS) == 0)
                 SetWindowLongPtrW(newViewWindow, GWL_STYLE, viewStyle | WS_CLIPSIBLINGS);
