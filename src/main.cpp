@@ -11648,11 +11648,10 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         TrackMouseEvent(&tracking);
 
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (overlay == state->tabOverviewWindow) {
-            MapWindowPoints(overlay, state->window, &point, 1);
-        } else {
-            point.y += state->contentTop();
-        }
+        // Both overlays convert their own client coordinates back to the
+        // browser client. The sidebar is now an owned popup whose origin is in
+        // screen coordinates, unlike the old child-HWND implementation.
+        MapWindowPoints(overlay, state->window, &point, 1);
         if (!state->tabOverviewClosing)
             state->updateToolbarHover(point);
         return 0;
@@ -11665,7 +11664,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
     case WM_LBUTTONDOWN: {
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (overlay == state->sidebarOverlayWindow) {
-            point.y += state->contentTop();
+            MapWindowPoints(overlay, state->window, &point, 1);
             state->handleSidebarHit(point);
         } else if (overlay == state->tabOverviewWindow && !state->tabOverviewClosing) {
             MapWindowPoints(overlay, state->window, &point, 1);
