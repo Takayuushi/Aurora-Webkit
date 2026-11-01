@@ -6477,7 +6477,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // The native tab row and the accelerated child HWND are separate surfaces;
         // exact edge-to-edge placement can leave a one-pixel parent-background seam
         // after DPI rounding or a compositor resize.
-        const int viewTop = std::max(0, contentTop - scaleForDpi(window, 1));
+        const int viewTop = contentTop;
         // Only the selected WKView participates in foreground resizing. Resizing all
         // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
         // low-resolution frames. An inactive page is resized when activateTab selects it.
