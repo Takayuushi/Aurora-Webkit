@@ -10854,7 +10854,6 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
-            tab->browser->updateActiveStartPageSidebarOffset();
             tab->browser->scheduleTabThumbnailCapture(tab, 320);
             if (!tab->favicon && tab->faviconRequestURL.empty()
                 && tab->faviconAttempts < 2 && !tab->activeUrl.empty()) {
