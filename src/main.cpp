@@ -11363,8 +11363,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_MOVE:
-        if (state)
+        if (state) {
             state->updateLastNormalWindowRect();
+            // The sidebar is an owned popup rather than a child of the browser.
+            // Re-anchor it whenever the top-level browser window moves.
+            if (state->sidebarOpen || state->sidebarAnimating)
+                state->positionOverlayWindows();
+        }
         break;
 
     case WM_SIZE:
