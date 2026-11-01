@@ -2061,8 +2061,17 @@ struct BrowserState {
             return false;
         if (handle && IsWindow(handle))
             return true;
-        handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
-            0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        if (&handle == &sidebarOverlayWindow) {
+            // A moving child HWND shares the same sibling-composition path as
+            // WebKit's accelerated child surface. Use an owned popup for the
+            // sidebar so DWM composes it independently above the browser client.
+            handle = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                overlayWindowClassName, L"", WS_POPUP,
+                0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        } else {
+            handle = CreateWindowExW(0, overlayWindowClassName, L"", WS_CHILD,
+                0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        }
         return handle != nullptr;
     }
 
@@ -2090,6 +2099,10 @@ struct BrowserState {
             if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
+                POINT popupOrigin { left, top };
+                ClientToScreen(window, &popupOrigin);
+                const int popupLeft = popupOrigin.x;
+                const int popupTop = popupOrigin.y;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
                 RECT previousRect { };
                 bool havePreviousRect = alreadyVisible
@@ -2108,7 +2121,7 @@ struct BrowserState {
                     // Show the drawer once; its cached bitmap then moves without
                     // repeatedly changing sibling HWND order during the animation.
                     SetWindowPos(sidebarOverlayWindow, HWND_TOP,
-                        left, top, width, height,
+                        popupLeft, popupTop, width, height,
                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
                     ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
                     InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
@@ -2128,7 +2141,7 @@ struct BrowserState {
                             flags |= SWP_NOMOVE | SWP_NOSIZE;
                         SetWindowPos(sidebarOverlayWindow,
                             preserveStack ? nullptr : HWND_TOP,
-                            left, top, width, height, flags);
+                            popupLeft, popupTop, width, height, flags);
                     }
 
                     if (!sidebarAnimating && geometryChanged)
@@ -3034,48 +3047,14 @@ struct BrowserState {
             return;
         }
 
-        HWND activeView = nullptr;
-        if (auto* selected = active())
-            activeView = WKViewGetWindow(selected->view.get());
-        if (!activeView || !IsWindow(activeView))
+        // The sidebar is an owned top-level popup, not a sibling child of the
+        // accelerated WebKit HWND. Windows keeps owned popups above their owner,
+        // so do not repeatedly reorder the WebKit/overview child HWNDs here.
+        if (GetWindow(sidebarOverlayWindow, GW_OWNER) != window)
             return;
 
-        // Child HWNDs are enumerated from the top of the Z order down.
-        // The drawer must sit above both WebKit and the overview canvas; checking only
-        // WebKit allowed the overview HWND to cover the sidebar during its slide.
-        const bool overviewVisible = tabOverviewWindow && IsWindowVisible(tabOverviewWindow);
-        int sidebarOrder = -1;
-        int viewOrder = -1;
-        int overviewOrder = -1;
-        int order = 0;
-        for (HWND child = GetWindow(window, GW_CHILD); child;
-             child = GetWindow(child, GW_HWNDNEXT), ++order) {
-            if (child == sidebarOverlayWindow)
-                sidebarOrder = order;
-            if (child == activeView)
-                viewOrder = order;
-            if (overviewVisible && child == tabOverviewWindow)
-                overviewOrder = order;
-            if (sidebarOrder >= 0 && viewOrder >= 0
-                && (!overviewVisible || overviewOrder >= 0))
-                break;
-        }
-
-        const bool behindActiveView = viewOrder >= 0 && sidebarOrder > viewOrder;
-        const bool behindOverview = overviewVisible && overviewOrder >= 0
-            && sidebarOrder > overviewOrder;
-        if (sidebarOrder < 0 || behindActiveView || behindOverview) {
-            // Restore the drawer above WebKit/overview. Since NOREDRAW is used to
-            // avoid a synchronous erase flash, explicitly queue a paint afterward.
-            SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                    | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
-        }
-
         // Retry only a few asynchronous paints when the drawer is newly opened.
-        // Never force an immediate paint here: that can stall animation or flash
-        // the WebKit surface underneath.
+        // This repaint is confined to the independent popup surface.
         if (sidebarPaintRecoveryTicks > 0 && IsWindowVisible(sidebarOverlayWindow)) {
             RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
