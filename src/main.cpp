@@ -1969,11 +1969,10 @@ struct BrowserState {
         const int groupLeft = std::max(sidePadding, (static_cast<int>(client.right) - groupWidth) / 2);
         const int rowTop = titleBarHeight() + toolbarHeight();
         const int rowHeight = tabsBarHeight();
-        const int inset = scaleForDpi(window, 2);
         const int left = groupLeft + static_cast<int>(index) * (tabWidth + gap);
-        // Let the active tab meet the page edge like Safari; the old bottom inset
-        // left a visible strip between the tab capsule and the content viewport.
-        return { left, rowTop + inset, left + tabWidth, rowTop + rowHeight };
+        // The selected tab fills the tab row vertically and joins the content
+        // viewport at its lower edge; do not leave a two-pixel toolbar-to-tab gap.
+        return { left, rowTop, left + tabWidth, rowTop + rowHeight };
     }
 
 
