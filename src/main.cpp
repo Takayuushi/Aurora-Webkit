@@ -3303,7 +3303,8 @@ struct BrowserState {
             : (dark ? RGB(245, 245, 247) : RGB(42, 44, 48)));
         RECT titleRect { preview.left + width / 14, preview.top + height / 12,
             preview.right - width / 14, preview.top + height / 5 };
-        const wchar_t* title = showStartPageFavorites ? L"Favorites" : L"Frequently Visited";
+        const wchar_t* title = showStartPageFavorites && !startPageTiles.empty()
+            ? L"Favorites" : L"Frequently Visited";
         DrawTextW(dc, title, -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         const int tileSize = std::max(scaleForDpi(window, 10), height / 6);
@@ -5145,7 +5146,14 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
             }
             html += "</div>";
         }
-        startPageThumbnailTiles = showStartPageFavorites ? startPageTiles : recentTiles;
+        startPageThumbnailTiles.clear();
+        if (showStartPageFavorites && !startPageTiles.empty()) {
+            startPageThumbnailTiles = startPageTiles;
+        } else if (showStartPageFrequentlyVisited) {
+            startPageThumbnailTiles.reserve(recentTiles.size());
+            for (const auto& entry : recentTiles)
+                startPageThumbnailTiles.push_back({ entry.url, entry.title, entry.lastVisited });
+        }
         for (const auto& entry : startPageThumbnailTiles)
             requestFavicon(this, entry.url, true);
 
