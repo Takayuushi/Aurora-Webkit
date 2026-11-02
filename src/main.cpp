@@ -2167,10 +2167,11 @@ struct BrowserState {
                 tabBarOverlayRegionHeight = 0;
                 tabBarOverlayRegionDpi = 0;
             }
-        } else if (&handle == &sidebarOverlayWindow) {
-            // A moving child HWND shares the same sibling-composition path as
-            // WebKit's accelerated child surface. Use an owned popup for the
-            // sidebar so DWM composes it independently above the browser client.
+        } else if (&handle == &sidebarOverlayWindow || &handle == &tabOverviewWindow) {
+            // Both overlays cover or mask the accelerated WebKit child surface.
+            // Keep them as independently composed owned popups; sibling child
+            // HWND z-order lets WebKit's GPU surface intermittently paint over
+            // the tab overview, exposing an unclickable strip of the live page.
             handle = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 overlayWindowClassName, L"", WS_POPUP,
                 0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
@@ -2373,6 +2374,11 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
+                POINT overviewOrigin { overviewLeft, overviewTop };
+                if (!ClientToScreen(window, &overviewOrigin))
+                    return;
+                const int popupLeft = overviewOrigin.x;
+                const int popupTop = overviewOrigin.y;
                 const int left = overviewLeft;
                 const int width = overviewWidth;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
@@ -2399,7 +2405,7 @@ struct BrowserState {
                         flags |= SWP_SHOWWINDOW;
                     SetWindowPos(tabOverviewWindow,
                         alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                        left, overviewTop, width, overviewHeight, flags);
+                        popupLeft, popupTop, width, overviewHeight, flags);
                 }
                 if (!alreadyVisible || geometryChanged
                     || (forceTop && !freezeOverviewDuringSidebarSlide))
@@ -11558,18 +11564,23 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_MOUSELEAVE:
         if (state) {
             state->mouseTrackingForChrome = false;
+            const int previousHoveredTab = state->hoveredTabBarIndex;
             const int previousHovered = state->hoveredToolbarButton;
             const int previousLeft = state->hoveredLeftControl;
             const int previousNavigation = state->hoveredNavigationButton;
             const int previousSidebarRow = state->hoveredSidebarRow;
             const bool previousSidebarSettings = state->hoveredSidebarSettings;
             const int previousLight = state->hoveredTrafficLight;
+            state->hoveredTabBarIndex = -1;
             state->hoveredToolbarButton = -1;
             state->hoveredLeftControl = -1;
             state->hoveredNavigationButton = -1;
             state->hoveredSidebarRow = -1;
             state->hoveredSidebarSettings = false;
             state->hoveredTrafficLight = -1;
+            if (previousHoveredTab >= 0 && state->tabBarOverlayWindow
+                && IsWindowVisible(state->tabBarOverlayWindow))
+                InvalidateRect(state->tabBarOverlayWindow, nullptr, FALSE);
             for (float& opacity : state->toolbarHoverOpacity)
                 opacity = 0.0f;
             if (previousHovered >= 0) {
