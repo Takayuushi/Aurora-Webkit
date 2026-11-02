@@ -3482,13 +3482,9 @@ struct BrowserState {
 
         // Reuse the same captured pixels shown by the card, including internal pages,
         // so the moving snapshot and the settled preview do not visually swap midway.
-        // Internal Start Page previews are drawn from the same centered native
-        // composition every time. A screen capture taken while the sidebar is open
-        // contains only the uncovered page region and shifts this preview off-center.
-        if (tab.internalPage == L"start") {
-            drawStartPageThumbnail(dc, destination);
-            return;
-        }
+        // Prefer the captured WebKit surface for every page, including Start Page.
+        // Reconstructing Start Page natively changes its favicon artwork, labels,
+        // favorite ordering and sections during the zoom handoff.
         if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
             && tab.previewURL == tab.activeUrl) {
             HDC previewDC = CreateCompatibleDC(dc);
@@ -3711,10 +3707,7 @@ struct BrowserState {
             FillRect(dc, &preview, previewBrush);
             DeleteObject(previewBrush);
 
-            if (tabs[i]->internalPage == L"start") {
-                // Do not reuse a screenshot cropped by the open sidebar.
-                drawStartPageThumbnail(dc, preview);
-            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
+            if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
                 && tabs[i]->previewURL == tabs[i]->activeUrl) {
                 HDC previewDC = CreateCompatibleDC(dc);
@@ -3733,6 +3726,11 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
+            } else if (tabs[i]->internalPage == L"start") {
+                // A capture may not exist during the first page-load frames.
+                // Keep the native preview only as a safe fallback until WebKit's
+                // fully rendered Start Page thumbnail has been saved.
+                drawStartPageThumbnail(dc, preview);
             } else if (tabs[i]->internalPage == L"settings") {
                 const bool tabDark = tabs[i]->hasInternalThemeSnapshot
                     ? tabs[i]->internalDarkTheme : dark;
@@ -11327,7 +11325,10 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
-            tab->browser->scheduleTabThumbnailCapture(tab, 320);
+            // Wait for the Start Page's eager favicon images to finish decoding
+            // before saving its overview snapshot. Other pages keep the short delay.
+            tab->browser->scheduleTabThumbnailCapture(tab,
+                tab->internalPage == L"start" ? 760 : 320);
             if (!tab->favicon && tab->faviconRequestURL.empty()
                 && tab->faviconAttempts < 2 && !tab->activeUrl.empty()) {
                 tab->faviconRequestURL = tab->activeUrl;
