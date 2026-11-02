@@ -1271,6 +1271,8 @@ struct BrowserState {
     HWND tabBarOverlayWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
+    HBITMAP tabBarOverlayBitmap { nullptr };
+    SIZE tabBarOverlayBitmapSize { 0, 0 };
     size_t tabBarOverlayRegionTabCount { 0 };
     int tabBarOverlayRegionWidth { 0 };
     int tabBarOverlayRegionHeight { 0 };
@@ -11530,6 +11532,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->tabBarOverlayWindow = nullptr;
                 state->tabBarOverlayRegionValid = false;
             }
+            if (state->tabBarOverlayBitmap) {
+                DeleteObject(state->tabBarOverlayBitmap);
+                state->tabBarOverlayBitmap = nullptr;
+                state->tabBarOverlayBitmapSize = SIZE { 0, 0 };
+            }
             if (state->sidebarOverlayWindow && IsWindow(state->sidebarOverlayWindow)) {
                 DestroyWindow(state->sidebarOverlayWindow);
                 state->sidebarOverlayWindow = nullptr;
@@ -11603,19 +11610,52 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(overlay, &paint);
         if (overlay == state->tabBarOverlayWindow) {
-            const int saved = SaveDC(dc);
-            if (saved) {
-                RECT tabClient { };
-                GetClientRect(overlay, &tabClient);
-                // The window region clips this fill to the capsule silhouettes;
-                // it does not paint the gaps, which continue to show the webpage.
+            RECT tabClient { };
+            GetClientRect(overlay, &tabClient);
+            const int width = std::max(1L, tabClient.right);
+            const int height = std::max(1L, tabClient.bottom);
+            if (!state->tabBarOverlayBitmap || state->tabBarOverlayBitmapSize.cx != width
+                || state->tabBarOverlayBitmapSize.cy != height) {
+                if (state->tabBarOverlayBitmap)
+                    DeleteObject(state->tabBarOverlayBitmap);
+                state->tabBarOverlayBitmap = CreateCompatibleBitmap(dc, width, height);
+                state->tabBarOverlayBitmapSize = state->tabBarOverlayBitmap
+                    ? SIZE { width, height } : SIZE { 0, 0 };
+            }
+
+            HDC buffer = CreateCompatibleDC(dc);
+            bool presented = false;
+            if (buffer && state->tabBarOverlayBitmap) {
+                HGDIOBJ oldBitmap = SelectObject(buffer, state->tabBarOverlayBitmap);
+                // Fill and draw off-screen, then present one completed tab frame.
+                // The destination window region clips this blit to capsule shapes;
+                // the holes between tabs remain transparent to the live page.
                 HBRUSH capsuleBacking = CreateSolidBrush(state->chromeDarkTheme()
                     ? RGB(52, 52, 56) : RGB(232, 234, 238));
-                FillRect(dc, &tabClient, capsuleBacking);
+                FillRect(buffer, &tabClient, capsuleBacking);
                 DeleteObject(capsuleBacking);
-                SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
-                state->drawTabBar(dc);
-                RestoreDC(dc, saved);
+                const int saved = SaveDC(buffer);
+                if (saved) {
+                    SetViewportOrgEx(buffer, 0, -state->sidebarContentTop(), nullptr);
+                    state->drawTabBar(buffer);
+                    RestoreDC(buffer, saved);
+                }
+                presented = BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY) != FALSE;
+                SelectObject(buffer, oldBitmap);
+                DeleteDC(buffer);
+            }
+            if (!presented) {
+                // Allocation-failure fallback keeps the tabs interactive and visible.
+                const int saved = SaveDC(dc);
+                if (saved) {
+                    HBRUSH capsuleBacking = CreateSolidBrush(state->chromeDarkTheme()
+                        ? RGB(52, 52, 56) : RGB(232, 234, 238));
+                    FillRect(dc, &tabClient, capsuleBacking);
+                    DeleteObject(capsuleBacking);
+                    SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
+                    state->drawTabBar(dc);
+                    RestoreDC(dc, saved);
+                }
             }
             EndPaint(overlay, &paint);
             return 0;
