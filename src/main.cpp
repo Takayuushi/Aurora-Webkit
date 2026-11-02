@@ -2498,7 +2498,7 @@ struct BrowserState {
         if (!sidebarOpen && sidebarContentInsetActive) {
             sidebarContentInsetActive = false;
             resize(false);
-            beginWindowSurfaceRecovery(false, true, false, true);
+            requestActivePageRepaint(false, false, true);
         }
         positionOverlayWindows();
         updateSidebarZOrderTimer();
@@ -2862,7 +2862,7 @@ struct BrowserState {
                 if (sidebarContentInsetActive != sidebarOpen) {
                     sidebarContentInsetActive = sidebarOpen;
                     resize(false);
-                    beginWindowSurfaceRecovery(false, true, false, true);
+                    requestActivePageRepaint(false, false, true);
                 }
                 positionOverlayWindows(true);
                 const RECT buttonRect = sidebarButtonRect();
@@ -6431,7 +6431,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         sidebarAnimating = false;
         sidebarContentInsetActive = true;
         resize(false);
-        beginWindowSurfaceRecovery(false, true, false, true);
+        requestActivePageRepaint(false, false, true);
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -7241,9 +7241,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
-        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
-        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
-        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
+        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
+        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
+        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -8583,7 +8583,7 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
     if (!browser || !browser->window)
         return;
 
-    if (browser->sidebarOpen || browser->sidebarAnimating) {
+    if (browser->sidebarOpen || browser->sidebarAnimating || browser->sidebarContentInsetActive) {
         browser->hoveredSidebarRow = -1;
         browser->hoveredSidebarSettings = false;
         const bool restoreFullViewport = browser->sidebarContentInsetActive;
@@ -8595,7 +8595,7 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
         browser->sidebarOverlayAnimationFrameReady = false;
         if (restoreFullViewport) {
             browser->resize(false);
-            browser->beginWindowSurfaceRecovery(false, true, false, true);
+            browser->requestActivePageRepaint(false, false, true);
         }
         browser->positionOverlayWindows(true);
         const RECT sidebarButton = browser->sidebarButtonRect();
