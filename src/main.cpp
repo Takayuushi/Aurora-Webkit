@@ -3205,7 +3205,7 @@ struct BrowserState {
         }
     }
 
-    const Gdiplus::Bitmap* startPageThumbnailBitmap() const
+    Gdiplus::Bitmap* startPageThumbnailBitmap() const
     {
         if (startPageBackground.empty()) {
             cachedStartPageThumbnailBitmap.reset();
@@ -3235,7 +3235,7 @@ struct BrowserState {
         IntersectClipRect(dc, preview.left, preview.top, preview.right, preview.bottom);
 
         const bool dark = darkTheme();
-        const Gdiplus::Bitmap* wallpaper = startPageThumbnailBitmap();
+        Gdiplus::Bitmap* wallpaper = startPageThumbnailBitmap();
         const bool hasWallpaper = wallpaper && wallpaper->GetLastStatus() == Gdiplus::Ok
             && wallpaper->GetWidth() > 0 && wallpaper->GetHeight() > 0;
         HBRUSH background = CreateSolidBrush(dark ? RGB(28, 28, 30) : RGB(245, 245, 247));
@@ -3254,7 +3254,7 @@ struct BrowserState {
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
             Gdiplus::Rect destination(preview.left, preview.top, width, height);
-            graphics.DrawImage(const_cast<Gdiplus::Bitmap*>(wallpaper), destination,
+            graphics.DrawImage(wallpaper, destination,
                 sourceX, sourceY, sourceWidth, sourceHeight, Gdiplus::UnitPixel);
             Gdiplus::LinearGradientBrush shade(
                 Gdiplus::Point(0, preview.top), Gdiplus::Point(0, preview.bottom),
