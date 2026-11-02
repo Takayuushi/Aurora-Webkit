@@ -2077,6 +2077,13 @@ struct BrowserState {
             handle = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 overlayWindowClassName, L"", WS_POPUP,
                 0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+            if (handle) {
+                tabBarOverlayRegionValid = false;
+                tabBarOverlayRegionTabCount = 0;
+                tabBarOverlayRegionWidth = 0;
+                tabBarOverlayRegionHeight = 0;
+                tabBarOverlayRegionDpi = 0;
+            }
         } else if (&handle == &sidebarOverlayWindow) {
             // A moving child HWND shares the same sibling-composition path as
             // WebKit's accelerated child surface. Use an owned popup for the
@@ -11598,6 +11605,14 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         if (overlay == state->tabBarOverlayWindow) {
             const int saved = SaveDC(dc);
             if (saved) {
+                RECT tabClient { };
+                GetClientRect(overlay, &tabClient);
+                // The window region clips this fill to the capsule silhouettes;
+                // it does not paint the gaps, which continue to show the webpage.
+                HBRUSH capsuleBacking = CreateSolidBrush(state->chromeDarkTheme()
+                    ? RGB(52, 52, 56) : RGB(232, 234, 238));
+                FillRect(dc, &tabClient, capsuleBacking);
+                DeleteObject(capsuleBacking);
                 SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
                 state->drawTabBar(dc);
                 RestoreDC(dc, saved);
