@@ -58,6 +58,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <ctime>
 #include <thread>
 #include <utility>
@@ -4304,12 +4305,8 @@ struct BrowserState {
 
     std::vector<VisitEntry> frequentVisits(size_t maximum = 6) const
     {
-        auto sorted = visits;
-        std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) {
-            if (a.visits != b.visits)
-                return a.visits > b.visits;
-            return a.lastVisited > b.lastVisited;
-        });
+        if (!maximum || visits.empty())
+            return {};
 
         auto normalizedHost = [](const std::wstring& url) {
             const size_t scheme = url.find(L"://");
@@ -4322,20 +4319,39 @@ struct BrowserState {
                 [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
             return host;
         };
+        auto ranksAhead = [](const VisitEntry& a, const VisitEntry& b) {
+            if (a.visits != b.visits)
+                return a.visits > b.visits;
+            return a.lastVisited > b.lastVisited;
+        };
 
         std::vector<VisitEntry> distinctSites;
-        std::vector<std::wstring> seenHosts;
-        distinctSites.reserve(std::min(maximum, sorted.size()));
-        seenHosts.reserve(std::min(maximum, sorted.size()));
-        for (const auto& entry : sorted) {
+        distinctSites.reserve(std::min(maximum, visits.size()));
+        std::unordered_map<std::wstring, size_t> hostIndices;
+        hostIndices.reserve(std::min(visits.size(), std::max<size_t>(maximum, 32)));
+        for (const auto& entry : visits) {
             const std::wstring host = normalizedHost(entry.url);
-            if (host.empty() || std::find(seenHosts.begin(), seenHosts.end(), host) != seenHosts.end())
+            if (host.empty())
                 continue;
-            seenHosts.push_back(host);
-            distinctSites.push_back(entry);
-            if (distinctSites.size() >= maximum)
-                break;
+
+            const auto [position, inserted] = hostIndices.emplace(host, distinctSites.size());
+            if (inserted) {
+                distinctSites.push_back(entry);
+            } else {
+                VisitEntry& bestForHost = distinctSites[position->second];
+                if (ranksAhead(entry, bestForHost))
+                    bestForHost = entry;
+            }
         }
+
+        const size_t resultCount = std::min(maximum, distinctSites.size());
+        if (resultCount < distinctSites.size()) {
+            std::partial_sort(distinctSites.begin(), distinctSites.begin() + resultCount,
+                distinctSites.end(), ranksAhead);
+        } else {
+            std::sort(distinctSites.begin(), distinctSites.end(), ranksAhead);
+        }
+        distinctSites.resize(resultCount);
         return distinctSites;
     }
 
@@ -4923,7 +4939,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
         tab.hasInternalThemeSnapshot = true;
         tab.internalDarkTheme = darkTheme();
         auto frequent = frequentVisits(5);
-        auto favorites = bookmarks;
+        const auto& favorites = bookmarks;
         const bool dark = darkTheme();
 
         std::string html = R"HTML(
@@ -4942,7 +4958,7 @@ html,body{margin:0;min-height:100%;width:100%}
 body{min-height:100vh;overflow-x:hidden;position:relative;background:var(--page);color:var(--text);--muted:#74777e;--page:#f5f5f7;--tile:#fff;--tile-border:#e1e2e6;--hover:#eceef1;--card:#fff;--card-border:#e1e2e6;--text:#26272b}
 body.dark{--page:#1c1c1e;--text:#f5f5f7;--muted:#a7a8ae;--tile:#2a2a2d;--tile-border:#3b3b40;--hover:#343438;--card:#27272a;--card-border:#3b3b40}
 body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,255,255,.92);--tile-border:rgba(255,255,255,.35);--hover:rgba(255,255,255,.14);--card:rgba(24,25,29,.52);--card-border:rgba(255,255,255,.2)}
-.wallpaper{position:fixed;inset:0;z-index:0;background:var(--page);background-size:cover;background-position:center}
+.wallpaper{position:absolute;inset:0;z-index:0;pointer-events:none;background:var(--page);background-size:cover;background-position:center}
 .page{position:relative;z-index:1;width:min(1080px,100%);min-height:100vh;margin:0 auto;padding:58px clamp(24px,4vw,48px) 64px}
 .branding,.search-wrap{display:none}
 .section{width:100%;text-align:left;margin:0 0 14px;color:var(--text);font-size:16px;font-weight:600;letter-spacing:-.2px}
@@ -4950,7 +4966,7 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
 .tiles{width:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,108px));justify-content:start;align-items:start;gap:10px 14px}
 .tile{width:100%;min-height:102px;padding:8px 5px 9px;border-radius:12px;border:1px solid transparent;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:8px;color:var(--text);cursor:pointer;transition:background .16s ease,border-color .16s ease}
 .tile:hover{background:var(--hover);border-color:var(--tile-border)}
-.icon{position:relative;width:58px;height:58px;flex:0 0 58px;border-radius:14px;display:grid;place-items:center;background:var(--tile);border:1px solid var(--tile-border);box-shadow:0 1px 3px rgba(0,0,0,.08);color:var(--text);font-weight:600;font-size:21px;overflow:hidden}
+.icon{position:relative;width:58px;height:58px;flex:0 0 58px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,#36cbb8,#287ca3);border:1px solid rgba(255,255,255,.24);box-shadow:0 8px 22px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.13);color:#fff;font-weight:600;font-size:24px;overflow:hidden}
 .icon img{position:absolute;z-index:1;width:32px;height:32px;object-fit:contain}
 .icon span{position:relative;z-index:0}
 .name{font-size:12px;line-height:1.35;font-weight:500;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;color:var(--text)}
@@ -4988,9 +5004,41 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
                 }
             }
 
+            std::wstring lowerHost = host;
+            if (!lowerHost.empty())
+                CharLowerBuffW(lowerHost.data(), static_cast<DWORD>(lowerHost.size()));
+            std::string iconBackground = "linear-gradient(145deg,#36cbb8,#287ca3)";
+            std::string iconForeground = "#ffffff";
+            if (lowerHost.find(L"youtube") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#ff6961,#d81728)";
+            else if (lowerHost.find(L"github") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#50545b,#202124)";
+            else if (lowerHost.find(L"reddit") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#ff9850,#e54a16)";
+            else if (lowerHost.find(L"facebook") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#5b8def,#3157a4)";
+            else if (lowerHost.find(L"google") != std::wstring::npos) {
+                iconBackground = "linear-gradient(145deg,#ffffff,#eaf1ff)";
+                iconForeground = "#4285f4";
+            } else if (lowerHost.find(L"wikipedia") != std::wstring::npos) {
+                iconBackground = "linear-gradient(145deg,#ffffff,#e7e9ed)";
+                iconForeground = "#34383e";
+            } else if (lowerHost.find(L"duckduckgo") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#ffac54,#dd690d)";
+            else if (lowerHost.find(L"microsoft") != std::wstring::npos)
+                iconBackground = "linear-gradient(145deg,#5aa9ff,#6556ce)";
+            else if (lowerHost.find(L"apple") != std::wstring::npos) {
+                iconBackground = "linear-gradient(145deg,#f6f7f9,#d4d7dd)";
+                iconForeground = "#34383e";
+            }
+
             html += "<div class=\"tile\" onclick=\"location.href='";
             html += safeUrl;
-            html += "'\"><div class=\"icon\"><span>";
+            html += "'\"><div class=\"icon\" style=\"background:";
+            html += iconBackground;
+            html += ";color:";
+            html += iconForeground;
+            html += "\"><span>";
             html += letter;
             html += "</span><img loading=\"eager\" fetchpriority=\"high\" decoding=\"async\" referrerpolicy=\"no-referrer\" src=\"https://www.google.com/s2/favicons?domain=";
             html += safeHost;
