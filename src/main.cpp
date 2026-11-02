@@ -5594,11 +5594,18 @@ search.addEventListener('keydown',e=>{
             const seen = new Set();
             let bestColor = null;
             let bestScore = 0;
-            // Sample several points across the top strip. Real site headers are
-            // not always exactly at y=0 and may occupy less than 90% of the page.
+            const colorForElement = style => {
+                const solid = normalize(style.backgroundColor);
+                if (solid) return solid;
+                const image = String(style.backgroundImage || '');
+                const match = image.match(/(rgba?\\([^)]*\\)|#[0-9a-f]{3,8})/i);
+                return match ? normalize(match[1]) : null;
+            };
+            // Sample both the browser's top edge and the first content rows. A
+            // number of sites use non-semantic DIV wrappers or gradient headers.
             if (document.elementsFromPoint) {
-                for (const x of [width * 0.03, width * 0.2, width * 0.5, width * 0.8, width * 0.97]) {
-                    for (const y of [2, 8, 16, 24, 32, 44, 58, 76, 96, 112]) {
+                for (const x of [width * 0.02, width * 0.12, width * 0.3, width * 0.5, width * 0.7, width * 0.88, width * 0.98]) {
+                    for (const y of [2, 8, 16, 24, 32, 44, 58, 76, 96, 112, 132, 152]) {
                         for (const hit of document.elementsFromPoint(x, y)) {
                             let element = hit;
                             for (let depth = 0; element && depth < 8; ++depth, element = element.parentElement) {
@@ -5615,12 +5622,15 @@ search.addEventListener('keydown',e=>{
                                 // Many current sites place their colored navigation in
                                 // normal document flow rather than fixed/sticky chrome.
                                 const anchoredHeader = style.position === 'fixed' || style.position === 'sticky';
-                                if (!anchoredHeader && !semanticHeader) continue;
-                                if (rect.top > 120 || rect.bottom < 18
+                                const topSurface = rect.top <= 160 && rect.bottom >= 18
+                                    && rect.width >= width * 0.42 && rect.height >= 18;
+                                if (!anchoredHeader && !semanticHeader && !topSurface) continue;
+                                if (rect.top > 160 || rect.bottom < 18
                                     || rect.width < width * 0.28 || rect.height < 18) continue;
-                                const color = normalize(style.backgroundColor);
+                                const color = colorForElement(style);
                                 if (!color) continue;
-                                const score = Math.min(width, rect.width) * Math.min(96, rect.height);
+                                const verticalWeight = 1.0 / (1.0 + Math.max(0, rect.top) * 0.025);
+                                const score = Math.min(width, rect.width) * Math.min(96, rect.height) * verticalWeight;
                                 if (score > bestScore) {
                                     bestScore = score;
                                     bestColor = color;
