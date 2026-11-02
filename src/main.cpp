@@ -3327,7 +3327,7 @@ struct BrowserState {
             : (dark ? RGB(245, 245, 247) : RGB(42, 44, 48)));
         RECT titleRect { preview.left + width / 14, preview.top + height / 12,
             preview.right - width / 14, preview.top + height / 5 };
-        const wchar_t* title = showStartPageFavorites && !startPageTiles.empty()
+        const wchar_t* title = showStartPageFavorites && !startPageThumbnailTiles.empty()
             ? L"Favorites" : L"Frequently Visited";
         DrawTextW(dc, title, -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
