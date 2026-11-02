@@ -162,6 +162,7 @@ constexpr UINT kSidebarReadingList = 2231;
 constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT WM_AURORA_TRANSITION_REPAINT_READY = WM_APP + 21;
+constexpr UINT WM_AURORA_PAGE_TINT_READY = WM_APP + 23;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
@@ -298,6 +299,21 @@ struct FaviconResult {
     HICON icon { nullptr };
     bool forStartPage { false };
 };
+
+struct PageTintRequestContext {
+    HWND window { nullptr };
+    std::wstring url;
+    unsigned long long generation { 0 };
+};
+
+struct PageTintResult {
+    std::wstring url;
+    unsigned long long generation { 0 };
+    COLORREF color { RGB(250, 250, 251) };
+    bool valid { false };
+};
+
+void pageTintEvaluationCompleted(WKTypeRef, WKErrorRef, void*);
 
 std::wstring faviconURLForPage(const std::wstring& pageURL)
 {
@@ -1377,6 +1393,11 @@ struct BrowserState {
     bool newWindowsOpenWithHomepage { false };
     bool showWebsiteIconsInTabs { true };
     bool alwaysShowTabBar { true };
+    bool showPageColorInTabBar { true };
+    COLORREF activePageTintColor { RGB(250, 250, 251) };
+    bool activePageTintValid { false };
+    std::wstring activePageTintRequestURL;
+    unsigned long long activePageTintGeneration { 0 };
     bool hasCreatedInitialTab { false };
     TabState* pendingThumbnailCaptureTab { nullptr };
     unsigned pendingThumbnailCaptureAttempts { 0 };
@@ -1437,6 +1458,8 @@ struct BrowserState {
                 showWebsiteIconsInTabs = value == L"1" || value == L"true";
             else if (key == "alwaysShowTabBar")
                 alwaysShowTabBar = value == L"1" || value == L"true";
+            else if (key == "showPageColorInTabBar")
+                showPageColorInTabBar = value == L"1" || value == L"true";
             else if (key == "alwaysShowTabBarPreferenceVersion")
                 hasTabBarPreferenceVersion = value == L"1" || value == L"true";
             else if (key == "rememberWindowState")
@@ -1511,6 +1534,7 @@ struct BrowserState {
              << "newWindowsOpenWithHomepage\t" << (newWindowsOpenWithHomepage ? "1" : "0") << '\n'
              << "showWebsiteIconsInTabs\t" << (showWebsiteIconsInTabs ? "1" : "0") << '\n'
              << "alwaysShowTabBar\t" << (alwaysShowTabBar ? "1" : "0") << '\n'
+             << "showPageColorInTabBar\t" << (showPageColorInTabBar ? "1" : "0") << '\n'
              << "alwaysShowTabBarPreferenceVersion\t1\n"
              << "rememberWindowState\t" << (rememberWindowState ? "1" : "0") << '\n'
              << "lastWindowStateValid\t" << (lastWindowStateValid ? "1" : "0") << '\n'
@@ -4714,7 +4738,7 @@ struct BrowserState {
             + R"HTML(;--bar:)HTML" + (dark ? "#222224" : "#f5f5f7") + R"HTML(;--text:)HTML"
             + (dark ? "#f5f5f7" : "#1d1d1f") + R"HTML(;--muted:)HTML" + (dark ? "#a1a1a6" : "#6e6e73")
             + R"HTML(;--line:)HTML" + (dark ? "#414144" : "#dedee2") + R"HTML(;--selected:)HTML"
-            + (dark ? "#3b3b3f" : "#e6e6ea") + R"HTML(;--blue:)HTML" + (dark ? "#8ab4f8" : "#1769d2")
+            + (dark ? "#3b3b3f" : "#e6e6ea") + R"HTML(;--blue:)HTML" + (dark ? "#0a84ff" : "#007aff")
             + R"HTML(}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
 form{margin:0}
@@ -4818,7 +4842,8 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <label class="checkrow"><input type="hidden" name="backgroundTabs" value="0"><input id="backgroundTabs" type="checkbox" name="backgroundTabs" value="1"__BACKGROUND_TABS__>Open links in new tabs in the background</label>
 <label class="checkrow"><input type="hidden" name="websiteIcons" value="0"><input id="websiteIcons" type="checkbox" name="websiteIcons" value="1"__WEBSITE_ICONS__>Show website icons in tabs</label>
 <label class="checkrow"><input type="hidden" name="alwaysShowTabBar" value="0"><input id="alwaysShowTabBar" type="checkbox" name="alwaysShowTabBar" value="1"__ALWAYS_SHOW_TAB_BAR__>Always show the tab bar, even with one tab</label>
-</div></section>
+<label class="checkrow"><input type="hidden" name="pageColorInTabBar" value="0"><input id="pageColorInTabBar" type="checkbox" name="pageColorInTabBar" value="1"__PAGE_COLOR_IN_TAB_BAR__>Show color in tab bar</label>
+</div><p class="help">Use the active webpage’s background color as the tab bar background, like Safari.</p></section>
 <section class="panel__ACTIVE_SECTION_ABOUT__" data-section="about">
  <img class="about-cover" src="__AURORA_ABOUT_COVER__" alt="Aurora — Browse Beyond">
  <div class="about-copy"><h2>About Aurora</h2><p>A fast, private and beautiful browser shell built with WebKit for Windows. Aurora pairs a custom native interface with the WebKit browser engine while keeping its own identity.</p></div>
@@ -4917,6 +4942,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
             { "__NEW_TAB_START__", newTabStartSelected }, { "__NEW_TAB_HOME__", newTabHomeSelected },
             { "__WEBSITE_ICONS__", checked(showWebsiteIconsInTabs) },
             { "__ALWAYS_SHOW_TAB_BAR__", checked(alwaysShowTabBar) },
+            { "__PAGE_COLOR_IN_TAB_BAR__", checked(showPageColorInTabBar) },
             { "__JAVASCRIPT__", checked(javascriptEnabled) }, { "__IMAGES__", checked(imagesEnabled) },
             { "__POPUPS__", checked(allowPopups) }, { "__STORAGE__", checked(localStorageEnabled) },
             { "__DEVELOPER__", checked(developerToolsEnabled) },
@@ -5466,6 +5492,88 @@ search.addEventListener('keydown',e=>{
             SetTimer(window, kDeferredTabLoadTimerId, 48, nullptr);
     }
 
+    void invalidateTabBarBackground()
+    {
+        if (!window || webFullscreen || tabsBarHeight() <= 0)
+            return;
+        const int top = titleBarHeight() + toolbarHeight();
+        RECT band { 0, top, GetClientWidth(window), top + tabsBarHeight() };
+        InvalidateRect(window, &band, FALSE);
+    }
+
+    void clearActivePageTint()
+    {
+        const bool wasVisible = activePageTintValid;
+        if (!activePageTintRequestURL.empty() || wasVisible)
+            ++activePageTintGeneration;
+        activePageTintRequestURL.clear();
+        activePageTintValid = false;
+        if (wasVisible)
+            invalidateTabBarBackground();
+    }
+
+    void requestActivePageTint(TabState* tab)
+    {
+        if (!window)
+            return;
+        if (!showPageColorInTabBar || !tab || tab != active()) {
+            clearActivePageTint();
+            return;
+        }
+
+        const std::wstring& url = tab->activeUrl;
+        const bool webURL = url.rfind(L"https://", 0) == 0 || url.rfind(L"http://", 0) == 0;
+        if (!webURL) {
+            clearActivePageTint();
+            return;
+        }
+
+        auto page = WKViewGetPage(tab->view.get());
+        if (!page || WKPageGetEstimatedProgress(page) < 1.0)
+            return;
+        if (activePageTintRequestURL == url)
+            return;
+
+        activePageTintRequestURL = url;
+        const unsigned long long generation = ++activePageTintGeneration;
+        static constexpr char tintScript[] = R"JS((() => {
+            const normalize = value => {
+                if (!value) return null;
+                const probe = document.createElement('span');
+                probe.style.color = String(value).trim();
+                if (!probe.style.color) return null;
+                probe.style.position = 'absolute';
+                probe.style.visibility = 'hidden';
+                (document.documentElement || document.body).appendChild(probe);
+                const normalized = getComputedStyle(probe).color;
+                probe.remove();
+                const match = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+                if (!match) return null;
+                if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
+                const values = match.slice(1, 4).map(Number);
+                if (values.some(number => !Number.isFinite(number))) return null;
+                return '#' + values.map(number =>
+                    Math.max(0, Math.min(255, Math.round(number))).toString(16).padStart(2, '0')
+                ).join('');
+            };
+            const themeColor = document.querySelector('meta[name="theme-color" i]');
+            const bodyColor = document.body ? getComputedStyle(document.body).backgroundColor : '';
+            const rootColor = document.documentElement ? getComputedStyle(document.documentElement).backgroundColor : '';
+            for (const candidate of [themeColor && themeColor.content, bodyColor, rootColor]) {
+                const color = normalize(candidate);
+                if (color) return color;
+            }
+            return 'none';
+        })())JS";
+        auto script = adoptWK(WKStringCreateWithUTF8CString(tintScript));
+        if (!script) {
+            activePageTintRequestURL.clear();
+            return;
+        }
+        auto* context = new PageTintRequestContext { window, url, generation };
+        WKPageEvaluateJavaScriptInMainFrame(page, script.get(), context, pageTintEvaluationCompleted);
+    }
+
     void invalidateTabStrip()
     {
         if (!window || webFullscreen)
@@ -5565,6 +5673,8 @@ search.addEventListener('keydown',e=>{
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
         activeTab = index;
+        clearActivePageTint();
+        requestActivePageTint(active());
         previousActiveTab = previouslyActive;
         tabSwitchAnimationStart = GetTickCount64();
         tabSwitchAnimating = previouslyActive != index && tabsBarHeight() > 0;
@@ -5806,6 +5916,8 @@ button:focus-visible,input:focus-visible,.action:focus-visible,.done:focus-visib
         if (headEnd != std::string::npos)
             html.insert(headEnd, safariControlStyles);
 
+        if (&tab == active())
+            clearActivePageTint();
         auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
         auto baseURL = createWKURL(L"about:blank");
         WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
@@ -8022,6 +8134,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
+        if (showPageColorInTabBar && activePageTintValid && tabsBarHeight() > 0) {
+            const int tabBandTop = titleBarHeight() + toolbarH;
+            RECT tabBand { 0, tabBandTop, client.right, tabBandTop + tabsBarHeight() };
+            const COLORREF base = dark ? RGB(28, 28, 30) : RGB(250, 250, 251);
+            const COLORREF tinted = blendColor(base, activePageTintColor, dark ? 0.32f : 0.28f);
+            HBRUSH tabBandBrush = CreateSolidBrush(tinted);
+            FillRect(dc, &tabBand, tabBandBrush);
+            DeleteObject(tabBandBrush);
+        }
+
         HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(44, 44, 48) : RGB(247, 248, 251));
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
@@ -8156,6 +8278,42 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 };
 
+void pageTintEvaluationCompleted(WKTypeRef result, WKErrorRef error, void* contextPointer)
+{
+    std::unique_ptr<PageTintRequestContext> context(
+        static_cast<PageTintRequestContext*>(contextPointer));
+    if (!context || !context->window || !IsWindow(context->window))
+        return;
+
+    auto* message = new PageTintResult;
+    message->url = std::move(context->url);
+    message->generation = context->generation;
+
+    if (!error && result && WKGetTypeID(result) == WKStringGetTypeID()) {
+        auto string = reinterpret_cast<WKStringRef>(result);
+        const size_t maximum = WKStringGetMaximumUTF8CStringSize(string);
+        if (maximum > 1 && maximum < 64) {
+            std::vector<char> buffer(maximum, '\0');
+            if (WKStringGetUTF8CString(string, buffer.data(), buffer.size())) {
+                const std::string color(buffer.data());
+                if (color.size() == 7 && color.front() == '#') {
+                    unsigned int rgb = 0;
+                    const auto parsed = std::from_chars(color.data() + 1,
+                        color.data() + color.size(), rgb, 16);
+                    if (parsed.ec == std::errc() && parsed.ptr == color.data() + color.size()) {
+                        message->color = RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+                        message->valid = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!PostMessageW(context->window, WM_AURORA_PAGE_TINT_READY, 0,
+            reinterpret_cast<LPARAM>(message)))
+        delete message;
+}
+
 void browserWillEnterFullScreen(WKPageRef, WKCompletionListenerRef listener, const void* clientInfo)
 {
     auto* browser = static_cast<BrowserState*>(const_cast<void*>(clientInfo));
@@ -8207,6 +8365,7 @@ bool openNewBrowserWindow(BrowserState* source, bool privateMode)
         browser->newWindowsOpenWithHomepage = source->newWindowsOpenWithHomepage;
         browser->showWebsiteIconsInTabs = source->showWebsiteIconsInTabs;
         browser->alwaysShowTabBar = source->alwaysShowTabBar;
+        browser->showPageColorInTabBar = source->showPageColorInTabBar;
     }
     HWND window = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -9365,7 +9524,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     std::wstring theme, engine, home, folder, javascript, images, popups, storage, developer, section;
     std::wstring backgroundTabs, showFavorites, showFrequentlyVisited, showReadingList;
     std::wstring searchSuggestions, fullWebsiteAddress;
-    std::wstring newTabsOpenWith, newWindowsOpenWith, websiteIcons, alwaysShowTabBar;
+    std::wstring newTabsOpenWith, newWindowsOpenWith, websiteIcons, alwaysShowTabBar, pageColorInTabBar;
     std::wstring query = url.substr(queryStart + 1);
     size_t position = 0;
     while (position <= query.size()) {
@@ -9394,6 +9553,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
         else if (key == L"newWindowsOpenWith") newWindowsOpenWith = value;
         else if (key == L"websiteIcons") websiteIcons = value;
         else if (key == L"alwaysShowTabBar") alwaysShowTabBar = value;
+        else if (key == L"pageColorInTabBar") pageColorInTabBar = value;
         else if (key == L"section") section = value;
         if (amp == std::wstring::npos) break;
         position = amp + 1;
@@ -9458,9 +9618,12 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->newWindowsOpenWithHomepage = newWindowsOpenWith == L"homepage";
     browser->showWebsiteIconsInTabs = websiteIcons == L"1";
     browser->alwaysShowTabBar = alwaysShowTabBar == L"1";
+    browser->showPageColorInTabBar = pageColorInTabBar == L"1";
     browser->savePreferences();
     browser->applyEnginePreferences();
     browser->applyTheme();
+    browser->clearActivePageTint();
+    browser->requestActivePageTint(browser->active());
     if (auto* current = browser->active(); current && current->internalPage == L"settings")
         browser->loadSettingsPage(*current);
 }
@@ -11108,6 +11271,8 @@ void didChangeIsLoading(const void* clientInfo)
     // opens. Avoid capturing in this loading callback: synthetic screenshot work
     // here can stall/flicker the active WebKit surface at navigation completion.
     tab->browser->invalidateTabChrome(tab);
+    if (tab == tab->browser->active())
+        tab->browser->requestActivePageTint(tab);
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
@@ -11149,6 +11314,8 @@ void didChangeActiveURL(const void* clientInfo)
     auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
 
     if (tab->activeUrl != url) {
+        if (tab == tab->browser->active())
+            tab->browser->clearActivePageTint();
         tab->faviconAttempts = 0;
         // Never draw pixels from the previous URL under the new tab title.
         if (tab->previewBitmap) {
@@ -11210,6 +11377,8 @@ void didChangeEstimatedProgress(const void* clientInfo)
     auto page = WKViewGetPage(tab->view.get());
     const bool loading = page && WKPageGetEstimatedProgress(page) < 1.0;
     BrowserState* browser = tab->browser;
+    if (!loading)
+        browser->requestActivePageTint(tab);
     // The reload/stop glyph is binary. Repainting Smart Search for every fractional
     // progress notification caused the address pill to visibly flicker.
     if (browser->lastReloadButtonLoading == loading)
@@ -11540,6 +11709,25 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
                 InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
             state->startChromeAnimationTimer();
+        }
+        return 0;
+
+    case WM_AURORA_PAGE_TINT_READY:
+        if (lParam) {
+            std::unique_ptr<PageTintResult> result(reinterpret_cast<PageTintResult*>(lParam));
+            if (state && result && state->showPageColorInTabBar
+                && state->activePageTintGeneration == result->generation
+                && state->activePageTintRequestURL == result->url) {
+                TabState* activeTab = state->active();
+                if (activeTab && activeTab->activeUrl == result->url) {
+                    state->activePageTintValid = result->valid;
+                    if (result->valid)
+                        state->activePageTintColor = result->color;
+                    else
+                        state->activePageTintRequestURL.clear();
+                    state->invalidateTabBarBackground();
+                }
+            }
         }
         return 0;
 
