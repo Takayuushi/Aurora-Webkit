@@ -6599,6 +6599,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (tabs.empty())
             return;
 
+        // The overview control remains visible while its popup is open. Clear
+        // the pressed/hover tint now rather than leaving the toolbar glyph
+        // highlighted until Windows sends another mouse-move message.
+        if (hoveredToolbarButton >= 0) {
+            const RECT previous = rightToolbarButtonRect(hoveredToolbarButton);
+            if (previous.right > previous.left && previous.bottom > previous.top)
+                InvalidateRect(window, &previous, FALSE);
+        }
+        hoveredToolbarButton = -1;
+        for (float& opacity : toolbarHoverOpacity)
+            opacity = 0.0f;
+
         if (tabOverviewClosing) {
             const float currentZoom = tabOverviewZoomProgress();
             tabOverviewZoomFrom = currentZoom;
