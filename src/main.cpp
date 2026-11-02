@@ -1307,6 +1307,9 @@ struct BrowserState {
     bool tabOverviewClosingSettling { false };
     ULONGLONG tabOverviewClosingSettleStart { 0 };
     int tabOverviewClosingSettleFramesRendered { 0 };
+    bool tabOverviewClosingWaitingForRepaint { false };
+    bool tabOverviewClosingRepaintReady { false };
+    ULONGLONG tabOverviewClosingRepaintReadyAt { 0 };
     ULONGLONG tabOverviewTransitionDuration { 420 };
     float tabOverviewZoomFrom { 1.0f }; // 0 = card preview, 1 = full content viewport
     float tabOverviewZoomTo { 0.0f };
@@ -2656,30 +2659,48 @@ struct BrowserState {
             if (transitionStillActive) {
                 continueAnimation = true;
             } else if (!tabOverviewClosingSettling) {
-                // Let WebKit repaint asynchronously while the overview snapshot
-                // still covers it. RDW_UPDATENOW can block this UI thread waiting on
-                // an accelerated surface, freezing both the zoom and the browser.
+                // Keep the final full-size snapshot over WebKit until the renderer
+                // confirms that a fresh frame has completed. A fixed delay can expire
+                // while the accelerated surface is still white, exposing a flash.
                 SetFocus(window);
-                if (auto* selected = active()) {
-                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
-                        InvalidateRect(viewWindow, nullptr, FALSE);
-                }
                 tabOverviewClosingSettling = true;
                 tabOverviewClosingSettleStart = now;
                 tabOverviewClosingSettleFramesRendered = 0;
+                tabOverviewClosingWaitingForRepaint = true;
+                tabOverviewClosingRepaintReady = false;
+                tabOverviewClosingRepaintReadyAt = 0;
+                if (auto* selected = active()) {
+                    if (WKViewGetPage(selected->view.get()))
+                        requestActivePageRepaint(false, true, true);
+                    else {
+                        tabOverviewClosingRepaintReady = true;
+                        tabOverviewClosingRepaintReadyAt = now;
+                    }
+                } else {
+                    tabOverviewClosingRepaintReady = true;
+                    tabOverviewClosingRepaintReadyAt = now;
+                }
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
                 continueAnimation = true;
             } else {
-                // A short asynchronous settle is enough to let queued WebKit paints
-                // start without adding a visible dead pause after the zoom animation.
-                const bool settleStillActive = now - tabOverviewClosingSettleStart < 72
-                    || tabOverviewClosingSettleFramesRendered < 3;
+                // Require both WebKit's repaint-completion signal and several
+                // composed overlay frames after it. Keep a bounded fallback so a
+                // failed renderer callback cannot strand the browser in overview.
+                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 1200;
+                const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
+                const bool postRepaintSettle = tabOverviewClosingRepaintReady
+                    && (now - tabOverviewClosingRepaintReadyAt < 48
+                        || tabOverviewClosingSettleFramesRendered < 3);
+                const bool settleStillActive = repaintPending || postRepaintSettle;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
                     tabOverviewClosing = false;
                     tabOverviewClosingSettling = false;
+                    tabOverviewClosingWaitingForRepaint = false;
+                    tabOverviewClosingRepaintReady = false;
+                    tabOverviewClosingRepaintReadyAt = 0;
                     tabOverviewClosingTab = -1;
                     tabOverviewZoomFrom = 1.0f;
                     tabOverviewZoomTo = 1.0f;
@@ -3249,6 +3270,13 @@ struct BrowserState {
 
         // Reuse the same captured pixels shown by the card, including internal pages,
         // so the moving snapshot and the settled preview do not visually swap midway.
+        // Internal Start Page previews are drawn from the same centered native
+        // composition every time. A screen capture taken while the sidebar is open
+        // contains only the uncovered page region and shifts this preview off-center.
+        if (tab.internalPage == L"start") {
+            drawStartPageThumbnail(dc, destination);
+            return;
+        }
         if (tab.previewBitmap && tab.previewWidth > 0 && tab.previewHeight > 0
             && tab.previewURL == tab.activeUrl) {
             HDC previewDC = CreateCompatibleDC(dc);
@@ -3469,7 +3497,10 @@ struct BrowserState {
             FillRect(dc, &preview, previewBrush);
             DeleteObject(previewBrush);
 
-            if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
+            if (tabs[i]->internalPage == L"start") {
+                // Do not reuse a screenshot cropped by the open sidebar.
+                drawStartPageThumbnail(dc, preview);
+            } else if (tabs[i]->previewBitmap && tabs[i]->previewWidth > 0
                 && tabs[i]->previewHeight > 0
                 && tabs[i]->previewURL == tabs[i]->activeUrl) {
                 HDC previewDC = CreateCompatibleDC(dc);
@@ -3488,11 +3519,6 @@ struct BrowserState {
                     SelectObject(previewDC, oldPreview);
                     DeleteDC(previewDC);
                 }
-            } else if (tabs[i]->internalPage == L"start") {
-                // The Start Page has a deterministic native preview. Prefer it over
-                // any stale capture from the accelerated WebKit surface, which can
-                // be black after another tab has been active.
-                drawStartPageThumbnail(dc, preview);
             } else if (tabs[i]->internalPage == L"settings") {
                 const bool tabDark = tabs[i]->hasInternalThemeSnapshot
                     ? tabs[i]->internalDarkTheme : dark;
@@ -5279,7 +5305,10 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            
+            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingRepaintReady = false;
+            tabOverviewClosingRepaintReadyAt = 0;
+
             startChromeAnimationTimer();
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
@@ -5381,6 +5410,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewZoomTo = 1.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
+            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingRepaintReady = false;
+            tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewAnimating = false;
             if (selectedView) {
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
@@ -11228,6 +11260,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && state->windowTransitionActive && state->windowTransitionWaitingForRepaint) {
             state->windowTransitionRepaintReady = true;
             SetTimer(window, kWindowTransitionTimerId, 48, nullptr);
+        }
+        if (state && state->tabOverviewClosing
+            && state->tabOverviewClosingWaitingForRepaint) {
+            state->tabOverviewClosingRepaintReady = true;
+            state->tabOverviewClosingRepaintReadyAt = GetTickCount64();
+            if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
+                InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
+            state->startChromeAnimationTimer();
         }
         return 0;
 
