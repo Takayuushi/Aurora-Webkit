@@ -5537,7 +5537,7 @@ search.addEventListener('keydown',e=>{
                 (document.documentElement || document.body).appendChild(probe);
                 const normalized = getComputedStyle(probe).color;
                 probe.remove();
-                const match = normalized.match(/^rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)$/i);
+                const match = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
                 if (!match) return null;
                 if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
                 const values = match.slice(1, 4).map(Number);
