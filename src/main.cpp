@@ -245,6 +245,7 @@ constexpr int kResizeBorder = 4;
 
 struct BrowserState;
 struct TabState;
+std::wstring applicationDataDirectory();
 void requestFavicon(BrowserState*, const std::wstring&, bool forStartPage = false);
 
 int gLiveBrowserWindows = 0;
