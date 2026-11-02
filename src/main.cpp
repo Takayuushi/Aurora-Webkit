@@ -298,6 +298,7 @@ struct FaviconResult {
     std::wstring url;
     HICON icon { nullptr };
     bool forStartPage { false };
+    std::wstring cacheKey;
 };
 
 struct PageTintRequestContext {
@@ -353,6 +354,25 @@ std::wstring faviconCacheKeyForPage(const std::wstring& pageURL)
     std::transform(host.begin(), host.end(), host.begin(),
         [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
     return host;
+}
+
+std::wstring faviconCacheDirectory()
+{
+    const std::wstring directory = applicationDataDirectory() + L"\\Favicons";
+    CreateDirectoryW(directory.c_str(), nullptr);
+    return directory;
+}
+
+std::wstring faviconCacheFilePath(const std::wstring& pageURL)
+{
+    std::wstring key = faviconCacheKeyForPage(pageURL);
+    if (key.empty())
+        return { };
+    for (wchar_t& ch : key) {
+        if (!(iswalnum(ch) || ch == L'.' || ch == L'-' || ch == L'_'))
+            ch = L'_';
+    }
+    return faviconCacheDirectory() + L"\\" + key + L".ico";
 }
 
 std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL, bool preferStartPageIcon = false)
@@ -1383,6 +1403,10 @@ struct BrowserState {
     std::vector<SavedPage> startPageThumbnailTiles;
     std::unordered_map<std::wstring, HICON> startPageThumbnailFavicons;
     std::unordered_set<std::wstring> startPageFaviconRequests;
+    // Shared per-site cache serves every tab, saved-page row and address suggestion.
+    // Its source images persist after tabs close and across browser restarts.
+    std::unordered_map<std::wstring, HICON> siteFavicons;
+    std::unordered_set<std::wstring> siteFaviconRequests;
     mutable std::wstring cachedStartPageThumbnailPath;
     mutable std::unique_ptr<Gdiplus::Bitmap> cachedStartPageThumbnailBitmap;
     std::wstring cachedStartPageBackgroundPath;
@@ -4200,6 +4224,13 @@ struct BrowserState {
         if (addressSuggestionEntries.empty()) {
             hideAddressSuggestions();
             return;
+        }
+
+        // Resolve icons for saved and previously visited suggestions asynchronously.
+        // New sites keep the generic globe until an icon is available.
+        for (const auto& entry : addressSuggestionEntries) {
+            if (!entry.searchAction)
+                requestFavicon(this, entry.url);
         }
 
         static bool classRegistered = false;
@@ -8004,6 +8035,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         auto drawSidebarItem = [&](size_t index, const std::wstring& title, const std::wstring& url) {
             const int y = rowTop + static_cast<int>(index) * rowHeight;
+            requestFavicon(this, url);
             if (static_cast<int>(index) == hoveredSidebarRow) {
                 const RECT hoverRect = sidebarRowRect(static_cast<int>(index));
                 const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
@@ -8012,10 +8044,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
 
             HICON siteIcon = nullptr;
-            for (const auto& tab : tabs) {
-                if (tab->favicon && tab->activeUrl == url) {
-                    siteIcon = tab->favicon;
-                    break;
+            const std::wstring faviconKey = faviconCacheKeyForPage(url);
+            const auto cachedSiteIcon = siteFavicons.find(faviconKey);
+            if (cachedSiteIcon != siteFavicons.end())
+                siteIcon = cachedSiteIcon->second;
+            if (!siteIcon) {
+                for (const auto& tab : tabs) {
+                    if (tab->favicon && faviconCacheKeyForPage(tab->activeUrl) == faviconKey) {
+                        siteIcon = tab->favicon;
+                        break;
+                    }
                 }
             }
             const int iconSize = scaleForDpi(window, 18);
@@ -9048,45 +9086,91 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL, bool for
 {
     if (!browser || pageURL.empty())
         return;
+    const std::wstring cacheKey = faviconCacheKeyForPage(pageURL);
+    if (cacheKey.empty())
+        return;
 
-    const std::wstring cacheKey = forStartPage ? faviconCacheKeyForPage(pageURL) : std::wstring();
     if (forStartPage) {
-        if (cacheKey.empty() || browser->startPageThumbnailFavicons.contains(cacheKey)
+        if (browser->startPageThumbnailFavicons.contains(cacheKey)
             || !browser->startPageFaviconRequests.insert(cacheKey).second)
+            return;
+    } else {
+        const auto applyToMatchingTabs = [&](HICON cachedIcon) {
+            if (!cachedIcon)
+                return;
+            for (auto& tab : browser->tabs) {
+                if (faviconCacheKeyForPage(tab->activeUrl) != cacheKey)
+                    continue;
+                HICON copy = CopyIcon(cachedIcon);
+                if (!copy)
+                    continue;
+                if (tab->favicon)
+                    DestroyIcon(tab->favicon);
+                tab->favicon = copy;
+                tab->faviconRequestURL.clear();
+                browser->invalidateTabChrome(tab.get());
+            }
+            if (browser->sidebarOverlayWindow && IsWindowVisible(browser->sidebarOverlayWindow))
+                InvalidateRect(browser->sidebarOverlayWindow, nullptr, FALSE);
+            if (browser->addressSuggestionWindow && IsWindowVisible(browser->addressSuggestionWindow))
+                InvalidateRect(browser->addressSuggestionWindow, nullptr, FALSE);
+        };
+
+        const auto cached = browser->siteFavicons.find(cacheKey);
+        if (cached != browser->siteFavicons.end() && cached->second) {
+            applyToMatchingTabs(cached->second);
+            return;
+        }
+
+        // Hydrate the in-memory cache from disk on first use in each session.
+        const std::wstring cachedPath = faviconCacheFilePath(pageURL);
+        if (!cachedPath.empty() && GetFileAttributesW(cachedPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            HICON icon = loadFaviconImageFile(cachedPath.c_str());
+            if (icon) {
+                browser->siteFavicons[cacheKey] = icon;
+                applyToMatchingTabs(icon);
+                return;
+            }
+            DeleteFileW(cachedPath.c_str());
+        }
+        if (!browser->siteFaviconRequests.insert(cacheKey).second)
             return;
     }
 
     const std::vector<std::wstring> candidates = faviconCandidatesForPage(pageURL, forStartPage);
-    if (candidates.empty())
+    if (candidates.empty()) {
+        if (forStartPage)
+            browser->startPageFaviconRequests.erase(cacheKey);
+        else
+            browser->siteFaviconRequests.erase(cacheKey);
         return;
+    }
 
+    const std::wstring persistentPath = forStartPage ? std::wstring() : faviconCacheFilePath(pageURL);
     HWND window = browser->window;
-    std::thread([window, pageURL, candidates, forStartPage] {
+    std::thread([window, pageURL, candidates, forStartPage, cacheKey, persistentPath] {
         HICON icon = nullptr;
         for (const auto& candidate : candidates) {
             if (!IsWindow(window))
                 return;
-
             wchar_t cacheFile[MAX_PATH] { };
             const HRESULT hr = URLDownloadToCacheFileW(nullptr, candidate.c_str(),
                 cacheFile, MAX_PATH, 0, nullptr);
             if (FAILED(hr) || !cacheFile[0])
                 continue;
-
             icon = loadFaviconImageFile(cacheFile);
-            if (icon)
+            if (icon) {
+                if (!forStartPage && !persistentPath.empty())
+                    CopyFileW(cacheFile, persistentPath.c_str(), FALSE);
                 break;
+            }
         }
-
         if (!IsWindow(window)) {
             if (icon)
                 DestroyIcon(icon);
             return;
         }
-
-        // Return failures too, so the UI can clear the in-flight marker and allow
-        // a later completed-load callback to retry instead of permanently giving up.
-        auto* result = new FaviconResult { pageURL, icon, forStartPage };
+        auto* result = new FaviconResult { pageURL, icon, forStartPage, cacheKey };
         if (!PostMessageW(window, WM_AURORA_FAVICON_READY, 0, reinterpret_cast<LPARAM>(result))) {
             if (icon)
                 DestroyIcon(icon);
@@ -9195,10 +9279,17 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND window, UINT message, WPARAM w
                     LineTo(dc, iconLeft + iconSize - 1, iconTop + iconSize - 1);
                 } else {
                     HICON siteIcon = nullptr;
-                    for (const auto& openTab : browser->tabs) {
-                        if (openTab->favicon && openTab->activeUrl == entry.url) {
-                            siteIcon = openTab->favicon;
-                            break;
+                    const std::wstring faviconKey = faviconCacheKeyForPage(entry.url);
+                    const auto cachedIcon = browser->siteFavicons.find(faviconKey);
+                    if (cachedIcon != browser->siteFavicons.end())
+                        siteIcon = cachedIcon->second;
+                    if (!siteIcon) {
+                        for (const auto& openTab : browser->tabs) {
+                            if (openTab->favicon
+                                && faviconCacheKeyForPage(openTab->activeUrl) == faviconKey) {
+                                siteIcon = openTab->favicon;
+                                break;
+                            }
                         }
                     }
                     if (siteIcon) {
@@ -11811,56 +11902,68 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_AURORA_FAVICON_READY:
         if (state && lParam) {
-            auto* result = reinterpret_cast<FaviconResult*>(lParam);
+            std::unique_ptr<FaviconResult> result(reinterpret_cast<FaviconResult*>(lParam));
+            const std::wstring key = result->cacheKey.empty()
+                ? faviconCacheKeyForPage(result->url) : result->cacheKey;
             if (result->forStartPage) {
-                const std::wstring key = faviconCacheKeyForPage(result->url);
-                if (!key.empty()) {
-                    state->startPageFaviconRequests.erase(key);
-                    if (result->icon) {
-                        const auto previous = state->startPageThumbnailFavicons.find(key);
-                        if (previous != state->startPageThumbnailFavicons.end() && previous->second)
-                            DestroyIcon(previous->second);
-                        state->startPageThumbnailFavicons[key] = result->icon;
-                        result->icon = nullptr;
-                        if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow)) {
-                            state->tabOverviewAnimationFrameReady = false;
-                            InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
-                        }
+                state->startPageFaviconRequests.erase(key);
+                if (result->icon) {
+                    const auto previous = state->startPageThumbnailFavicons.find(key);
+                    if (previous != state->startPageThumbnailFavicons.end() && previous->second)
+                        DestroyIcon(previous->second);
+                    state->startPageThumbnailFavicons[key] = result->icon;
+                    result->icon = nullptr;
+                    if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow)) {
+                        state->tabOverviewAnimationFrameReady = false;
+                        InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
                     }
                 }
-                if (result->icon)
-                    DestroyIcon(result->icon);
-                delete result;
                 return 0;
             }
-            TabState* updatedTab = nullptr;
-            std::wstring retryFaviconURL;
-            for (auto& tab : state->tabs) {
-                if (tab->activeUrl != result->url || tab->faviconRequestURL != result->url)
-                    continue;
-                if (result->icon) {
-                    if (tab->favicon)
-                        DestroyIcon(tab->favicon);
-                    tab->favicon = result->icon;
-                    result->icon = nullptr;
-                    updatedTab = tab.get();
-                } else {
+
+            state->siteFaviconRequests.erase(key);
+            if (result->icon) {
+                const auto previous = state->siteFavicons.find(key);
+                if (previous != state->siteFavicons.end() && previous->second)
+                    DestroyIcon(previous->second);
+                state->siteFavicons[key] = result->icon;
+                result->icon = nullptr;
+
+                // One request supplies the favicon for every open tab on this
+                // domain, rather than only the first tab in vector order.
+                for (auto& tab : state->tabs) {
+                    if (faviconCacheKeyForPage(tab->activeUrl) != key)
+                        continue;
+                    HICON copy = CopyIcon(state->siteFavicons[key]);
+                    if (copy) {
+                        if (tab->favicon)
+                            DestroyIcon(tab->favicon);
+                        tab->favicon = copy;
+                    }
                     tab->faviconRequestURL.clear();
-                    if (tab->faviconAttempts < 2) {
+                    state->invalidateTabChrome(tab.get());
+                }
+                if (state->sidebarOverlayWindow && IsWindowVisible(state->sidebarOverlayWindow))
+                    InvalidateRect(state->sidebarOverlayWindow, nullptr, FALSE);
+                if (state->addressSuggestionWindow && IsWindowVisible(state->addressSuggestionWindow))
+                    InvalidateRect(state->addressSuggestionWindow, nullptr, FALSE);
+                if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
+                    InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
+            } else {
+                std::wstring retryURL;
+                for (auto& tab : state->tabs) {
+                    if (faviconCacheKeyForPage(tab->activeUrl) != key)
+                        continue;
+                    tab->faviconRequestURL.clear();
+                    if (retryURL.empty() && tab->faviconAttempts < 2) {
                         ++tab->faviconAttempts;
-                        tab->faviconRequestURL = result->url;
-                        retryFaviconURL = result->url;
+                        tab->faviconRequestURL = tab->activeUrl;
+                        retryURL = tab->activeUrl;
                     }
                 }
-                break;
+                if (!retryURL.empty())
+                    requestFavicon(state, retryURL);
             }
-            if (result->icon)
-                DestroyIcon(result->icon);
-            delete result;
-            if (updatedTab)
-                state->invalidateTabChrome(updatedTab);
-            if (!retryFaviconURL.empty())
-                requestFavicon(state, retryFaviconURL);
         }
         return 0;
 
@@ -12041,6 +12144,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DestroyIcon(icon);
             }
             state->startPageThumbnailFavicons.clear();
+            for (auto& [host, icon] : state->siteFavicons) {
+                if (icon)
+                    DestroyIcon(icon);
+            }
+            state->siteFavicons.clear();
             if (state->windowCounted) {
                 state->windowCounted = false;
                 --gLiveBrowserWindows;
