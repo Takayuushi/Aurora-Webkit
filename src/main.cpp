@@ -1937,7 +1937,7 @@ struct BrowserState {
             || !IsWindowVisible(sidebarOverlayWindow))
             return;
         RECT localRect = parentRect;
-        OffsetRect(&localRect, 0, -contentTop());
+        OffsetRect(&localRect, sidebarWindowInsetX(), -contentTop());
         InvalidateRect(sidebarOverlayWindow, &localRect, FALSE);
     }
 
@@ -2054,6 +2054,21 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
+    // A custom-framed window can temporarily retain a client inset from its
+    // outer rectangle. Let the popup cover that strip without changing the
+    // drawer's right edge relative to the WebKit viewport.
+    int sidebarWindowInsetX() const
+    {
+        if (!window)
+            return 0;
+        RECT windowRect { };
+        POINT clientOrigin { 0, 0 };
+        if (!GetWindowRect(window, &windowRect)
+            || !ClientToScreen(window, &clientOrigin))
+            return 0;
+        return std::max(0, clientOrigin.x - windowRect.left);
+    }
+
     bool ensureOverlayWindow(HWND& handle)
     {
         if (!window)
@@ -2097,8 +2112,13 @@ struct BrowserState {
         if (sidebarOpen || sidebarAnimating) {
             if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
+                const int insetX = sidebarWindowInsetX();
+                const int popupWidth = width + insetX;
                 const int left = sidebarOffset() - width;
-                POINT popupOrigin { left, top };
+                // The popup uses screen coordinates. Extend it over any custom
+                // frame/client inset while keeping its right edge tied to the
+                // same client-space position as the original drawer.
+                POINT popupOrigin { left - insetX, top };
                 ClientToScreen(window, &popupOrigin);
                 const int popupLeft = popupOrigin.x;
                 const int popupTop = popupOrigin.y;
@@ -2112,15 +2132,15 @@ struct BrowserState {
                 }
 
                 const bool geometryChanged = !alreadyVisible || !havePreviousRect
-                    || previousRect.left != left || previousRect.top != top
-                    || previousRect.right - previousRect.left != width
+                    || previousRect.left != left - insetX || previousRect.top != top
+                    || previousRect.right - previousRect.left != popupWidth
                     || previousRect.bottom - previousRect.top != height;
 
                 if (!alreadyVisible) {
                     // Show the drawer once; its cached bitmap then moves without
                     // repeatedly changing sibling HWND order during the animation.
                     SetWindowPos(sidebarOverlayWindow, HWND_TOP,
-                        popupLeft, popupTop, width, height,
+                        popupLeft, popupTop, popupWidth, height,
                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
                     ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
                     InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
@@ -2140,7 +2160,7 @@ struct BrowserState {
                             flags |= SWP_NOMOVE | SWP_NOSIZE;
                         SetWindowPos(sidebarOverlayWindow,
                             preserveStack ? nullptr : HWND_TOP,
-                            popupLeft, popupTop, width, height, flags);
+                            popupLeft, popupTop, popupWidth, height, flags);
                     }
 
                     if (!sidebarAnimating && geometryChanged)
@@ -2151,63 +2171,15 @@ struct BrowserState {
                             RDW_INVALIDATE | RDW_NOERASE);
                 }
 
-                // When the drawer closes, invalidate only the strip it uncovered.
-                // Keep the request asynchronous and local so the entire WebKit surface
-                // is not synchronously repainted during the sidebar animation.
-                if (sidebarAnimating && geometryChanged && havePreviousRect
-                    && left < previousRect.left) {
-                    RECT clientRect { };
-                    if (GetClientRect(window, &clientRect)) {
-                        RECT exposed { left + width, top,
-                            previousRect.left + width, top + height };
-                        RECT clipped { };
-                        if (IntersectRect(&clipped, &exposed, &clientRect)) {
-                            if (tabOverviewVisible && tabOverviewWindow
-                                && IsWindowVisible(tabOverviewWindow)) {
-                                RECT overviewRect { };
-                                if (GetWindowRect(tabOverviewWindow, &overviewRect)) {
-                                    MapWindowPoints(nullptr, window,
-                                        reinterpret_cast<POINT*>(&overviewRect), 2);
-                                    RECT local = clipped;
-                                    OffsetRect(&local, -overviewRect.left, -overviewRect.top);
-                                    InvalidateRect(tabOverviewWindow, &local, FALSE);
-                                }
-                            } else if (!sidebarOpen) {
-                                if (auto* selected = active()) {
-                                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                                    RECT viewRect { };
-                                    if (viewWindow && IsWindow(viewWindow)
-                                        && GetWindowRect(viewWindow, &viewRect)) {
-                                        MapWindowPoints(nullptr, window,
-                                            reinterpret_cast<POINT*>(&viewRect), 2);
-                                        RECT local = clipped;
-                                        OffsetRect(&local, -viewRect.left, -viewRect.top);
-                                        InvalidateRect(viewWindow, &local, FALSE);
-                                        RedrawWindow(viewWindow, &local, nullptr,
-                                            RDW_INVALIDATE | RDW_NOERASE);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                // Keep the underlying WebKit surface untouched while the drawer
+                // moves. The view remains stationary and already contains the page
+                // pixels being revealed by the moving popup.            }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
+            // Hiding the popup reveals the still-live WebKit surface underneath.
+            // Do not invalidate the whole accelerated child here: on this WebKit
+            // port that can clear the composed page to white until a later frame.
             ShowWindow(sidebarOverlayWindow, SW_HIDE);
-
-            // The sidebar is a separate child HWND layered above WebKit. When it
-            // disappears, explicitly invalidate the page area it covered so stale
-            // pixels from the overlay cannot remain until the next mouse movement.
-            RECT pageArea { 0, top, client.right, client.bottom };
-            InvalidateRect(window, &pageArea, FALSE);
-            if (!tabOverviewVisible && !tabOverviewClosing) {
-                if (auto* selected = active()) {
-                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                    if (viewWindow && IsWindow(viewWindow))
-                        InvalidateRect(viewWindow, nullptr, FALSE);
-                }
-            }
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
@@ -2728,11 +2700,8 @@ struct BrowserState {
                 positionOverlayWindows();
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                // Opening only covers the existing page; forcing a WebKit repaint here
-                // can blank its accelerated surface underneath the drawer. Refresh only
-                // after closing, when page pixels are exposed again.
-                if (!sidebarOpen)
-                    refreshActivePageAfterSidebarTransition();
+                // The WebKit viewport never moved, so the drawer transition does
+                // not need a forced page repaint at completion.
             }
         }
 
@@ -6352,22 +6321,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             forcedPageRepaintFinished);
         if (!preserveOverlayStack)
             positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
-    }
-
-    void refreshActivePageAfterSidebarTransition()
-    {
-        if (!window || IsIconic(window) || tabOverviewVisible || tabOverviewClosing)
-            return;
-        auto* selected = active();
-        if (!selected)
-            return;
-        WKPageRef page = WKViewGetPage(selected->view.get());
-        if (!page)
-            return;
-
-        // Request a new accelerated WebKit frame without a synthetic DOM resize,
-        // which can cause site-wide layout and a visible white/black flash.
-        requestActivePageRepaint(false, false, true);
     }
 
     void redrawActiveWebView(bool immediate = false)
@@ -11541,15 +11494,19 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             HGDIOBJ oldBitmap = SelectObject(bufferDC, cachedBitmap);
             if (!reuseOverlayFrame) {
                 RECT bufferRect { 0, 0, width, height };
-                HBRUSH background = CreateSolidBrush(state->chromeDarkTheme()
-                    ? RGB(30, 30, 32) : RGB(240, 241, 244));
+                const bool sidebarSurface = overlay == state->sidebarOverlayWindow;
+                const COLORREF backgroundColor = sidebarSurface
+                    ? (state->chromeDarkTheme() ? RGB(35, 35, 37) : RGB(247, 248, 249))
+                    : (state->chromeDarkTheme() ? RGB(30, 30, 32) : RGB(240, 241, 244));
+                HBRUSH background = CreateSolidBrush(backgroundColor);
                 FillRect(bufferDC, &bufferRect, background);
                 DeleteObject(background);
 
                 const int saved = SaveDC(bufferDC);
                 if (saved) {
                     if (overlay == state->sidebarOverlayWindow) {
-                        SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
+                        SetViewportOrgEx(bufferDC, state->sidebarWindowInsetX(),
+                            -state->contentTop(), nullptr);
                         state->drawSidebarPanel(bufferDC, true);
                     } else if (overlay == state->tabOverviewWindow) {
                         const RECT area = state->tabOverviewAreaRect();
@@ -11619,7 +11576,8 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             const int saved = SaveDC(dc);
             if (saved) {
                 if (overlay == state->sidebarOverlayWindow) {
-                    SetViewportOrgEx(dc, 0, -state->contentTop(), nullptr);
+                    SetViewportOrgEx(dc, state->sidebarWindowInsetX(),
+                        -state->contentTop(), nullptr);
                     state->drawSidebarPanel(dc, true);
                 } else if (overlay == state->tabOverviewWindow) {
                     const RECT area = state->tabOverviewAreaRect();
