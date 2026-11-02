@@ -7609,9 +7609,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HFONT font = CreateFontW(-MulDiv(11, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
-        HFONT secondaryFont = CreateFontW(-MulDiv(9, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
         HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
@@ -7670,85 +7667,69 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         int rowTop = sidebarRowsTop();
-        HPEN sectionDivider = CreatePen(PS_SOLID, 1,
-            dark ? RGB(58, 58, 62) : RGB(229, 231, 234));
-        HPEN oldSectionDivider = static_cast<HPEN>(SelectObject(dc, sectionDivider));
-        MoveToEx(dc, scaleForDpi(window, 12), rowTop - scaleForDpi(window, 7), nullptr);
-        LineTo(dc, width - scaleForDpi(window, 12), rowTop - scaleForDpi(window, 7));
-        SelectObject(dc, oldSectionDivider);
-        DeleteObject(sectionDivider);
-        int rowHeight = scaleForDpi(window, 36);
+        const int rowHeight = scaleForDpi(window, 36);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
             ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
             : 0;
-        size_t count = sidebarSection == 0 ? bookmarks.size() : (sidebarSection == 1 ? readingList.size() : visits.size());
+        const size_t count = sidebarSection == 0 ? bookmarks.size()
+            : sidebarSection == 1 ? readingList.size() : visits.size();
+
+        auto drawSidebarItem = [&](size_t index, const std::wstring& title, const std::wstring& url) {
+            const int y = rowTop + static_cast<int>(index) * rowHeight;
+            if (static_cast<int>(index) == hoveredSidebarRow) {
+                const RECT hoverRect = sidebarRowRect(static_cast<int>(index));
+                const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
+                drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                    static_cast<float>(MulDiv(7, dpi, 96)));
+            }
+
+            HICON siteIcon = nullptr;
+            for (const auto& tab : tabs) {
+                if (tab->favicon && tab->activeUrl == url) {
+                    siteIcon = tab->favicon;
+                    break;
+                }
+            }
+            const int iconSize = scaleForDpi(window, 18);
+            RECT iconRect { scaleForDpi(window, 14), y + (rowHeight - iconSize) / 2,
+                scaleForDpi(window, 14) + iconSize, y + (rowHeight + iconSize) / 2 };
+            if (siteIcon) {
+                DrawIconEx(dc, iconRect.left, iconRect.top, siteIcon,
+                    iconSize, iconSize, 0, nullptr, DI_NORMAL);
+            } else if (sectionIconFont) {
+                HGDIOBJ oldIconFont = SelectObject(dc, sectionIconFont);
+                SetTextColor(dc, dark ? RGB(166, 166, 172) : RGB(119, 124, 131));
+                DrawTextW(dc, L"\xE774", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(dc, oldIconFont);
+            }
+
+            RECT titleRect { iconRect.right + scaleForDpi(window, 10), y,
+                width - scaleForDpi(window, 14), y + rowHeight };
+            SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
+            DrawTextW(dc, title.c_str(), -1, &titleRect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        };
 
         if (!count) {
             RECT empty { scaleForDpi(window, 18), rowTop, width - scaleForDpi(window, 18), rowTop + scaleForDpi(window, 42) };
             SetTextColor(dc, dark ? RGB(160, 160, 165) : RGB(125, 130, 134));
             const wchar_t* emptyText = sidebarSection == 0 ? L"No bookmarks yet." : (sidebarSection == 1 ? L"No saved pages yet." : L"No browsing history.");
             DrawTextW(dc, emptyText, -1, &empty, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        } else if (sidebarSection == 0) {
+            for (size_t index = 0; index < std::min(visibleRows, bookmarks.size()); ++index)
+                drawSidebarItem(index, bookmarks[index].title, bookmarks[index].url);
+        } else if (sidebarSection == 1) {
+            for (size_t index = 0; index < std::min(visibleRows, readingList.size()); ++index)
+                drawSidebarItem(index, readingList[index].title, readingList[index].url);
         } else {
-            SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
-            if (sidebarSection == 0) {
-                for (size_t i = 0; i < std::min(visibleRows, bookmarks.size()); ++i) {
-                    int y = rowTop + static_cast<int>(i) * rowHeight;
-                    if (static_cast<int>(i) == hoveredSidebarRow) {
-                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
-                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
-                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
-                            static_cast<float>(MulDiv(7, dpi, 96)));
-                    }
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
-                    DrawTextW(dc, bookmarks[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
-                    SelectObject(dc, secondaryFont);
-                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
-                    DrawTextW(dc, bookmarks[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SelectObject(dc, font);
-                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
-                }
-            } else if (sidebarSection == 1) {
-                for (size_t i = 0; i < std::min(visibleRows, readingList.size()); ++i) {
-                    int y = rowTop + static_cast<int>(i) * rowHeight;
-                    if (static_cast<int>(i) == hoveredSidebarRow) {
-                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
-                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
-                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
-                            static_cast<float>(MulDiv(7, dpi, 96)));
-                    }
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
-                    DrawTextW(dc, readingList[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
-                    SelectObject(dc, secondaryFont);
-                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
-                    DrawTextW(dc, readingList[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SelectObject(dc, font);
-                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
-                }
-            } else {
-                auto sorted = visits;
-                std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) { return a.lastVisited > b.lastVisited; });
-                for (size_t i = 0; i < std::min(visibleRows, sorted.size()); ++i) {
-                    int y = rowTop + static_cast<int>(i) * rowHeight;
-                    if (static_cast<int>(i) == hoveredSidebarRow) {
-                        const RECT hoverRect = sidebarRowRect(static_cast<int>(i));
-                        const COLORREF hoverFill = dark ? RGB(48, 48, 52) : RGB(234, 237, 241);
-                        drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
-                            static_cast<float>(MulDiv(7, dpi, 96)));
-                    }
-                    RECT tr { scaleForDpi(window, 20), y + scaleForDpi(window, 3), width - scaleForDpi(window, 16), y + scaleForDpi(window, 21) };
-                    DrawTextW(dc, sorted[i].title.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    RECT ur { scaleForDpi(window, 20), y + scaleForDpi(window, 22), width - scaleForDpi(window, 16), y + scaleForDpi(window, 39) };
-                    SelectObject(dc, secondaryFont);
-                    SetTextColor(dc, dark ? RGB(161, 161, 166) : RGB(126, 131, 135));
-                    DrawTextW(dc, sorted[i].url.c_str(), -1, &ur, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    SelectObject(dc, font);
-                    SetTextColor(dc, dark ? RGB(232, 232, 235) : RGB(42, 46, 49));
-                }
-            }
+            auto sorted = visits;
+            std::sort(sorted.begin(), sorted.end(), [](const VisitEntry& a, const VisitEntry& b) {
+                return a.lastVisited > b.lastVisited;
+            });
+            for (size_t index = 0; index < std::min(visibleRows, sorted.size()); ++index)
+                drawSidebarItem(index, sorted[index].title, sorted[index].url);
         }
 
         RECT footer { 0, settingsRect.top - scaleForDpi(window, 8), width, client.bottom };
@@ -7779,7 +7760,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DrawTextW(dc, L"Settings", -1, &settingsLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(dc, oldFont);
-        if (secondaryFont) DeleteObject(secondaryFont);
         if (headingFont) DeleteObject(headingFont);
         if (sectionIconFont) DeleteObject(sectionIconFont);
         DeleteObject(font);
