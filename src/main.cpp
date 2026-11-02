@@ -1946,15 +1946,18 @@ struct BrowserState {
     {
         const int width = scaleForDpi(window, 300);
         const int top = sidebarContentTop() + scaleForDpi(window, 52);
-        const int rowHeight = scaleForDpi(window, 36);
+        const int height = scaleForDpi(window, 56);
         const int inset = scaleForDpi(window, 8);
-        return { inset, top + index * rowHeight,
-            width - inset, top + (index + 1) * rowHeight - scaleForDpi(window, 2) };
+        const int gap = scaleForDpi(window, 4);
+        const int availableWidth = width - inset * 2 - gap * 2;
+        const int sectionWidth = availableWidth / 3;
+        const int left = inset + index * (sectionWidth + gap);
+        return { left, top, left + sectionWidth, top + height };
     }
 
     int sidebarRowsTop() const
     {
-        return sidebarContentTop() + scaleForDpi(window, 52 + 36 * 3 + 12);
+        return sidebarContentTop() + scaleForDpi(window, 52 + 56 + 12);
     }
 
     RECT sidebarRowRect(int index) const
@@ -4930,6 +4933,8 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
+<link rel="preconnect" href="https://www.google.com" crossorigin>
+<link rel="dns-prefetch" href="//www.google.com">
 <style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 *{box-sizing:border-box}
@@ -4938,7 +4943,7 @@ body{min-height:100vh;overflow-x:hidden;position:relative;background:var(--page)
 body.dark{--page:#1c1c1e;--text:#f5f5f7;--muted:#a7a8ae;--tile:#2a2a2d;--tile-border:#3b3b40;--hover:#343438;--card:#27272a;--card-border:#3b3b40}
 body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,255,255,.92);--tile-border:rgba(255,255,255,.35);--hover:rgba(255,255,255,.14);--card:rgba(24,25,29,.52);--card-border:rgba(255,255,255,.2)}
 .wallpaper{position:fixed;inset:0;z-index:0;background:var(--page);background-size:cover;background-position:center}
-.page{position:relative;z-index:1;width:min(1080px,100%);min-height:100vh;margin:0 auto;padding:58px clamp(24px,4vw,48px) 64px;animation:start-page-fade .28s ease both}
+.page{position:relative;z-index:1;width:min(1080px,100%);min-height:100vh;margin:0 auto;padding:58px clamp(24px,4vw,48px) 64px}
 .branding,.search-wrap{display:none}
 .section{width:100%;text-align:left;margin:0 0 14px;color:var(--text);font-size:16px;font-weight:600;letter-spacing:-.2px}
 .section-spaced{margin-top:34px}
@@ -4955,7 +4960,6 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
 .reading-item:hover{background:var(--hover);border-color:var(--card-border)}
 .reading-name{font-size:13px;line-height:1.4;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .reading-url{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@keyframes start-page-fade{from{opacity:0}to{opacity:1}}
 @media(max-width:700px){.page{padding-top:32px}.tiles{grid-template-columns:repeat(auto-fill,minmax(82px,96px));gap:8px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 </style>
@@ -4988,7 +4992,7 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
             html += safeUrl;
             html += "'\"><div class=\"icon\"><span>";
             html += letter;
-            html += "</span><img loading=\"lazy\" referrerpolicy=\"no-referrer\" src=\"https://www.google.com/s2/favicons?domain=";
+            html += "</span><img loading=\"eager\" fetchpriority=\"high\" decoding=\"async\" referrerpolicy=\"no-referrer\" src=\"https://www.google.com/s2/favicons?domain=";
             html += safeHost;
             html += "&amp;sz=128\" alt=\"\" onerror=\"this.remove()\"></div><div class=\"name\">";
             html += safeName;
@@ -4999,7 +5003,8 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
 
         std::vector<SavedPage> startPageTiles;
         auto appendUniqueTile = [&](const std::wstring& url, const std::wstring& title) {
-            if (url.empty() || startPageTiles.size() >= 8)
+            if ((url.rfind(L\"https://\", 0) != 0 && url.rfind(L\"http://\", 0) != 0)
+                || startPageTiles.size() >= 8)
                 return;
             const auto duplicate = std::find_if(startPageTiles.begin(), startPageTiles.end(),
                 [&](const SavedPage& item) { return item.url == url; });
@@ -7643,10 +7648,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     static_cast<float>(scaleForDpi(window, 8)));
             }
 
-            RECT iconRect { sectionRect.left + scaleForDpi(window, 12),
-                sectionRect.top + scaleForDpi(window, 1),
-                sectionRect.left + scaleForDpi(window, 34),
-                sectionRect.bottom - scaleForDpi(window, 1) };
+            const int iconSize = scaleForDpi(window, 18);
+            RECT iconRect {
+                sectionRect.left + (sectionRect.right - sectionRect.left - iconSize) / 2,
+                sectionRect.top + scaleForDpi(window, 5),
+                sectionRect.left + (sectionRect.right - sectionRect.left + iconSize) / 2,
+                sectionRect.top + scaleForDpi(window, 5) + iconSize
+            };
             if (sectionIconFont) {
                 HGDIOBJ oldIconFont = SelectObject(dc, sectionIconFont);
                 SetTextColor(dc, selected
@@ -7657,13 +7665,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 SelectObject(dc, oldIconFont);
             }
 
-            RECT labelRect { iconRect.right + scaleForDpi(window, 8), sectionRect.top,
-                sectionRect.right - scaleForDpi(window, 8), sectionRect.bottom };
+            RECT labelRect {
+                sectionRect.left + scaleForDpi(window, 2),
+                iconRect.bottom + scaleForDpi(window, 1),
+                sectionRect.right - scaleForDpi(window, 2),
+                sectionRect.bottom - scaleForDpi(window, 3)
+            };
             SetTextColor(dc, selected
                 ? (dark ? RGB(248, 248, 250) : RGB(42, 45, 49))
                 : (dark ? RGB(194, 194, 199) : RGB(104, 109, 116)));
             DrawTextW(dc, sectionLabels[i], -1, &labelRect,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
 
         int rowTop = sidebarRowsTop();
@@ -8526,11 +8538,17 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
     if (browser->sidebarOpen || browser->sidebarAnimating) {
         browser->hoveredSidebarRow = -1;
         browser->hoveredSidebarSettings = false;
+        const bool restoreFullViewport = browser->sidebarContentInsetActive;
         browser->sidebarOpen = false;
         browser->sidebarAnimating = false;
+        browser->sidebarContentInsetActive = false;
         browser->sidebarAnimationFrom = 0.0f;
         browser->sidebarAnimationTarget = 0.0f;
         browser->sidebarOverlayAnimationFrameReady = false;
+        if (restoreFullViewport) {
+            browser->resize(false);
+            browser->beginWindowSurfaceRecovery(false, true, false, true);
+        }
         browser->positionOverlayWindows(true);
         const RECT sidebarButton = browser->sidebarButtonRect();
         InvalidateRect(browser->window, &sidebarButton, FALSE);
