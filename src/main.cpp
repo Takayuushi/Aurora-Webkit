@@ -1306,6 +1306,7 @@ struct BrowserState {
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
     bool sidebarAnimating { false };
+    bool sidebarContentInsetActive { false };
     float sidebarAnimationFrom { 0.0f };
     float sidebarAnimationTarget { 0.0f };
     ULONGLONG sidebarAnimationStart { 0 };
@@ -1334,6 +1335,8 @@ struct BrowserState {
     std::wstring searchEngine { L"Google" };
     std::wstring downloadLocation;
     std::wstring startPageBackground;
+    mutable std::wstring cachedStartPageThumbnailPath;
+    mutable std::unique_ptr<Gdiplus::Bitmap> cachedStartPageThumbnailBitmap;
     std::wstring cachedStartPageBackgroundPath;
     std::string cachedStartPageBackgroundDataUrl;
     bool javascriptEnabled { true };
@@ -1745,6 +1748,8 @@ struct BrowserState {
         }
 
         startPageBackground = candidate;
+        cachedStartPageThumbnailBitmap.reset();
+        cachedStartPageThumbnailPath.clear();
         cachedStartPageBackgroundPath.clear();
         cachedStartPageBackgroundDataUrl.clear();
         savePreferences();
@@ -1755,6 +1760,8 @@ struct BrowserState {
     void clearStartPageBackground()
     {
         startPageBackground.clear();
+        cachedStartPageThumbnailBitmap.reset();
+        cachedStartPageThumbnailPath.clear();
         cachedStartPageBackgroundPath.clear();
         cachedStartPageBackgroundDataUrl.clear();
         savePreferences();
@@ -1954,7 +1961,7 @@ struct BrowserState {
     {
         const int width = scaleForDpi(window, 300);
         const int rowTop = sidebarRowsTop();
-        const int rowHeight = scaleForDpi(window, 46);
+        const int rowHeight = scaleForDpi(window, 36);
         const int inset = scaleForDpi(window, 8);
         return { inset, rowTop + index * rowHeight + scaleForDpi(window, 1),
             width - inset, rowTop + (index + 1) * rowHeight - scaleForDpi(window, 1) };
@@ -2190,6 +2197,8 @@ struct BrowserState {
         const int toolbarBottom = sidebarContentTop();
         const int sidebarHeight = std::max(0, static_cast<int>(client.bottom) - toolbarBottom);
         const int overviewTop = contentTop();
+        const int overviewLeft = sidebarContentInsetActive ? scaleForDpi(window, 300) : 0;
+        const int overviewWidth = std::max(0, static_cast<int>(client.right) - overviewLeft);
         const int overviewHeight = std::max(0, static_cast<int>(client.bottom) - overviewTop);
 
         // Float the tab capsules above a full-height WebKit viewport. The window
@@ -2306,8 +2315,8 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                const int left = 0;
-                const int width = std::max(0, static_cast<int>(client.right));
+                const int left = overviewLeft;
+                const int width = overviewWidth;
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
                 RECT currentRect { };
                 bool geometryChanged = true;
@@ -2479,9 +2488,14 @@ struct BrowserState {
             startChromeAnimationTimer();
         sidebarPaintRecoveryTicks = sidebarOpen ? 3 : 0;
 
-        // Only the independent sidebar overlay changes geometry during this
-        // transition. Do not call resize()/redrawAfterLayoutChange(): those paths
-        // resize and synchronously repaint the WebKit GPU surface.
+        // On close, expand the page while the drawer still covers its left edge.
+        // On open, wait until the drawer finishes sliding before applying the inset.
+        // This keeps WebKit to one viewport resize per action, never one per frame.
+        if (!sidebarOpen && sidebarContentInsetActive) {
+            sidebarContentInsetActive = false;
+            resize(false);
+            beginWindowSurfaceRecovery(false, true, false, true);
+        }
         positionOverlayWindows();
         updateSidebarZOrderTimer();
         const RECT buttonRect = sidebarButtonRect();
@@ -2574,7 +2588,7 @@ struct BrowserState {
         if (sidebarOpen) {
             const int sidebarWidth = scaleForDpi(window, 300);
             const int rowTop = sidebarRowsTop();
-            const int rowHeight = scaleForDpi(window, 46);
+            const int rowHeight = scaleForDpi(window, 36);
             const RECT settings = sidebarSettingsRect();
             const int listBottom = settings.top - scaleForDpi(window, 8);
             if (point.x >= 0 && point.x < sidebarWidth && point.y >= rowTop && point.y < listBottom) {
@@ -2841,11 +2855,14 @@ struct BrowserState {
                 continueAnimation = true;
             } else {
                 sidebarAnimating = false;
-                positionOverlayWindows();
+                if (sidebarContentInsetActive != sidebarOpen) {
+                    sidebarContentInsetActive = sidebarOpen;
+                    resize(false);
+                    beginWindowSurfaceRecovery(false, true, false, true);
+                }
+                positionOverlayWindows(true);
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
-                // The WebKit viewport never moved, so the drawer transition does
-                // not need a forced page repaint at completion.
             }
         }
 
@@ -2861,9 +2878,8 @@ struct BrowserState {
     {
         RECT client { };
         GetClientRect(window, &client);
-        // The overview always spans the full content viewport. The sidebar popup
-        // is composed above it, so no horizontal inset or exposed sliver is needed.
-        return { 0, contentTop(), client.right, client.bottom };
+        const int left = sidebarContentInsetActive ? scaleForDpi(window, 300) : 0;
+        return { left, contentTop(), client.right, client.bottom };
     }
 
     int tabOverviewColumns() const
@@ -3189,95 +3205,114 @@ struct BrowserState {
         }
     }
 
+    const Gdiplus::Bitmap* startPageThumbnailBitmap() const
+    {
+        if (startPageBackground.empty()) {
+            cachedStartPageThumbnailBitmap.reset();
+            cachedStartPageThumbnailPath.clear();
+            return nullptr;
+        }
+        if (cachedStartPageThumbnailPath != startPageBackground) {
+            cachedStartPageThumbnailPath = startPageBackground;
+            cachedStartPageThumbnailBitmap = std::make_unique<Gdiplus::Bitmap>(startPageBackground.c_str());
+            if (!cachedStartPageThumbnailBitmap
+                || cachedStartPageThumbnailBitmap->GetLastStatus() != Gdiplus::Ok)
+                cachedStartPageThumbnailBitmap.reset();
+        }
+        return cachedStartPageThumbnailBitmap.get();
+    }
+
     void drawStartPageThumbnail(HDC dc, const RECT& preview) const
     {
         const int width = static_cast<int>(preview.right - preview.left);
         const int height = static_cast<int>(preview.bottom - preview.top);
         if (width <= 0 || height <= 0)
             return;
+
         const int savedState = SaveDC(dc);
+        if (!savedState)
+            return;
         IntersectClipRect(dc, preview.left, preview.top, preview.right, preview.bottom);
 
-        HBRUSH background = CreateSolidBrush(RGB(11, 31, 52));
+        const bool dark = darkTheme();
+        const Gdiplus::Bitmap* wallpaper = startPageThumbnailBitmap();
+        const bool hasWallpaper = wallpaper && wallpaper->GetLastStatus() == Gdiplus::Ok
+            && wallpaper->GetWidth() > 0 && wallpaper->GetHeight() > 0;
+        HBRUSH background = CreateSolidBrush(dark ? RGB(28, 28, 30) : RGB(245, 245, 247));
         FillRect(dc, &preview, background);
         DeleteObject(background);
 
-        HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-        const RECT tealOuter { preview.left - width / 7, preview.top - height / 2,
-            preview.left + width * 3 / 5, preview.top + height * 5 / 4 };
-        HBRUSH tealBrush = CreateSolidBrush(RGB(17, 67, 76));
-        HGDIOBJ oldBrush = SelectObject(dc, tealBrush);
-        Ellipse(dc, tealOuter.left, tealOuter.top, tealOuter.right, tealOuter.bottom);
-        SelectObject(dc, oldBrush);
-        DeleteObject(tealBrush);
+        if (hasWallpaper) {
+            const double imageWidth = static_cast<double>(wallpaper->GetWidth());
+            const double imageHeight = static_cast<double>(wallpaper->GetHeight());
+            const double scale = std::max(width / imageWidth, height / imageHeight);
+            const int sourceWidth = std::max(1, static_cast<int>(width / scale));
+            const int sourceHeight = std::max(1, static_cast<int>(height / scale));
+            const int sourceX = std::max(0, (static_cast<int>(imageWidth) - sourceWidth) / 2);
+            const int sourceY = std::max(0, (static_cast<int>(imageHeight) - sourceHeight) / 2);
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+            Gdiplus::Rect destination(preview.left, preview.top, width, height);
+            graphics.DrawImage(const_cast<Gdiplus::Bitmap*>(wallpaper), destination,
+                sourceX, sourceY, sourceWidth, sourceHeight, Gdiplus::UnitPixel);
+            Gdiplus::LinearGradientBrush shade(
+                Gdiplus::Point(0, preview.top), Gdiplus::Point(0, preview.bottom),
+                Gdiplus::Color(26, 0, 0, 0), Gdiplus::Color(112, 0, 0, 0));
+            graphics.FillRectangle(&shade, preview.left, preview.top, width, height);
+        }
 
-        const RECT tealInner { preview.left + width / 12, preview.top - height / 5,
-            preview.left + width / 2, preview.top + height * 4 / 5 };
-        HBRUSH tealInnerBrush = CreateSolidBrush(RGB(18, 89, 88));
-        oldBrush = SelectObject(dc, tealInnerBrush);
-        Ellipse(dc, tealInner.left, tealInner.top, tealInner.right, tealInner.bottom);
-        SelectObject(dc, oldBrush);
-        DeleteObject(tealInnerBrush);
+        const int titleHeight = std::max(scaleForDpi(window, 9), height / 14);
+        HFONT titleFont = CreateFontW(-titleHeight, 0, 0, 0, FW_SEMIBOLD,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            uiFontFamily());
+        HGDIOBJ oldFont = titleFont ? SelectObject(dc, titleFont) : nullptr;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, hasWallpaper ? RGB(255, 255, 255)
+            : (dark ? RGB(245, 245, 247) : RGB(42, 44, 48)));
+        RECT titleRect { preview.left + width / 14, preview.top + height / 12,
+            preview.right - width / 14, preview.top + height / 5 };
+        const wchar_t* title = showStartPageFavorites ? L"Favorites" : L"Frequently Visited";
+        DrawTextW(dc, title, -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        const RECT violetOuter { preview.left + width * 3 / 5, preview.top - height / 2,
-            preview.right + width / 4, preview.top + height * 6 / 5 };
-        HBRUSH violetBrush = CreateSolidBrush(RGB(42, 45, 91));
-        oldBrush = SelectObject(dc, violetBrush);
-        Ellipse(dc, violetOuter.left, violetOuter.top, violetOuter.right, violetOuter.bottom);
-        SelectObject(dc, oldBrush);
-        DeleteObject(violetBrush);
-        SelectObject(dc, oldPen);
-
-        RECT bottomShade { preview.left, preview.top + height * 3 / 4, preview.right, preview.bottom };
-        HBRUSH bottomBrush = CreateSolidBrush(RGB(8, 24, 43));
-        FillRect(dc, &bottomShade, bottomBrush);
-        DeleteObject(bottomBrush);
-
-        const int logoSize = std::max(scaleForDpi(window, 14), height / 8);
-        RECT logoRect { preview.left + width / 2 - logoSize / 2,
-            preview.top + height / 12, preview.left + width / 2 + logoSize / 2,
-            preview.top + height / 12 + logoSize };
-        drawCompass(dc, logoRect);
-
-        HFONT titleFont = CreateFontW(-std::max(scaleForDpi(window, 11), height / 10),
+        const int tileSize = std::max(scaleForDpi(window, 10), height / 6);
+        const int tileGap = std::max(scaleForDpi(window, 4), width / 90);
+        const int startX = preview.left + width / 14;
+        const int tileY = preview.top + height / 3;
+        const COLORREF tileFill = hasWallpaper
+            ? RGB(248, 249, 251) : (dark ? RGB(48, 48, 52) : RGB(255, 255, 255));
+        const COLORREF tileBorder = hasWallpaper
+            ? RGB(232, 234, 238) : (dark ? RGB(67, 67, 72) : RGB(226, 228, 232));
+        const wchar_t* tileLabels[] = { L"A", L"G", L"F", L"Y", L"G", L"R", L"W", L"G" };
+        HFONT tileFont = CreateFontW(-std::max(scaleForDpi(window, 8), tileSize / 2),
             0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
-        HGDIOBJ oldFont = SelectObject(dc, titleFont);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(246, 249, 255));
-        RECT titleRect { preview.left + width / 4, logoRect.bottom + height / 80,
-            preview.right - width / 4, logoRect.bottom + height / 6 };
-        DrawTextW(dc, L"Aurora", -1, &titleRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
-
-        const int searchHeight = std::max(scaleForDpi(window, 10), height / 9);
-        RECT searchRect { preview.left + width / 5, preview.top + height * 48 / 100,
-            preview.right - width / 5, preview.top + height * 48 / 100 + searchHeight };
-        drawRoundedControl(dc, searchRect, RGB(75, 103, 128), RGB(113, 143, 166),
-            static_cast<float>(searchHeight) / 2.0f);
-
-        const int tileSize = std::max(scaleForDpi(window, 8), height / 10);
-        const int tileGap = std::max(scaleForDpi(window, 4), width / 70);
-        constexpr int tileCount = 7;
-        const int totalWidth = tileCount * tileSize + (tileCount - 1) * tileGap;
-        const int startX = preview.left + (width - totalWidth) / 2;
-        const int tileY = preview.top + height * 69 / 100;
-        const COLORREF accents[tileCount] {
-            RGB(40, 166, 169), RGB(231, 238, 249), RGB(32, 159, 185),
-            RGB(223, 51, 67), RGB(63, 64, 70), RGB(227, 94, 43), RGB(234, 239, 246)
-        };
-        for (int i = 0; i < tileCount; ++i) {
-            RECT tile { startX + i * (tileSize + tileGap), tileY,
-                startX + i * (tileSize + tileGap) + tileSize, tileY + tileSize };
-            drawRoundedControl(dc, tile, accents[i], accents[i],
-                static_cast<float>(tileSize) * .22f);
+        for (int tileIndex = 0; tileIndex < 8; ++tileIndex) {
+            const int x = startX + tileIndex * (tileSize + tileGap);
+            if (x + tileSize > preview.right - width / 14)
+                break;
+            RECT tile { x, tileY, x + tileSize, tileY + tileSize };
+            drawRoundedControl(dc, tile, tileFill, tileBorder,
+                static_cast<float>(scaleForDpi(window, 4)));
+            if (tileFont) {
+                HGDIOBJ oldTileFont = SelectObject(dc, tileFont);
+                SetTextColor(dc, hasWallpaper ? RGB(65, 68, 74)
+                    : (dark ? RGB(224, 224, 228) : RGB(70, 73, 78)));
+                DrawTextW(dc, tileLabels[tileIndex], -1, &tile,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(dc, oldTileFont);
+            }
         }
+        if (tileFont)
+            DeleteObject(tileFont);
         if (titleFont) {
-            SelectObject(dc, oldFont);
+            if (oldFont)
+                SelectObject(dc, oldFont);
             DeleteObject(titleFont);
         }
-        if (savedState)
-            RestoreDC(dc, savedState);
+        RestoreDC(dc, savedState);
     }
 
     void drawSettingsTabThumbnail(HDC dc, const RECT& preview, bool dark) const
@@ -6340,7 +6375,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         else if (command == kSidebarReadingList) sidebarSection = 1;
         else if (command == kSidebarHistory) sidebarSection = 2;
         sidebarOpen = true;
-        resize();
+        sidebarAnimating = false;
+        sidebarContentInsetActive = true;
+        resize(false);
+        beginWindowSurfaceRecovery(false, true, false, true);
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -6403,11 +6441,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int minLeft = navigation.right + gap * 2;
         const int maxRight = firstRightButton.left - gap * 2;
         const int available = std::max(0, maxRight - minLeft);
-        const int width = std::min(scaleForDpi(window, 630), available);
+        const int width = std::min(scaleForDpi(window, 460), available);
         int left = (static_cast<int>(client.right) - width) / 2;
         left = std::clamp(left, minLeft, std::max(minLeft, maxRight - width));
 
-        const int height = scaleForDpi(window, 30);
+        const int height = scaleForDpi(window, 28);
         const int top = titleBarHeight() + (toolbarHeight() - height) / 2;
         return { left, top, left + width, top + height };
     }
@@ -6522,8 +6560,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // Only the selected WKView participates in foreground resizing. Resizing all
         // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
         // low-resolution frames. An inactive page is resized when activateTab selects it.
-        const int viewLeft = 0;
-        const int viewWidth = std::max(0, static_cast<int>(client.right));
+        const int viewLeft = sidebarContentInsetActive ? scaleForDpi(window, 300) : 0;
+        const int viewWidth = std::max(0, static_cast<int>(client.right) - viewLeft);
         const int viewHeight = std::max(0, static_cast<int>(client.bottom - viewTop));
         auto* selectedTab = active();
         for (const auto& tab : tabs) {
@@ -7150,9 +7188,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
-        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; resize(); break;
-        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; resize(); break;
-        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; resize(); break;
+        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
+        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
+        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); beginWindowSurfaceRecovery(false, true, false, true); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -7639,7 +7677,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         LineTo(dc, width - scaleForDpi(window, 12), rowTop - scaleForDpi(window, 7));
         SelectObject(dc, oldSectionDivider);
         DeleteObject(sectionDivider);
-        int rowHeight = scaleForDpi(window, 46);
+        int rowHeight = scaleForDpi(window, 36);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
@@ -7789,7 +7827,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         int rowTop = sidebarRowsTop();
-        int rowHeight = scaleForDpi(window, 46);
+        int rowHeight = scaleForDpi(window, 36);
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
             ? std::min<size_t>(10, static_cast<size_t>((listBottom - rowTop) / rowHeight))
