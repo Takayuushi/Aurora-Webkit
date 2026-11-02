@@ -371,15 +371,13 @@ std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL, 
         + (preferStartPageIcon ? L"&sz=128" : L"&sz=64");
 
     std::vector<std::wstring> candidates;
-    // Keep the native tab-overview tile identical to the Start Page's favicon source.
-    // This avoids falling back to letter-only favicons where the site's Google tile is available.
-    if (preferStartPageIcon)
-        candidates.push_back(serviceIcon);
+    // Prefer icons supplied by the site. Google's favicon endpoint is a useful
+    // final fallback, but for sites without a published icon it can return a
+    // generated initial/letter tile, which is not a useful Start Page shortcut.
     candidates.push_back(first);
     candidates.push_back(secureOrigin + L"/favicon.png");
     candidates.push_back(secureOrigin + L"/apple-touch-icon.png");
-    if (!preferStartPageIcon)
-        candidates.push_back(serviceIcon);
+    candidates.push_back(serviceIcon);
 
     if (pageURL.rfind(L"http://", 0) == 0)
         candidates.insert(candidates.begin() + (preferStartPageIcon ? 1 : 1),
@@ -2861,11 +2859,11 @@ struct BrowserState {
                 // Require both WebKit's repaint-completion signal and several
                 // composed overlay frames after it. Keep a bounded fallback so a
                 // failed renderer callback cannot strand the browser in overview.
-                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 600;
+                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 260;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
-                    && (now - tabOverviewClosingRepaintReadyAt < 48
-                        || tabOverviewClosingSettleFramesRendered < 3);
+                    && (now - tabOverviewClosingRepaintReadyAt < 32
+                        || tabOverviewClosingSettleFramesRendered < 2);
                 const bool settleStillActive = repaintPending || postRepaintSettle;
                 if (settleStillActive) {
                     continueAnimation = true;
@@ -2908,6 +2906,11 @@ struct BrowserState {
                     resize(false);
                 }
                 positionOverlayWindows(true);
+                // Internal Settings pages can leave an accelerated backing surface
+                // stale after the native drawer has moved over it. Queue a repaint
+                // without raising/reordering the WKView, preserving overlay z-order.
+                if (auto* selected = active(); selected && selected->internalPage == L"settings")
+                    requestActivePageRepaint(false, false, true);
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
             }
@@ -5534,7 +5537,7 @@ search.addEventListener('keydown',e=>{
                 (document.documentElement || document.body).appendChild(probe);
                 const normalized = getComputedStyle(probe).color;
                 probe.remove();
-                const match = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+                const match = normalized.match(/^rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)$/i);
                 if (!match) return null;
                 if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
                 const values = match.slice(1, 4).map(Number);
@@ -5546,29 +5549,41 @@ search.addEventListener('keydown',e=>{
 
             const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
             const seen = new Set();
-            // Safari 26+ samples a wide fixed/sticky header near the top before
-            // falling back to the document background. Use multiple horizontal
-            // points so transparent logos/overlays do not hide a colored header.
+            let bestColor = null;
+            let bestScore = 0;
+            // Sample several points across the top strip. Real site headers are
+            // not always exactly at y=0 and may occupy less than 90% of the page.
             if (document.elementsFromPoint) {
-                for (const x of [width * 0.05, width * 0.5, width * 0.95]) {
-                    for (const y of [0, 2, 3]) {
+                for (const x of [width * 0.03, width * 0.2, width * 0.5, width * 0.8, width * 0.97]) {
+                    for (const y of [2, 8, 16, 24, 32, 44]) {
                         for (const hit of document.elementsFromPoint(x, y)) {
                             let element = hit;
                             for (let depth = 0; element && depth < 8; ++depth, element = element.parentElement) {
                                 if (seen.has(element)) continue;
                                 seen.add(element);
                                 const style = getComputedStyle(element);
-                                if (style.position !== 'fixed' && style.position !== 'sticky') continue;
                                 const rect = element.getBoundingClientRect();
-                                if (rect.top > 4 || rect.bottom < 3
-                                    || rect.width < width * 0.9 || rect.height < 3) continue;
+                                const semanticHeader = element.tagName === 'HEADER'
+                                    || element.getAttribute('role') === 'banner'
+                                    || (typeof element.className === 'string'
+                                        && /header|topbar|top-bar|masthead/i.test(element.className))
+                                    || /header|topbar|top-bar|masthead/i.test(element.id || '');
+                                if (style.position !== 'fixed' && style.position !== 'sticky' && !semanticHeader) continue;
+                                if (rect.top > 10 || rect.bottom < 18
+                                    || rect.width < width * 0.3 || rect.height < 18) continue;
                                 const color = normalize(style.backgroundColor);
-                                if (color) return color;
+                                if (!color) continue;
+                                const score = Math.min(width, rect.width) * Math.min(96, rect.height);
+                                if (score > bestScore) {
+                                    bestScore = score;
+                                    bestColor = color;
+                                }
                             }
                         }
                     }
                 }
             }
+            if (bestColor) return bestColor;
 
             const bodyColor = document.body ? getComputedStyle(document.body).backgroundColor : '';
             const rootColor = document.documentElement
