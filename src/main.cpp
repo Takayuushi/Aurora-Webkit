@@ -2024,8 +2024,8 @@ struct BrowserState {
         RECT client { };
         GetClientRect(window, &client);
         const int pad = scaleForDpi(window, kToolbarHorizontalPadding);
-        const int button = scaleForDpi(window, kToolbarButtonSize + 6);
-        const int gap = scaleForDpi(window, kToolbarGap);
+        const int button = scaleForDpi(window, kToolbarButtonSize + 12);
+        const int gap = scaleForDpi(window, 8);
         const bool showDownloads = downloadsButtonVisible();
         const int buttonCount = showDownloads ? 4 : 3;
         if (index < 0 || index > 3 || (!showDownloads && index == 1))
@@ -7426,18 +7426,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             const int radius = std::max(1, static_cast<int>(tabRect.bottom - tabRect.top) / 2);
             drawRoundedControl(dc, tabRect, tabFill, tabBorder, static_cast<float>(radius));
 
-            if (activeWeight > 0.04f) {
-                RECT sheen { tabRect.left + MulDiv(12, dpi, 96),
-                    tabRect.top + MulDiv(2, dpi, 96),
-                    tabRect.right - MulDiv(12, dpi, 96),
-                    tabRect.top + MulDiv(3, dpi, 96) };
-                HBRUSH sheenBrush = CreateSolidBrush(blendColor(
-                    inactiveFill, dark ? RGB(112, 112, 118) : RGB(255, 255, 255),
-                    activeWeight));
-                FillRect(dc, &sheen, sheenBrush);
-                DeleteObject(sheenBrush);
-            }
-
             const int iconSize = MulDiv(16, dpi, 96);
             const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
             RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
@@ -7884,19 +7872,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
 
-        // A restrained top-edge sheen gives the native toolbar a glass-like surface
-        // without moving any controls or relying on platform-specific backdrop APIs.
-        const int sheenHeight = std::max(1, scaleForDpi(window, 6));
-        const COLORREF sheenTop = dark ? RGB(62, 62, 68) : RGB(255, 255, 255);
-        const COLORREF sheenBottom = dark ? RGB(44, 44, 48) : RGB(247, 248, 251);
-        for (int y = 0; y < sheenHeight; ++y) {
-            const float weight = static_cast<float>(y) / std::max(1, sheenHeight - 1);
-            HBRUSH sheenBrush = CreateSolidBrush(blendColor(sheenTop, sheenBottom, weight));
-            RECT sheenRect { 0, y, client.right, y + 1 };
-            FillRect(dc, &sheenRect, sheenBrush);
-            DeleteObject(sheenBrush);
-        }
-
         HPEN toolbarDivider = CreatePen(PS_SOLID, 1, dark ? RGB(65, 65, 69) : RGB(226, 228, 231));
         HPEN oldToolbarDivider = static_cast<HPEN>(SelectObject(dc, toolbarDivider));
         MoveToEx(dc, 0, toolbarH - 1, nullptr);
@@ -7917,12 +7892,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         RECT sidebarRect = sidebarButtonRect();
         const bool sidebarHovered = hoveredLeftControl == 0;
-        drawRoundedControl(dc, sidebarRect,
-            sidebarHovered ? (dark ? RGB(79, 79, 84) : RGB(234, 237, 241))
-                : (dark ? RGB(59, 59, 63) : RGB(251, 251, 252)),
-            sidebarHovered ? (dark ? RGB(91, 91, 97) : RGB(222, 225, 229))
-                : (dark ? RGB(59, 59, 63) : RGB(247, 248, 250)),
-            static_cast<float>(sidebarRect.bottom - sidebarRect.top) / 2.0f);
+        if (sidebarHovered) {
+            RECT hoverRect = sidebarRect;
+            InflateRect(&hoverRect, -scaleForDpi(window, 1), -scaleForDpi(window, 1));
+            const COLORREF hover = dark ? RGB(76, 76, 81) : RGB(230, 232, 236);
+            drawRoundedControl(dc, hoverRect, hover, hover,
+                static_cast<float>(scaleForDpi(window, 8)));
+        }
 
         const int sidebarIconWidth = MulDiv(22, dpi, 96);
         const int sidebarIconHeight = MulDiv(20, dpi, 96);
@@ -7944,30 +7920,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         DeleteObject(dropdownPen);
 
         RECT navigationRect = navigationPillRect();
-        drawRoundedControl(dc, navigationRect,
-            dark ? RGB(57, 57, 61) : RGB(249, 249, 250),
-            dark ? RGB(57, 57, 61) : RGB(244, 245, 247),
-            static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
-
         const int navigationMiddle = navigationRect.left + (navigationRect.right - navigationRect.left) / 2;
         if (hoveredNavigationButton >= 0) {
             RECT hoverRect = hoveredNavigationButton == 0
-                ? RECT { navigationRect.left + scaleForDpi(window, 2), navigationRect.top + scaleForDpi(window, 2),
-                    navigationMiddle - scaleForDpi(window, 1), navigationRect.bottom - scaleForDpi(window, 2) }
-                : RECT { navigationMiddle + scaleForDpi(window, 1), navigationRect.top + scaleForDpi(window, 2),
-                    navigationRect.right - scaleForDpi(window, 2), navigationRect.bottom - scaleForDpi(window, 2) };
-            const COLORREF hoverFill = dark ? RGB(77, 77, 82) : RGB(233, 236, 240);
-            const COLORREF hoverBorder = dark ? RGB(88, 88, 93) : RGB(222, 225, 229);
-            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
-                static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
+                ? RECT { navigationRect.left + scaleForDpi(window, 2), navigationRect.top + scaleForDpi(window, 1),
+                    navigationMiddle - scaleForDpi(window, 1), navigationRect.bottom - scaleForDpi(window, 1) }
+                : RECT { navigationMiddle + scaleForDpi(window, 1), navigationRect.top + scaleForDpi(window, 1),
+                    navigationRect.right - scaleForDpi(window, 2), navigationRect.bottom - scaleForDpi(window, 1) };
+            const COLORREF hoverFill = dark ? RGB(76, 76, 81) : RGB(230, 232, 236);
+            drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                static_cast<float>(scaleForDpi(window, 8)));
         }
-
-        HPEN navigationDivider = CreatePen(PS_SOLID, 1, dark ? RGB(83, 83, 87) : RGB(219, 221, 225));
-        HGDIOBJ oldNavigationDivider = SelectObject(dc, navigationDivider);
-        MoveToEx(dc, navigationMiddle, navigationRect.top + scaleForDpi(window, 8), nullptr);
-        LineTo(dc, navigationMiddle, navigationRect.bottom - scaleForDpi(window, 8));
-        SelectObject(dc, oldNavigationDivider);
-        DeleteObject(navigationDivider);
 
         RECT backRect { navigationRect.left + gap, navigationRect.top,
             navigationMiddle, navigationRect.bottom };
@@ -7981,12 +7944,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(61, 61, 66) : RGB(249, 250, 252),
             dark ? RGB(78, 78, 83) : RGB(235, 237, 240),
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
-        const int addressSheenInset = std::max(5, MulDiv(13, dpi, 96));
-        RECT addressSheen { pill.left + addressSheenInset, pill.top + MulDiv(2, dpi, 96),
-            pill.right - addressSheenInset, pill.top + MulDiv(3, dpi, 96) };
-        HBRUSH addressSheenBrush = CreateSolidBrush(dark ? RGB(91, 91, 97) : RGB(255, 255, 255));
-        FillRect(dc, &addressSheen, addressSheenBrush);
-        DeleteObject(addressSheenBrush);
         if (!addressEditing) {
             std::wstring addressText = addressDisplayText();
             const bool emptyAddress = addressText.empty();
@@ -8025,24 +7982,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT newTabRect = rightToolbarButtonRect(2);
         RECT overviewRect = rightToolbarButtonRect(3);
 
-        // Safari groups its trailing toolbar actions into a quiet rounded capsule.
-        const int groupInset = MulDiv(4, dpi, 96);
-        RECT actionGroup { shareRect.left - groupInset, shareRect.top,
-            overviewRect.right + groupInset, overviewRect.bottom };
-        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(249, 250, 252);
-        const COLORREF groupBorder = dark ? RGB(57, 57, 61) : RGB(244, 245, 247);
-        drawRoundedControl(dc, actionGroup, groupFill, groupBorder,
-            static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
         const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
         const COLORREF hoverBorder = dark ? RGB(94, 94, 99) : RGB(209, 213, 218);
         for (int i = 0; i < 4; ++i) {
             const RECT button = rightToolbarButtonRect(i);
             if (button.right <= button.left || button.bottom <= button.top || hoveredToolbarButton != i)
                 continue;
-            RECT hoverRect { button.left + MulDiv(2, dpi, 96), button.top + MulDiv(2, dpi, 96),
-                button.right - MulDiv(2, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
-            drawRoundedControl(dc, hoverRect, hoverFill, hoverBorder,
-                static_cast<float>(MulDiv(7, dpi, 96)));
+            RECT hoverRect { button.left + MulDiv(1, dpi, 96), button.top + MulDiv(2, dpi, 96),
+                button.right - MulDiv(1, dpi, 96), button.bottom - MulDiv(2, dpi, 96) };
+            drawRoundedControl(dc, hoverRect, hoverFill, hoverFill,
+                static_cast<float>(MulDiv(9, dpi, 96)));
         }
         drawShare(dc, shareRect, dark);
         if (downloadsButtonVisible())
