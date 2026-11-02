@@ -355,7 +355,7 @@ std::wstring faviconCacheKeyForPage(const std::wstring& pageURL)
     return host;
 }
 
-std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL)
+std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL, bool preferStartPageIcon = false)
 {
     const std::wstring first = faviconURLForPage(pageURL);
     if (first.empty())
@@ -367,16 +367,23 @@ std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL)
     const std::wstring secureOrigin = first.substr(0, iconSuffix);
     std::wstring host = secureOrigin.substr(std::wstring(L"https://").size());
     const std::wstring insecureOrigin = L"http://" + host;
+    const std::wstring serviceIcon = L"https://www.google.com/s2/favicons?domain=" + host
+        + (preferStartPageIcon ? L"&sz=128" : L"&sz=64");
 
-    std::vector<std::wstring> candidates {
-        first,
-        secureOrigin + L"/favicon.png",
-        secureOrigin + L"/apple-touch-icon.png",
-        // Google returns a PNG even for sites that do not publish a root favicon.ico.
-        L"https://www.google.com/s2/favicons?domain=" + host + L"&sz=64"
-    };
+    std::vector<std::wstring> candidates;
+    // Keep the native tab-overview tile identical to the Start Page's favicon source.
+    // This avoids falling back to letter-only favicons where the site's Google tile is available.
+    if (preferStartPageIcon)
+        candidates.push_back(serviceIcon);
+    candidates.push_back(first);
+    candidates.push_back(secureOrigin + L"/favicon.png");
+    candidates.push_back(secureOrigin + L"/apple-touch-icon.png");
+    if (!preferStartPageIcon)
+        candidates.push_back(serviceIcon);
+
     if (pageURL.rfind(L"http://", 0) == 0)
-        candidates.insert(candidates.begin() + 1, insecureOrigin + L"/favicon.ico");
+        candidates.insert(candidates.begin() + (preferStartPageIcon ? 1 : 1),
+            insecureOrigin + L"/favicon.ico");
 
     return candidates;
 }
@@ -1403,7 +1410,6 @@ struct BrowserState {
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
-    int sidebarPaintRecoveryTicks { 0 };
     bool userSizingWindow { false };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
@@ -2536,7 +2542,6 @@ struct BrowserState {
         sidebarAnimating = std::abs(sidebarAnimationTarget - sidebarAnimationFrom) > 0.001f;
         if (sidebarAnimating)
             startChromeAnimationTimer();
-        sidebarPaintRecoveryTicks = sidebarOpen ? 3 : 0;
 
         // On close, expand the page while the drawer still covers its left edge.
         // On open, wait until the drawer finishes sliding before applying the inset.
@@ -3219,7 +3224,6 @@ struct BrowserState {
             if (window)
                 KillTimer(window, kSidebarZOrderTimerId);
             sidebarZOrderTimerActive = false;
-            sidebarPaintRecoveryTicks = 0;
             return;
         }
         if (IsIconic(window))
@@ -3236,13 +3240,8 @@ struct BrowserState {
         if (GetWindow(sidebarOverlayWindow, GW_OWNER) != window)
             return;
 
-        // Retry only a few asynchronous paints when the drawer is newly opened.
-        // This repaint is confined to the independent popup surface.
-        if (sidebarPaintRecoveryTicks > 0 && IsWindowVisible(sidebarOverlayWindow)) {
-            RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-            --sidebarPaintRecoveryTicks;
-        }
+        // Do not force periodic full-surface paints. The popup is already rendered
+        // when shown, and Win32 keeps this owned overlay above its browser owner.
     }
 
     void updateSidebarZOrderTimer()
@@ -8996,7 +8995,7 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL, bool for
             return;
     }
 
-    const std::vector<std::wstring> candidates = faviconCandidatesForPage(pageURL);
+    const std::vector<std::wstring> candidates = faviconCandidatesForPage(pageURL, forStartPage);
     if (candidates.empty())
         return;
 
@@ -11251,6 +11250,11 @@ void didChangeIsLoading(const void* clientInfo)
         if (!completedURL.empty())
             tab->lastCompletedThumbnailURL = completedURL;
         tab->browser->runExtensionScripts(tab);
+        // A download may have advanced while this internal page was being created.
+        // Refresh after WebKit finishes constructing the DOM, then keep the normal
+        // per-chunk callback updates for the remainder of the transfer.
+        if (tab->internalPage == L"downloads")
+            tab->browser->refreshDownloadsPresentation(true);
         auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!url.empty()
             && (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)
