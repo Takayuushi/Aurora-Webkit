@@ -2066,7 +2066,8 @@ struct BrowserState {
         if (!GetWindowRect(window, &windowRect)
             || !ClientToScreen(window, &clientOrigin))
             return 0;
-        return std::max(0, clientOrigin.x - windowRect.left);
+        return static_cast<int>(std::max<LONG>(0L,
+            clientOrigin.x - windowRect.left));
     }
 
     bool ensureOverlayWindow(HWND& handle)
@@ -2173,7 +2174,8 @@ struct BrowserState {
 
                 // Keep the underlying WebKit surface untouched while the drawer
                 // moves. The view remains stationary and already contains the page
-                // pixels being revealed by the moving popup.            }
+                // pixels being revealed by the moving popup.
+            }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
             // Hiding the popup reveals the still-live WebKit surface underneath.
