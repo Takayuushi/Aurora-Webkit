@@ -2119,10 +2119,17 @@ struct BrowserState {
                 // The popup uses screen coordinates. Extend it over any custom
                 // frame/client inset while keeping its right edge tied to the
                 // same client-space position as the original drawer.
-                POINT popupOrigin { left - insetX, top };
-                ClientToScreen(window, &popupOrigin);
-                const int popupLeft = popupOrigin.x;
-                const int popupTop = popupOrigin.y;
+                RECT ownerWindowRect { };
+                POINT popupClientTop { 0, top };
+                if (!GetWindowRect(window, &ownerWindowRect)
+                    || !ClientToScreen(window, &popupClientTop))
+                    return;
+                // SetWindowPos on an owned WS_POPUP uses screen coordinates.
+                // Anchor its left edge to the actual outer browser-window edge
+                // rather than round-tripping a client point through the custom
+                // non-client frame, which can leave the drawer inset from x=0.
+                const int popupLeft = ownerWindowRect.left + left;
+                const int popupTop = popupClientTop.y;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
                 RECT previousRect { };
                 bool havePreviousRect = alreadyVisible
