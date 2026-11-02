@@ -59,6 +59,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <ctime>
 #include <thread>
 #include <utility>
@@ -243,6 +244,7 @@ constexpr int kResizeBorder = 4;
 
 struct BrowserState;
 struct TabState;
+void requestFavicon(BrowserState*, const std::wstring&, bool forStartPage = false);
 
 int gLiveBrowserWindows = 0;
 bool openNewBrowserWindow(BrowserState*, bool privateMode = false);
@@ -294,6 +296,7 @@ void forcedPageRepaintFinished(WKErrorRef, void* context)
 struct FaviconResult {
     std::wstring url;
     HICON icon { nullptr };
+    bool forStartPage { false };
 };
 
 std::wstring faviconURLForPage(const std::wstring& pageURL)
@@ -319,6 +322,21 @@ std::wstring faviconURLForPage(const std::wstring& pageURL)
         return { };
 
     return L"https://" + host + L"/favicon.ico";
+}
+
+std::wstring faviconCacheKeyForPage(const std::wstring& pageURL)
+{
+    const std::wstring faviconURL = faviconURLForPage(pageURL);
+    if (faviconURL.empty())
+        return { };
+    const size_t hostStart = std::wstring(L"https://").size();
+    const size_t hostEnd = faviconURL.find(L"/", hostStart);
+    std::wstring host = faviconURL.substr(hostStart, hostEnd - hostStart);
+    if (host.rfind(L"www.", 0) == 0)
+        host.erase(0, 4);
+    std::transform(host.begin(), host.end(), host.begin(),
+        [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
+    return host;
 }
 
 std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL)
@@ -1308,6 +1326,7 @@ struct BrowserState {
     bool sidebarOpen { false };
     bool sidebarAnimating { false };
     bool sidebarContentInsetActive { false };
+    bool sidebarRepaintPendingAfterAnimation { false };
     float sidebarAnimationFrom { 0.0f };
     float sidebarAnimationTarget { 0.0f };
     ULONGLONG sidebarAnimationStart { 0 };
@@ -1336,6 +1355,9 @@ struct BrowserState {
     std::wstring searchEngine { L"Google" };
     std::wstring downloadLocation;
     std::wstring startPageBackground;
+    std::vector<SavedPage> startPageThumbnailTiles;
+    std::unordered_map<std::wstring, HICON> startPageThumbnailFavicons;
+    std::unordered_set<std::wstring> startPageFaviconRequests;
     mutable std::wstring cachedStartPageThumbnailPath;
     mutable std::unique_ptr<Gdiplus::Bitmap> cachedStartPageThumbnailBitmap;
     std::wstring cachedStartPageBackgroundPath;
@@ -2498,7 +2520,7 @@ struct BrowserState {
         if (!sidebarOpen && sidebarContentInsetActive) {
             sidebarContentInsetActive = false;
             resize(false);
-            requestActivePageRepaint(false, false, true);
+            sidebarRepaintPendingAfterAnimation = true;
         }
         positionOverlayWindows();
         updateSidebarZOrderTimer();
@@ -2862,6 +2884,10 @@ struct BrowserState {
                 if (sidebarContentInsetActive != sidebarOpen) {
                     sidebarContentInsetActive = sidebarOpen;
                     resize(false);
+                    sidebarRepaintPendingAfterAnimation = true;
+                }
+                if (sidebarRepaintPendingAfterAnimation) {
+                    sidebarRepaintPendingAfterAnimation = false;
                     requestActivePageRepaint(false, false, true);
                 }
                 positionOverlayWindows(true);
@@ -3288,29 +3314,30 @@ struct BrowserState {
             ? RGB(248, 249, 251) : (dark ? RGB(48, 48, 52) : RGB(255, 255, 255));
         const COLORREF tileBorder = hasWallpaper
             ? RGB(232, 234, 238) : (dark ? RGB(67, 67, 72) : RGB(226, 228, 232));
-        const wchar_t* tileLabels[] = { L"A", L"G", L"F", L"Y", L"G", L"R", L"W", L"G" };
-        HFONT tileFont = CreateFontW(-std::max(scaleForDpi(window, 8), tileSize / 2),
-            0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
-        for (int tileIndex = 0; tileIndex < 8; ++tileIndex) {
-            const int x = startX + tileIndex * (tileSize + tileGap);
+        const size_t visibleTileCount = std::min<size_t>(8, startPageThumbnailTiles.size());
+        for (size_t tileIndex = 0; tileIndex < visibleTileCount; ++tileIndex) {
+            const int x = startX + static_cast<int>(tileIndex) * (tileSize + tileGap);
             if (x + tileSize > preview.right - width / 14)
                 break;
             RECT tile { x, tileY, x + tileSize, tileY + tileSize };
             drawRoundedControl(dc, tile, tileFill, tileBorder,
                 static_cast<float>(scaleForDpi(window, 4)));
-            if (tileFont) {
-                HGDIOBJ oldTileFont = SelectObject(dc, tileFont);
-                SetTextColor(dc, hasWallpaper ? RGB(65, 68, 74)
-                    : (dark ? RGB(224, 224, 228) : RGB(70, 73, 78)));
-                DrawTextW(dc, tileLabels[tileIndex], -1, &tile,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                SelectObject(dc, oldTileFont);
+
+            const std::wstring key = faviconCacheKeyForPage(startPageThumbnailTiles[tileIndex].url);
+            const auto favicon = startPageThumbnailFavicons.find(key);
+            const int iconSize = std::max(scaleForDpi(window, 12), tileSize * 68 / 100);
+            const int iconLeft = tile.left + (tileSize - iconSize) / 2;
+            const int iconTop = tile.top + (tileSize - iconSize) / 2;
+            RECT iconRect { iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize };
+            if (favicon != startPageThumbnailFavicons.end() && favicon->second) {
+                DrawIconEx(dc, iconRect.left, iconRect.top, favicon->second,
+                    iconSize, iconSize, 0, nullptr, DI_NORMAL);
+            } else {
+                // A neutral browser glyph is preferable to the initials that previously
+                // appeared permanently in every Start Page overview card.
+                drawCompass(dc, iconRect);
             }
         }
-        if (tileFont)
-            DeleteObject(tileFont);
         if (titleFont) {
             if (oldFont)
                 SelectObject(dc, oldFont);
@@ -5118,6 +5145,10 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
             }
             html += "</div>";
         }
+        startPageThumbnailTiles = showStartPageFavorites ? startPageTiles : recentTiles;
+        for (const auto& entry : startPageThumbnailTiles)
+            requestFavicon(this, entry.url, true);
+
         if (showStartPageReadingList && !readingList.empty()) {
             html += R"HTML(<div class="section section-spaced">Reading List</div><div class="reading-list">)HTML";
             size_t shownReadingItems = 0;
@@ -5710,6 +5741,63 @@ search.addEventListener('keydown',e=>{
         if (searchPosition != std::string::npos)
             html.replace(searchPosition, searchToken.size(), searchPrefix);
 
+        static constexpr char safariControlStyles[] = R"HTML(
+<style id="aurora-safari-controls">
+:root{
+ --aurora-control-bg:var(--selected,rgba(120,120,128,.10));
+ --aurora-control-border:var(--line,rgba(120,120,128,.22));
+ --aurora-control-hover:var(--hover,rgba(120,120,128,.17));
+ --aurora-control-text:var(--text,currentColor);
+ --aurora-control-blue:var(--blue,#007aff);
+}
+button:not(.category),input[type=button],input[type=submit],input[type=reset],
+.action,.done{
+ -webkit-appearance:none;appearance:none;
+ display:inline-flex;align-items:center;justify-content:center;
+ min-height:30px;padding:6px 12px;
+ border:1px solid var(--aurora-control-border)!important;
+ border-radius:9px!important;
+ background:var(--aurora-control-bg)!important;
+ color:var(--aurora-control-text)!important;
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.22);
+ font:inherit;line-height:1.25;text-decoration:none;white-space:nowrap;
+ cursor:pointer;
+ transition:background-color .14s ease,border-color .14s ease,color .14s ease,
+   box-shadow .14s ease,transform .14s cubic-bezier(.2,.7,.2,1);
+}
+button:not(.category):hover,input[type=button]:hover,input[type=reset]:hover,
+.action:hover,.done:hover{
+ background:var(--aurora-control-hover)!important;
+ border-color:var(--aurora-control-border)!important;
+ transform:translateY(-.5px);
+}
+button:not(.category):active,input[type=button]:active,input[type=submit]:active,
+input[type=reset]:active,.action:active,.done:active{
+ transform:scale(.985);
+ box-shadow:none;
+}
+button.primary,.primary:not(.category),.action.primary,input[type=submit]{
+ background:var(--aurora-control-blue)!important;
+ border-color:transparent!important;color:#fff!important;
+ box-shadow:0 1px 2px rgba(0,0,0,.14);
+}
+button.primary:hover,.primary:not(.category):hover,.action.primary:hover,input[type=submit]:hover{
+ background:var(--aurora-control-blue)!important;
+ filter:brightness(1.07);
+}
+.action.cancel{color:var(--danger,#c9342d)!important}
+button:disabled,input:disabled,.action[aria-disabled="true"]{
+ opacity:.48;cursor:not-allowed;transform:none!important
+}
+button:focus-visible,input:focus-visible,.action:focus-visible,.done:focus-visible{
+ outline:2px solid var(--aurora-control-blue);outline-offset:2px
+}
+</style>
+)HTML";
+        const size_t headEnd = html.rfind("</head>");
+        if (headEnd != std::string::npos)
+            html.insert(headEnd, safariControlStyles);
+
         auto htmlString = adoptWK(WKStringCreateWithUTF8CString(html.c_str()));
         auto baseURL = createWKURL(L"about:blank");
         WKPageLoadHTMLString(WKViewGetPage(tab.view.get()), htmlString.get(), baseURL.get());
@@ -5863,8 +5951,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 const std::string id = std::to_string(i);
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled && !item.paused;
                 const bool finished = item.finished && !item.failed && !item.cancelled;
-                const long long percent = item.totalBytes > 0
-                    ? std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100) : 0;
+                const double percent = item.totalBytes > 0
+                    ? std::clamp(static_cast<double>(item.bytesWritten) * 100.0
+                        / static_cast<double>(item.totalBytes), 0.0, 100.0) : 0.0;
 
                 std::string status;
                 if (item.cancelled) status = "Cancelled";
@@ -6028,9 +6117,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             for (size_t i = 0; i < downloads.size(); ++i) {
                 const auto& item = downloads[i];
                 const std::string id = std::to_string(i);
-                long long percent = 0;
+                double percent = 0.0;
                 if (item.totalBytes > 0)
-                    percent = std::clamp<long long>((item.bytesWritten * 100) / item.totalBytes, 0, 100);
+                    percent = std::clamp(static_cast<double>(item.bytesWritten) * 100.0
+                        / static_cast<double>(item.totalBytes), 0.0, 100.0);
                 const bool inProgress = !item.finished && !item.failed && !item.cancelled && !item.paused;
                 const std::string status = item.cancelled ? "Cancelled"
                     : item.failed ? "Download failed"
@@ -8727,17 +8817,24 @@ void websiteDataFetchCacheCleared(void* context)
     WKHTTPCookieStoreDeleteAllCookies(request->cookieStore.get(), context, websiteDataCleared);
 }
 
-void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
+void requestFavicon(BrowserState* browser, const std::wstring& pageURL, bool forStartPage)
 {
     if (!browser || pageURL.empty())
         return;
+
+    const std::wstring cacheKey = forStartPage ? faviconCacheKeyForPage(pageURL) : std::wstring();
+    if (forStartPage) {
+        if (cacheKey.empty() || browser->startPageThumbnailFavicons.contains(cacheKey)
+            || !browser->startPageFaviconRequests.insert(cacheKey).second)
+            return;
+    }
 
     const std::vector<std::wstring> candidates = faviconCandidatesForPage(pageURL);
     if (candidates.empty())
         return;
 
     HWND window = browser->window;
-    std::thread([window, pageURL, candidates] {
+    std::thread([window, pageURL, candidates, forStartPage] {
         HICON icon = nullptr;
         for (const auto& candidate : candidates) {
             if (!IsWindow(window))
@@ -8762,7 +8859,7 @@ void requestFavicon(BrowserState* browser, const std::wstring& pageURL)
 
         // Return failures too, so the UI can clear the in-flight marker and allow
         // a later completed-load callback to retry instead of permanently giving up.
-        auto* result = new FaviconResult { pageURL, icon };
+        auto* result = new FaviconResult { pageURL, icon, forStartPage };
         if (!PostMessageW(window, WM_AURORA_FAVICON_READY, 0, reinterpret_cast<LPARAM>(result))) {
             if (icon)
                 DestroyIcon(icon);
@@ -11441,6 +11538,27 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_AURORA_FAVICON_READY:
         if (state && lParam) {
             auto* result = reinterpret_cast<FaviconResult*>(lParam);
+            if (result->forStartPage) {
+                const std::wstring key = faviconCacheKeyForPage(result->url);
+                if (!key.empty()) {
+                    state->startPageFaviconRequests.erase(key);
+                    if (result->icon) {
+                        const auto previous = state->startPageThumbnailFavicons.find(key);
+                        if (previous != state->startPageThumbnailFavicons.end() && previous->second)
+                            DestroyIcon(previous->second);
+                        state->startPageThumbnailFavicons[key] = result->icon;
+                        result->icon = nullptr;
+                        if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow)) {
+                            state->tabOverviewAnimationFrameReady = false;
+                            InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
+                        }
+                    }
+                }
+                if (result->icon)
+                    DestroyIcon(result->icon);
+                delete result;
+                return 0;
+            }
             TabState* updatedTab = nullptr;
             std::wstring retryFaviconURL;
             for (auto& tab : state->tabs) {
@@ -11644,6 +11762,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     tab->favicon = nullptr;
                 }
             }
+            for (auto& [host, icon] : state->startPageThumbnailFavicons) {
+                if (icon)
+                    DestroyIcon(icon);
+            }
+            state->startPageThumbnailFavicons.clear();
             if (state->windowCounted) {
                 state->windowCounted = false;
                 --gLiveBrowserWindows;
