@@ -5571,87 +5571,96 @@ search.addEventListener('keydown',e=>{
         activePageTintRequestURL = url;
         const unsigned long long generation = ++activePageTintGeneration;
         static constexpr char tintScript[] = R"JS((() => {
-            const normalize = value => {
-                if (!value) return null;
-                const probe = document.createElement('span');
-                probe.style.color = String(value).trim();
-                if (!probe.style.color) return null;
-                probe.style.position = 'absolute';
-                probe.style.visibility = 'hidden';
-                (document.documentElement || document.body).appendChild(probe);
-                const normalized = getComputedStyle(probe).color;
-                probe.remove();
-                const match = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
-                if (!match) return null;
-                if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
-                const values = match.slice(1, 4).map(Number);
-                if (values.some(number => !Number.isFinite(number))) return null;
-                return '#' + values.map(number =>
-                    Math.max(0, Math.min(255, Math.round(number))).toString(16).padStart(2, '0')
-                ).join('');
-            };
+    // Read computed CSS colors directly. Creating temporary DOM nodes here
+    // triggers style/layout work on the website's main thread and can stall
+    // complex pages immediately after navigation.
+    const parseColor = value => {
+        const text = String(value || '').trim();
+        if (!text || text === 'transparent') return null;
+        let match = text.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+        if (match) {
+            if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
+            const values = match.slice(1, 4).map(Number);
+            if (values.some(number => !Number.isFinite(number))) return null;
+            return '#' + values.map(number =>
+                Math.max(0, Math.min(255, Math.round(number))).toString(16).padStart(2, '0')
+            ).join('');
+        }
+        match = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+        if (!match) return null;
+        let hex = match[1];
+        if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+        if (hex.length === 8) {
+            const alpha = parseInt(hex.slice(6, 8), 16) / 255;
+            if (alpha < 0.82) return null;
+            hex = hex.slice(0, 6);
+        }
+        return '#' + hex.toLowerCase();
+    };
 
-            const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
-            const seen = new Set();
-            let bestColor = null;
-            let bestScore = 0;
-            const colorForElement = style => {
-                const solid = normalize(style.backgroundColor);
-                if (solid) return solid;
-                const image = String(style.backgroundImage || '');
-                const match = image.match(/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i);
-                return match ? normalize(match[1]) : null;
-            };
-            // Sample both the browser's top edge and the first content rows. A
-            // number of sites use non-semantic DIV wrappers or gradient headers.
-            if (document.elementsFromPoint) {
-                for (const x of [width * 0.02, width * 0.12, width * 0.3, width * 0.5, width * 0.7, width * 0.88, width * 0.98]) {
-                    for (const y of [2, 8, 16, 24, 32, 44, 58, 76, 96, 112, 132, 152]) {
-                        for (const hit of document.elementsFromPoint(x, y)) {
-                            let element = hit;
-                            for (let depth = 0; element && depth < 8; ++depth, element = element.parentElement) {
-                                if (seen.has(element)) continue;
-                                seen.add(element);
-                                const style = getComputedStyle(element);
-                                const rect = element.getBoundingClientRect();
-                                const semanticHeader = element.tagName === 'HEADER'
-                                    || element.tagName === 'NAV'
-                                    || element.getAttribute('role') === 'banner'
-                                    || (typeof element.className === 'string'
-                                        && /header|topbar|top-bar|masthead|navbar|navigation|app-bar/i.test(element.className))
-                                    || /header|topbar|top-bar|masthead|navbar|navigation/i.test(element.id || '');
-                                // Many current sites place their colored navigation in
-                                // normal document flow rather than fixed/sticky chrome.
-                                const anchoredHeader = style.position === 'fixed' || style.position === 'sticky';
-                                const topSurface = rect.top <= 160 && rect.bottom >= 18
-                                    && rect.width >= width * 0.42 && rect.height >= 18;
-                                if (!anchoredHeader && !semanticHeader && !topSurface) continue;
-                                if (rect.top > 160 || rect.bottom < 18
-                                    || rect.width < width * 0.28 || rect.height < 18) continue;
-                                const color = colorForElement(style);
-                                if (!color) continue;
-                                const verticalWeight = 1.0 / (1.0 + Math.max(0, rect.top) * 0.025);
-                                const score = Math.min(width, rect.width) * Math.min(96, rect.height) * verticalWeight;
-                                if (score > bestScore) {
-                                    bestScore = score;
-                                    bestColor = color;
-                                }
-                            }
+    const colorForStyle = style => {
+        const solid = parseColor(style.backgroundColor);
+        if (solid) return solid;
+        const image = String(style.backgroundImage || '');
+        const match = image.match(/rgba?\([^)]*\)|#[0-9a-f]{3,8}/i);
+        return match ? parseColor(match[0]) : null;
+    };
+
+    const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
+    const seen = new Set();
+    let bestColor = null;
+    let bestScore = 0;
+    let inspected = 0;
+
+    // A small, fixed sample budget keeps tint detection inexpensive even on
+    // pages with large React/DOM trees and complex navigation surfaces.
+    if (document.elementsFromPoint) {
+        for (const x of [width * 0.03, width * 0.25, width * 0.5, width * 0.75, width * 0.97]) {
+            for (const y of [8, 24, 48, 72, 104]) {
+                const stack = document.elementsFromPoint(x, y);
+                for (let h = 0; h < Math.min(stack.length, 3); ++h) {
+                    let element = stack[h];
+                    for (let depth = 0; element && depth < 4; ++depth, element = element.parentElement) {
+                        if (seen.has(element)) continue;
+                        seen.add(element);
+                        if (++inspected > 96) break;
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        const semanticHeader = element.tagName === 'HEADER'
+                            || element.tagName === 'NAV'
+                            || element.getAttribute('role') === 'banner'
+                            || (typeof element.className === 'string'
+                                && /header|topbar|top-bar|masthead|navbar|navigation|app-bar/i.test(element.className))
+                            || /header|topbar|top-bar|masthead|navbar|navigation/i.test(element.id || '');
+                        const anchoredHeader = style.position === 'fixed' || style.position === 'sticky';
+                        const topSurface = rect.top <= 120 && rect.bottom >= 18
+                            && rect.width >= width * 0.42 && rect.height >= 18;
+                        if (!anchoredHeader && !semanticHeader && !topSurface) continue;
+                        if (rect.top > 120 || rect.bottom < 18
+                            || rect.width < width * 0.28 || rect.height < 18) continue;
+                        const color = colorForStyle(style);
+                        if (!color) continue;
+                        const verticalWeight = 1.0 / (1.0 + Math.max(0, rect.top) * 0.025);
+                        const score = Math.min(width, rect.width) * Math.min(96, rect.height) * verticalWeight;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestColor = color;
                         }
                     }
+                    if (inspected > 96) break;
                 }
+                if (inspected > 96) break;
             }
-            if (bestColor) return bestColor;
+            if (inspected > 96) break;
+        }
+    }
 
-            const bodyColor = document.body ? getComputedStyle(document.body).backgroundColor : '';
-            const rootColor = document.documentElement
-                ? getComputedStyle(document.documentElement).backgroundColor : '';
-            for (const candidate of [bodyColor, rootColor]) {
-                const color = normalize(candidate);
-                if (color) return color;
-            }
-            return 'none';
-        })())JS";
+    if (bestColor) return bestColor;
+    const bodyColor = document.body ? colorForStyle(getComputedStyle(document.body)) : null;
+    const rootColor = document.documentElement
+        ? colorForStyle(getComputedStyle(document.documentElement)) : null;
+    return bodyColor || rootColor || 'none';
+})()
         auto script = adoptWK(WKStringCreateWithUTF8CString(tintScript));
         if (!script) {
             activePageTintRequestURL.clear();
