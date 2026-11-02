@@ -5666,7 +5666,7 @@ search.addEventListener('keydown',e=>{
     const rootColor = document.documentElement
         ? colorForStyle(getComputedStyle(document.documentElement)) : null;
     return bodyColor || rootColor || 'none';
-})()
+})())JS";
         auto script = adoptWK(WKStringCreateWithUTF8CString(tintScript));
         if (!script) {
             activePageTintRequestURL.clear();
