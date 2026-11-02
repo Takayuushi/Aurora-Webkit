@@ -11240,8 +11240,11 @@ void didChangeIsLoading(const void* clientInfo)
         return;
 
     auto page = WKViewGetPage(tab->view.get());
-    if (page && WKPageGetEstimatedProgress(page) < 1.0)
+    if (page && WKPageGetEstimatedProgress(page) < 1.0) {
         tab->lastExtensionsUrl.clear();
+        if (tab == tab->browser->active())
+            tab->browser->clearActivePageTint();
+    }
     if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
         tab->thumbnailCaptureNeeded = true;
         const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
@@ -11332,6 +11335,8 @@ void didChangeActiveURL(const void* clientInfo)
         tab->faviconRequestURL.clear();
     }
     tab->activeUrl = url;
+    if (tab == tab->browser->active())
+        tab->browser->requestActivePageTint(tab);
     if (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) {
         tab->internalPage.clear();
         tab->hasInternalThemeSnapshot = false;
