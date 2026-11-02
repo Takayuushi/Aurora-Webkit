@@ -7396,7 +7396,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             const COLORREF activeBorder = dark ? RGB(94, 94, 100) : RGB(205, 210, 217);
             const COLORREF tabFill = blendColor(inactiveFill, activeFill, activeWeight);
             const COLORREF tabBorder = blendColor(inactiveBorder, activeBorder, activeWeight);
-            const int radius = std::max(1, (tabRect.bottom - tabRect.top) / 2);
+            const int radius = std::max(1, static_cast<int>(tabRect.bottom - tabRect.top) / 2);
             drawRoundedControl(dc, tabRect, tabFill, tabBorder, static_cast<float>(radius));
 
             if (activeWeight > 0.04f) {
