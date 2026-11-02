@@ -1940,7 +1940,7 @@ struct BrowserState {
             || !IsWindowVisible(sidebarOverlayWindow))
             return;
         RECT localRect = parentRect;
-        OffsetRect(&localRect, sidebarWindowInsetX(), -contentTop());
+        OffsetRect(&localRect, 0, -contentTop());
         InvalidateRect(sidebarOverlayWindow, &localRect, FALSE);
     }
 
@@ -2057,22 +2057,6 @@ struct BrowserState {
             static_cast<float>(scaleForDpi(window, 300)) * sidebarProgress()));
     }
 
-    // A custom-framed window can temporarily retain a client inset from its
-    // outer rectangle. Let the popup cover that strip without changing the
-    // drawer's right edge relative to the WebKit viewport.
-    int sidebarWindowInsetX() const
-    {
-        if (!window)
-            return 0;
-        RECT windowRect { };
-        POINT clientOrigin { 0, 0 };
-        if (!GetWindowRect(window, &windowRect)
-            || !ClientToScreen(window, &clientOrigin))
-            return 0;
-        return static_cast<int>(std::max<LONG>(0L,
-            clientOrigin.x - windowRect.left));
-    }
-
     bool ensureOverlayWindow(HWND& handle)
     {
         if (!window)
@@ -2116,23 +2100,26 @@ struct BrowserState {
         if (sidebarOpen || sidebarAnimating) {
             if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
-                const int insetX = sidebarWindowInsetX();
-                const int popupWidth = width + insetX;
                 const int left = sidebarOffset() - width;
-                // The popup uses screen coordinates. Extend it over any custom
-                // frame/client inset while keeping its right edge tied to the
-                // same client-space position as the original drawer.
-                RECT ownerWindowRect { };
-                POINT popupClientTop { 0, top };
-                if (!GetWindowRect(window, &ownerWindowRect)
-                    || !ClientToScreen(window, &popupClientTop))
+                // Anchor the popup to the actual active WebKit viewport, not the
+                // top-level window rectangle. The latter includes frame geometry
+                // that can differ from the accelerated page's visible left edge.
+                RECT pageRect { };
+                bool havePageRect = false;
+                if (auto* selected = active()) {
+                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        havePageRect = GetWindowRect(viewWindow, &pageRect) != FALSE;
+                }
+                POINT popupOrigin { left, top };
+                if (havePageRect) {
+                    popupOrigin.x += pageRect.left;
+                    popupOrigin.y = pageRect.top;
+                } else if (!ClientToScreen(window, &popupOrigin)) {
                     return;
-                // SetWindowPos on an owned WS_POPUP uses screen coordinates.
-                // Anchor its left edge to the actual outer browser-window edge
-                // rather than round-tripping a client point through the custom
-                // non-client frame, which can leave the drawer inset from x=0.
-                const int popupLeft = ownerWindowRect.left + left;
-                const int popupTop = popupClientTop.y;
+                }
+                const int popupLeft = popupOrigin.x;
+                const int popupTop = popupOrigin.y;
+                const int popupWidth = width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
                 RECT previousRect { };
                 bool havePreviousRect = alreadyVisible
@@ -2143,7 +2130,7 @@ struct BrowserState {
                 }
 
                 const bool geometryChanged = !alreadyVisible || !havePreviousRect
-                    || previousRect.left != left - insetX || previousRect.top != top
+                    || previousRect.left != left || previousRect.top != top
                     || previousRect.right - previousRect.left != popupWidth
                     || previousRect.bottom - previousRect.top != height;
 
@@ -11554,8 +11541,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 const int saved = SaveDC(bufferDC);
                 if (saved) {
                     if (overlay == state->sidebarOverlayWindow) {
-                        SetViewportOrgEx(bufferDC, state->sidebarWindowInsetX(),
-                            -state->contentTop(), nullptr);
+                        SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
                         state->drawSidebarPanel(bufferDC, true);
                     } else if (overlay == state->tabOverviewWindow) {
                         const RECT area = state->tabOverviewAreaRect();
@@ -11625,8 +11611,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             const int saved = SaveDC(dc);
             if (saved) {
                 if (overlay == state->sidebarOverlayWindow) {
-                    SetViewportOrgEx(dc, state->sidebarWindowInsetX(),
-                        -state->contentTop(), nullptr);
+                    SetViewportOrgEx(dc, 0, -state->contentTop(), nullptr);
                     state->drawSidebarPanel(dc, true);
                 } else if (overlay == state->tabOverviewWindow) {
                     const RECT area = state->tabOverviewAreaRect();
