@@ -1295,6 +1295,7 @@ struct BrowserState {
     int hoveredLeftControl { -1 }; // Sidebar button and website settings control
     int hoveredNavigationButton { -1 }; // Back and Forward halves of the navigation capsule
     int hoveredSidebarRow { -1 };
+    int hoveredTabBarIndex { -1 };
     bool hoveredSidebarSettings { false };
     int hoveredTrafficLight { -1 };
     float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1934,10 +1935,25 @@ struct BrowserState {
         return { margin, client.bottom - height, width - margin, client.bottom - bottomMargin };
     }
 
+    RECT sidebarSectionRect(int index) const
+    {
+        const int width = scaleForDpi(window, 300);
+        const int top = sidebarContentTop() + scaleForDpi(window, 52);
+        const int rowHeight = scaleForDpi(window, 36);
+        const int inset = scaleForDpi(window, 8);
+        return { inset, top + index * rowHeight,
+            width - inset, top + (index + 1) * rowHeight - scaleForDpi(window, 2) };
+    }
+
+    int sidebarRowsTop() const
+    {
+        return sidebarContentTop() + scaleForDpi(window, 52 + 36 * 3 + 12);
+    }
+
     RECT sidebarRowRect(int index) const
     {
         const int width = scaleForDpi(window, 300);
-        const int rowTop = sidebarContentTop() + scaleForDpi(window, 88);
+        const int rowTop = sidebarRowsTop();
         const int rowHeight = scaleForDpi(window, 46);
         const int inset = scaleForDpi(window, 8);
         return { inset, rowTop + index * rowHeight + scaleForDpi(window, 1),
@@ -2231,19 +2247,12 @@ struct BrowserState {
             if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
-                RECT pageRect { };
-                bool havePageRect = false;
-                if (auto* selected = active()) {
-                    if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
-                        havePageRect = GetWindowRect(viewWindow, &pageRect) != FALSE;
-                }
+                // Anchor the drawer to the browser's client edge, not to the
+                // accelerated WKView child. WebKit can have a native inset, which
+                // otherwise leaves a strip of page visible along the window edge.
                 POINT popupOrigin { left, toolbarBottom };
-                if (havePageRect) {
-                    popupOrigin.x += pageRect.left;
-                    popupOrigin.y = pageRect.top;
-                } else if (!ClientToScreen(window, &popupOrigin)) {
+                if (!ClientToScreen(window, &popupOrigin))
                     return;
-                }
                 const int popupLeft = popupOrigin.x;
                 const int popupTop = popupOrigin.y;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
@@ -2482,6 +2491,24 @@ struct BrowserState {
     void updateToolbarHover(POINT point)
     {
         int nextHovered = -1;
+        const int tabTop = titleBarHeight() + toolbarHeight();
+        const int tabBottom = tabTop + tabsBarHeight();
+        int nextHoveredTab = -1;
+        if (tabsBarHeight() > 0 && point.y >= tabTop && point.y < tabBottom) {
+            for (size_t i = 0; i < tabs.size(); ++i) {
+                const RECT tabRect = tabBarItemRect(i);
+                if (PtInRect(&tabRect, point)) {
+                    nextHoveredTab = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (nextHoveredTab != hoveredTabBarIndex) {
+            hoveredTabBarIndex = nextHoveredTab;
+            if (tabBarOverlayWindow && IsWindowVisible(tabBarOverlayWindow))
+                InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+        }
+
         const int toolbarTop = titleBarHeight();
         const int toolbarBottom = toolbarTop + toolbarHeight();
         if (point.y >= toolbarTop && point.y < toolbarBottom) {
@@ -2546,7 +2573,7 @@ struct BrowserState {
         int nextSidebarRow = -1;
         if (sidebarOpen) {
             const int sidebarWidth = scaleForDpi(window, 300);
-            const int rowTop = sidebarContentTop() + scaleForDpi(window, 88);
+            const int rowTop = sidebarRowsTop();
             const int rowHeight = scaleForDpi(window, 46);
             const RECT settings = sidebarSettingsRect();
             const int listBottom = settings.top - scaleForDpi(window, 8);
@@ -7437,9 +7464,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             if (tabFont)
                 DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top,
-                tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
-            drawClose(dc, closeRect, dark);
+            if (i == activeTab || static_cast<int>(i) == hoveredTabBarIndex) {
+                RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top,
+                    tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
+                drawClose(dc, closeRect, dark);
+            }
         }
 
         if (oldFont)
@@ -7517,8 +7546,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
     bool handleTabHit(POINT point, size_t index, int left, int tabWidth)
     {
-        int closeWidth = scaleForDpi(window, 28);
-        if (point.x >= left + tabWidth - closeWidth) {
+        const bool closeControlVisible = index == activeTab
+            || (hoveredTabBarIndex >= 0 && index == static_cast<size_t>(hoveredTabBarIndex));
+        const int closeWidth = scaleForDpi(window, 28);
+        if (closeControlVisible && point.x >= left + tabWidth - closeWidth) {
             closeTab(index);
             return true;
         }
@@ -7555,11 +7586,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         GetClientRect(window, &client);
 
         RECT panel { 0, top, width, client.bottom };
-        HBRUSH brush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
+        // Keep the drawer on the same neutral glass-tinted surface as the toolbar.
+        // The edge is deliberately quiet: Safari's sidebar meets the page without
+        // a heavy black slab or a high-contrast divider.
+        HBRUSH brush = CreateSolidBrush(dark ? RGB(42, 42, 46) : RGB(247, 248, 250));
         FillRect(dc, &panel, brush);
         DeleteObject(brush);
 
-        HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(62, 62, 65) : RGB(220, 223, 225));
+        HPEN divider = CreatePen(PS_SOLID, 1, dark ? RGB(54, 54, 58) : RGB(226, 228, 231));
         HPEN oldPen = static_cast<HPEN>(SelectObject(dc, divider));
         MoveToEx(dc, width - 1, top, nullptr);
         LineTo(dc, width - 1, client.bottom);
@@ -7576,6 +7610,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         HFONT headingFont = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
+        HFONT sectionIconFont = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            L"Segoe MDL2 Assets");
         HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
         SetBkMode(dc, TRANSPARENT);
 
@@ -7590,29 +7628,50 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             width - scaleForDpi(window, 10), top + scaleForDpi(window, 44) };
         drawClose(dc, closeRect, dark);
 
-        RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
-            width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
-        drawRoundedControl(dc, selector,
-            dark ? RGB(43, 43, 46) : RGB(236, 238, 241),
-            dark ? RGB(57, 57, 60) : RGB(224, 226, 230),
-            static_cast<float>(MulDiv(8, dpi, 96)));
-        const int part = (selector.right - selector.left) / 3;
+        const wchar_t* sectionLabels[] = { L"Bookmarks", L"Reading List", L"History" };
+        const wchar_t* sectionIcons[] = { L"\xE734", L"\xE736", L"\xE81C" };
         for (int i = 0; i < 3; ++i) {
-            RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
-            if (i == sidebarSection) {
-                RECT selectedRect { r.left + scaleForDpi(window, 2), r.top + scaleForDpi(window, 2),
-                    r.right - scaleForDpi(window, 2), r.bottom - scaleForDpi(window, 2) };
-                drawRoundedControl(dc, selectedRect,
-                    dark ? RGB(76, 76, 80) : RGB(255, 255, 255),
-                    dark ? RGB(88, 88, 92) : RGB(220, 223, 228),
-                    static_cast<float>(MulDiv(6, dpi, 96)));
+            RECT sectionRect = sidebarSectionRect(i);
+            const bool selected = i == sidebarSection;
+            if (selected) {
+                const COLORREF selectedFill = dark ? RGB(69, 69, 74) : RGB(255, 255, 255);
+                RECT selectedRect = sectionRect;
+                InflateRect(&selectedRect, -scaleForDpi(window, 1), -scaleForDpi(window, 1));
+                drawRoundedControl(dc, selectedRect, selectedFill, selectedFill,
+                    static_cast<float>(scaleForDpi(window, 8)));
             }
-            SetTextColor(dc, i == sidebarSection ? (dark ? RGB(248, 248, 250) : RGB(32, 34, 38)) : (dark ? RGB(166, 166, 171) : RGB(103, 108, 115)));
-            const wchar_t* label = i == 0 ? L"Bookmarks" : (i == 1 ? L"Reading List" : L"History");
-            DrawTextW(dc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            RECT iconRect { sectionRect.left + scaleForDpi(window, 12),
+                sectionRect.top + scaleForDpi(window, 1),
+                sectionRect.left + scaleForDpi(window, 34),
+                sectionRect.bottom - scaleForDpi(window, 1) };
+            if (sectionIconFont) {
+                HGDIOBJ oldIconFont = SelectObject(dc, sectionIconFont);
+                SetTextColor(dc, selected
+                    ? (dark ? RGB(248, 248, 250) : RGB(42, 45, 49))
+                    : (dark ? RGB(194, 194, 199) : RGB(104, 109, 116)));
+                DrawTextW(dc, sectionIcons[i], -1, &iconRect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(dc, oldIconFont);
+            }
+
+            RECT labelRect { iconRect.right + scaleForDpi(window, 8), sectionRect.top,
+                sectionRect.right - scaleForDpi(window, 8), sectionRect.bottom };
+            SetTextColor(dc, selected
+                ? (dark ? RGB(248, 248, 250) : RGB(42, 45, 49))
+                : (dark ? RGB(194, 194, 199) : RGB(104, 109, 116)));
+            DrawTextW(dc, sectionLabels[i], -1, &labelRect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
 
-        int rowTop = top + scaleForDpi(window, 88);
+        int rowTop = sidebarRowsTop();
+        HPEN sectionDivider = CreatePen(PS_SOLID, 1,
+            dark ? RGB(58, 58, 62) : RGB(229, 231, 234));
+        HPEN oldSectionDivider = static_cast<HPEN>(SelectObject(dc, sectionDivider));
+        MoveToEx(dc, scaleForDpi(window, 12), rowTop - scaleForDpi(window, 7), nullptr);
+        LineTo(dc, width - scaleForDpi(window, 12), rowTop - scaleForDpi(window, 7));
+        SelectObject(dc, oldSectionDivider);
+        DeleteObject(sectionDivider);
         int rowHeight = scaleForDpi(window, 46);
         const RECT settingsRect = sidebarSettingsRect();
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
@@ -7688,7 +7747,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         RECT footer { 0, settingsRect.top - scaleForDpi(window, 8), width, client.bottom };
-        HBRUSH footerBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(247, 248, 249));
+        HBRUSH footerBrush = CreateSolidBrush(dark ? RGB(42, 42, 46) : RGB(247, 248, 250));
         FillRect(dc, &footer, footerBrush);
         DeleteObject(footerBrush);
         if (hoveredSidebarSettings) {
@@ -7717,6 +7776,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         SelectObject(dc, oldFont);
         if (secondaryFont) DeleteObject(secondaryFont);
         if (headingFont) DeleteObject(headingFont);
+        if (sectionIconFont) DeleteObject(sectionIconFont);
         DeleteObject(font);
         RestoreDC(dc, savedDC);
     }
@@ -7750,20 +7810,18 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             return true;
         }
 
-        RECT selector { scaleForDpi(window, 12), top + scaleForDpi(window, 52),
-            width - scaleForDpi(window, 12), top + scaleForDpi(window, 84) };
-        int part = (selector.right - selector.left) / 3;
         for (int i = 0; i < 3; ++i) {
-            RECT r { selector.left + part * i, selector.top, selector.left + part * (i + 1), selector.bottom };
-            if (PtInRect(&r, point)) {
+            const RECT sectionRect = sidebarSectionRect(i);
+            if (PtInRect(&sectionRect, point)) {
                 sidebarSection = i;
+                hoveredSidebarRow = -1;
                 if (sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow))
                     InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
                 return true;
             }
         }
 
-        int rowTop = top + scaleForDpi(window, 88);
+        int rowTop = sidebarRowsTop();
         int rowHeight = scaleForDpi(window, 46);
         const int listBottom = settingsRect.top - scaleForDpi(window, 8);
         const size_t visibleRows = listBottom > rowTop
@@ -7862,8 +7920,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         drawRoundedControl(dc, sidebarRect,
             sidebarHovered ? (dark ? RGB(79, 79, 84) : RGB(234, 237, 241))
                 : (dark ? RGB(59, 59, 63) : RGB(251, 251, 252)),
-            sidebarHovered ? (dark ? RGB(103, 103, 109) : RGB(205, 210, 216))
-                : (dark ? RGB(82, 82, 86) : RGB(211, 214, 218)),
+            sidebarHovered ? (dark ? RGB(91, 91, 97) : RGB(222, 225, 229))
+                : (dark ? RGB(59, 59, 63) : RGB(247, 248, 250)),
             static_cast<float>(sidebarRect.bottom - sidebarRect.top) / 2.0f);
 
         const int sidebarIconWidth = MulDiv(22, dpi, 96);
@@ -7888,7 +7946,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT navigationRect = navigationPillRect();
         drawRoundedControl(dc, navigationRect,
             dark ? RGB(57, 57, 61) : RGB(249, 249, 250),
-            dark ? RGB(83, 83, 87) : RGB(218, 220, 223),
+            dark ? RGB(57, 57, 61) : RGB(244, 245, 247),
             static_cast<float>(navigationRect.bottom - navigationRect.top) / 2.0f);
 
         const int navigationMiddle = navigationRect.left + (navigationRect.right - navigationRect.left) / 2;
@@ -7921,7 +7979,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         RECT pill = addressPillRect();
         drawRoundedControl(dc, pill,
             dark ? RGB(61, 61, 66) : RGB(249, 250, 252),
-            dark ? RGB(91, 91, 97) : RGB(220, 224, 230),
+            dark ? RGB(78, 78, 83) : RGB(235, 237, 240),
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
         const int addressSheenInset = std::max(5, MulDiv(13, dpi, 96));
         RECT addressSheen { pill.left + addressSheenInset, pill.top + MulDiv(2, dpi, 96),
@@ -7930,19 +7988,22 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &addressSheen, addressSheenBrush);
         DeleteObject(addressSheenBrush);
         if (!addressEditing) {
-            const std::wstring addressText = addressDisplayText();
-            if (!addressText.empty()) {
-                RECT labelRect {
-                    pill.left + MulDiv(32, dpi, 96), pill.top,
-                    pill.right - MulDiv(32, dpi, 96), pill.bottom
-                };
-                HFONT oldAddressFont = static_cast<HFONT>(SelectObject(dc, uiFont));
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, dark ? RGB(225, 225, 229) : RGB(73, 77, 81));
-                DrawTextW(dc, addressText.c_str(), -1, &labelRect,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                SelectObject(dc, oldAddressFont);
-            }
+            std::wstring addressText = addressDisplayText();
+            const bool emptyAddress = addressText.empty();
+            if (emptyAddress)
+                addressText = L"Search or enter website name";
+            RECT labelRect {
+                pill.left + MulDiv(32, dpi, 96), pill.top,
+                pill.right - MulDiv(32, dpi, 96), pill.bottom
+            };
+            HFONT oldAddressFont = static_cast<HFONT>(SelectObject(dc, uiFont));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, emptyAddress
+                ? (dark ? RGB(158, 158, 164) : RGB(143, 148, 155))
+                : (dark ? RGB(225, 225, 229) : RGB(73, 77, 81)));
+            DrawTextW(dc, addressText.c_str(), -1, &labelRect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dc, oldAddressFont);
         }
 
         RECT siteSettingsGlyph { pill.left + MulDiv(2, dpi, 96), pill.top, pill.left + MulDiv(30, dpi, 96), pill.bottom };
@@ -7968,8 +8029,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int groupInset = MulDiv(4, dpi, 96);
         RECT actionGroup { shareRect.left - groupInset, shareRect.top,
             overviewRect.right + groupInset, overviewRect.bottom };
-        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(255, 255, 255);
-        const COLORREF groupBorder = dark ? RGB(83, 83, 87) : RGB(220, 223, 227);
+        const COLORREF groupFill = dark ? RGB(57, 57, 61) : RGB(249, 250, 252);
+        const COLORREF groupBorder = dark ? RGB(57, 57, 61) : RGB(244, 245, 247);
         drawRoundedControl(dc, actionGroup, groupFill, groupBorder,
             static_cast<float>(actionGroup.bottom - actionGroup.top) / 2.0f);
         const COLORREF hoverFill = dark ? RGB(78, 78, 83) : RGB(238, 240, 243);
