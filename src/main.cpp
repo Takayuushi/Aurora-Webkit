@@ -2256,8 +2256,11 @@ struct BrowserState {
         const int toolbarBottom = sidebarContentTop();
         const int sidebarHeight = std::max(0, static_cast<int>(client.bottom) - toolbarBottom);
         const int overviewTop = contentTop();
-        const int overviewLeft = sidebarContentInsetActive ? scaleForDpi(window, 300) : 0;
-        const int overviewWidth = std::max(0, static_cast<int>(client.right) - overviewLeft);
+        // The overview surface spans the complete browser content width. The
+        // sidebar is a separate owned popup layered above it; shrinking and
+        // shifting this surface leaves a strip of the live WebKit page exposed.
+        const int overviewLeft = 0;
+        const int overviewWidth = std::max(0, static_cast<int>(client.right));
         const int overviewHeight = std::max(0, static_cast<int>(client.bottom) - overviewTop);
 
         // Float the tab capsules above a full-height WebKit viewport. The window
@@ -2374,7 +2377,7 @@ struct BrowserState {
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                POINT overviewOrigin { overviewLeft, overviewTop };
+                POINT overviewOrigin { 0, overviewTop };
                 if (!ClientToScreen(window, &overviewOrigin))
                     return;
                 const int popupLeft = overviewOrigin.x;
@@ -3554,9 +3557,9 @@ struct BrowserState {
         const int inset = scaleForDpi(window, 8);
         const int metaHeight = scaleForDpi(window, 58);
         RECT bounds {
-            card.left + inset - area.left,
+            card.left + inset,
             card.top + inset - area.top,
-            card.right - inset - area.left,
+            card.right - inset,
             card.bottom - metaHeight - area.top
         };
 
@@ -3583,8 +3586,10 @@ struct BrowserState {
     RECT tabOverviewZoomDestination(size_t index) const
     {
         const RECT area = tabOverviewAreaRect();
-        const int width = std::max(1, static_cast<int>(area.right - area.left));
-        const int height = std::max(1, static_cast<int>(area.bottom - area.top));
+        RECT client { };
+        GetClientRect(window, &client);
+        const int width = std::max(1, static_cast<int>(client.right));
+        const int height = std::max(1, static_cast<int>(client.bottom - area.top));
         const RECT card = tabOverviewZoomCardRect(index);
         const float zoom = tabOverviewZoomProgress();
         auto interpolate = [zoom](int from, int to) {
@@ -12163,8 +12168,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                         SetViewportOrgEx(bufferDC, 0, -state->sidebarContentTop(), nullptr);
                         state->drawSidebarPanel(bufferDC, true);
                     } else if (overlay == state->tabOverviewWindow) {
-                        const RECT area = state->tabOverviewAreaRect();
-                        SetViewportOrgEx(bufferDC, -area.left, -state->contentTop(), nullptr);
+                        SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
                         state->drawTabOverviewPage(bufferDC);
                     }
                     RestoreDC(bufferDC, saved);
@@ -12233,8 +12237,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                     SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
                     state->drawSidebarPanel(dc, true);
                 } else if (overlay == state->tabOverviewWindow) {
-                    const RECT area = state->tabOverviewAreaRect();
-                    SetViewportOrgEx(dc, -area.left, -state->contentTop(), nullptr);
+                    SetViewportOrgEx(dc, 0, -state->contentTop(), nullptr);
                     state->drawTabOverviewPage(dc);
                 }
                 RestoreDC(dc, saved);
@@ -12262,7 +12265,15 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         // Both overlays convert their own client coordinates back to the
         // browser client. The sidebar is now an owned popup whose origin is in
         // screen coordinates, unlike the old child-HWND implementation.
-        MapWindowPoints(overlay, state->window, &point, 1);
+        if (overlay == state->tabOverviewWindow) {
+            // This surface is an owned popup, not a child. Convert through screen
+            // coordinates so hover and card hit-testing use the exact same
+            // browser-client coordinate system as tabOverviewCardRect().
+            ClientToScreen(overlay, &point);
+            ScreenToClient(state->window, &point);
+        } else {
+            MapWindowPoints(overlay, state->window, &point, 1);
+        }
         if (!state->tabOverviewClosing)
             state->updateToolbarHover(point);
         return 0;
@@ -12281,7 +12292,8 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             MapWindowPoints(overlay, state->window, &point, 1);
             state->handleSidebarHit(point);
         } else if (overlay == state->tabOverviewWindow && !state->tabOverviewClosing) {
-            MapWindowPoints(overlay, state->window, &point, 1);
+            ClientToScreen(overlay, &point);
+            ScreenToClient(state->window, &point);
             state->handleTabOverviewHit(point);
         }
         SetFocus(state->window);
