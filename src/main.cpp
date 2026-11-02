@@ -5598,7 +5598,7 @@ search.addEventListener('keydown',e=>{
             // not always exactly at y=0 and may occupy less than 90% of the page.
             if (document.elementsFromPoint) {
                 for (const x of [width * 0.03, width * 0.2, width * 0.5, width * 0.8, width * 0.97]) {
-                    for (const y of [2, 8, 16, 24, 32, 44]) {
+                    for (const y of [2, 8, 16, 24, 32, 44, 58, 76, 96, 112]) {
                         for (const hit of document.elementsFromPoint(x, y)) {
                             let element = hit;
                             for (let depth = 0; element && depth < 8; ++depth, element = element.parentElement) {
@@ -5607,13 +5607,17 @@ search.addEventListener('keydown',e=>{
                                 const style = getComputedStyle(element);
                                 const rect = element.getBoundingClientRect();
                                 const semanticHeader = element.tagName === 'HEADER'
+                                    || element.tagName === 'NAV'
                                     || element.getAttribute('role') === 'banner'
                                     || (typeof element.className === 'string'
-                                        && /header|topbar|top-bar|masthead/i.test(element.className))
-                                    || /header|topbar|top-bar|masthead/i.test(element.id || '');
-                                if (style.position !== 'fixed' && style.position !== 'sticky' && !semanticHeader) continue;
-                                if (rect.top > 10 || rect.bottom < 18
-                                    || rect.width < width * 0.3 || rect.height < 18) continue;
+                                        && /header|topbar|top-bar|masthead|navbar|navigation|app-bar/i.test(element.className))
+                                    || /header|topbar|top-bar|masthead|navbar|navigation/i.test(element.id || '');
+                                // Many current sites place their colored navigation in
+                                // normal document flow rather than fixed/sticky chrome.
+                                const anchoredHeader = style.position === 'fixed' || style.position === 'sticky';
+                                if (!anchoredHeader && !semanticHeader) continue;
+                                if (rect.top > 120 || rect.bottom < 18
+                                    || rect.width < width * 0.28 || rect.height < 18) continue;
                                 const color = normalize(style.backgroundColor);
                                 if (!color) continue;
                                 const score = Math.min(width, rect.width) * Math.min(96, rect.height);
