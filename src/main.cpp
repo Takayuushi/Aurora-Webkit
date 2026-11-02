@@ -377,7 +377,10 @@ std::vector<std::wstring> faviconCandidatesForPage(const std::wstring& pageURL, 
     candidates.push_back(first);
     candidates.push_back(secureOrigin + L"/favicon.png");
     candidates.push_back(secureOrigin + L"/apple-touch-icon.png");
-    candidates.push_back(serviceIcon);
+    // Use the neutral compass fallback on Start Page tiles rather than Google's
+    // generated letter tiles when a site does not publish a usable favicon.
+    if (!preferStartPageIcon)
+        candidates.push_back(serviceIcon);
 
     if (pageURL.rfind(L"http://", 0) == 0)
         candidates.insert(candidates.begin() + (preferStartPageIcon ? 1 : 1),
