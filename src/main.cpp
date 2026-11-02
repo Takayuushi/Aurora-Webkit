@@ -4896,48 +4896,35 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--blue)}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aurora</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif;color:#f7f9ff;--muted:rgba(245,248,255,.76)}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;width:100%}
-body{min-height:100vh;background:#10243d;color:#f7f9ff;overflow-x:hidden;position:relative}
-.wallpaper{position:fixed;inset:0;z-index:0;background:
-linear-gradient(180deg,rgba(4,12,26,.04) 0%,rgba(4,12,26,.14) 38%,rgba(4,10,22,.72) 100%),
-radial-gradient(ellipse at 27% 13%,rgba(18,223,176,.68) 0%,rgba(18,223,176,0) 36%),
-radial-gradient(ellipse at 72% 10%,rgba(141,96,255,.68) 0%,rgba(141,96,255,0) 35%),
-radial-gradient(ellipse at 52% 43%,rgba(44,151,207,.36) 0%,rgba(44,151,207,0) 42%),
-linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cover;background-position:center}
-.wallpaper:before{content:"";position:absolute;left:-3%;right:-3%;bottom:0;height:48%;opacity:.78;background:linear-gradient(180deg,rgba(27,76,96,.42),rgba(4,13,27,.96));clip-path:polygon(0 37%,7% 27%,14% 43%,22% 12%,31% 36%,39% 25%,48% 48%,57% 14%,65% 35%,74% 8%,83% 40%,91% 21%,100% 38%,100% 100%,0 100%)}
-.wallpaper:after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;opacity:.78;background:repeating-linear-gradient(176deg,transparent 0,transparent 13px,rgba(92,198,219,.10) 14px,transparent 16px),linear-gradient(180deg,rgba(18,71,105,.24),rgba(3,9,22,.82))}
-.page{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:34px 24px 42px;animation:start-page-fade .38s cubic-bezier(.2,.75,.25,1) both}
-.branding{text-align:center;margin-bottom:25px;text-shadow:0 2px 20px rgba(0,0,0,.2);animation:start-page-enter .42s cubic-bezier(.2,.75,.25,1) both}
-.brand-mark{width:80px;height:80px;margin:0 auto 10px;border:0;border-radius:0;background:transparent;box-shadow:none;display:grid;place-items:center}
-.brand-mark img{width:80px;height:80px;display:block;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(0,0,0,.22))}
-.branding h1{font-size:35px;font-weight:600;letter-spacing:-1.2px;line-height:1.1;margin:0}
-.branding p{font-size:10px;font-weight:500;letter-spacing:4px;margin:8px 0 0;color:rgba(248,251,255,.82)}
-.search-wrap{width:min(690px,90vw);position:relative;margin:0 auto 34px}
-.search{width:100%;height:50px;margin:0;padding:0 20px 0 52px;border:1px solid rgba(255,255,255,.38);border-radius:15px;background:rgba(248,250,255,.16);backdrop-filter:blur(20px) saturate(1.25);-webkit-backdrop-filter:blur(20px) saturate(1.25);color:#fff;outline:none;font-size:15px;box-shadow:0 12px 32px rgba(0,0,0,.12),inset 0 1px 0 rgba(255,255,255,.08);transition:background .22s ease,border-color .22s ease,box-shadow .22s ease,transform .22s cubic-bezier(.2,.7,.2,1)}
-.search:hover{background:rgba(248,250,255,.19);border-color:rgba(255,255,255,.5)}.search:focus{border-color:rgba(255,255,255,.72);box-shadow:0 0 0 3px rgba(255,255,255,.14),0 12px 32px rgba(0,0,0,.14);transform:translateY(-1px)}
-.search::placeholder{color:rgba(246,249,255,.72)}
-.search-icon{position:absolute;left:20px;top:50%;width:17px;height:17px;transform:translateY(-50%);stroke:rgba(248,251,255,.84);fill:none;stroke-width:1.8;stroke-linecap:round;pointer-events:none}
-.section{width:min(850px,94vw);text-align:left;margin-bottom:13px;color:rgba(249,251,255,.9);font-size:13px;font-weight:600;text-shadow:0 1px 9px rgba(0,0,0,.32)}
-.section-spaced{margin-top:22px}
-.tiles{width:min(850px,94vw);display:flex;justify-content:flex-start;align-items:flex-start;flex-wrap:wrap;gap:7px 10px}
-.tile{width:96px;min-height:100px;padding:7px 3px 9px;border-radius:13px;border:1px solid transparent;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:9px;color:#fff;cursor:pointer;transition:background .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s ease}
-.tile:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.18);transform:translateY(-2px) scale(1.015);box-shadow:0 8px 22px rgba(0,0,0,.08)}.tile:active{transform:translateY(0) scale(.975)}
-.icon{width:54px;height:54px;flex:0 0 54px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(255,255,255,.08));border:1px solid rgba(255,255,255,.24);box-shadow:0 8px 22px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.13);color:#fff;font-weight:600;font-size:24px}
-.name{font-size:12px;line-height:1.35;font-weight:500;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
+body{min-height:100vh;overflow-x:hidden;position:relative;background:var(--page);color:var(--text);--muted:#74777e;--page:#f5f5f7;--tile:#fff;--tile-border:#e1e2e6;--hover:#eceef1;--card:#fff;--card-border:#e1e2e6;--text:#26272b}
+body.dark{--page:#1c1c1e;--text:#f5f5f7;--muted:#a7a8ae;--tile:#2a2a2d;--tile-border:#3b3b40;--hover:#343438;--card:#27272a;--card-border:#3b3b40}
+body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,255,255,.92);--tile-border:rgba(255,255,255,.35);--hover:rgba(255,255,255,.14);--card:rgba(24,25,29,.52);--card-border:rgba(255,255,255,.2)}
+.wallpaper{position:fixed;inset:0;z-index:0;background:var(--page);background-size:cover;background-position:center}
+.page{position:relative;z-index:1;width:min(1080px,100%);min-height:100vh;margin:0 auto;padding:58px clamp(24px,4vw,48px) 64px;animation:start-page-fade .28s ease both}
+.branding,.search-wrap{display:none}
+.section{width:100%;text-align:left;margin:0 0 14px;color:var(--text);font-size:16px;font-weight:600;letter-spacing:-.2px}
+.section-spaced{margin-top:34px}
+.tiles{width:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,108px));justify-content:start;align-items:start;gap:10px 14px}
+.tile{width:100%;min-height:102px;padding:8px 5px 9px;border-radius:12px;border:1px solid transparent;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:8px;color:var(--text);cursor:pointer;transition:background .16s ease,border-color .16s ease}
+.tile:hover{background:var(--hover);border-color:var(--tile-border)}
+.icon{position:relative;width:58px;height:58px;flex:0 0 58px;border-radius:14px;display:grid;place-items:center;background:var(--tile);border:1px solid var(--tile-border);box-shadow:0 1px 3px rgba(0,0,0,.08);color:var(--text);font-weight:600;font-size:21px;overflow:hidden}
+.icon img{position:absolute;z-index:1;width:32px;height:32px;object-fit:contain}
+.icon span{position:relative;z-index:0}
+.name{font-size:12px;line-height:1.35;font-weight:500;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;color:var(--text)}
 .host{display:none}
-.reading-list{width:min(850px,94vw);display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}
-.reading-item{min-width:0;display:flex;flex-direction:column;gap:4px;padding:12px 15px;border:1px solid rgba(255,255,255,.2);border-radius:12px;background:rgba(255,255,255,.1);backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);color:#fff;text-decoration:none;transition:background .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s ease}
-.reading-item:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.32);transform:translateY(-1px);box-shadow:0 8px 22px rgba(0,0,0,.1)}
-.reading-name{font-size:12px;line-height:1.4;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.reading-url{font-size:11px;color:rgba(245,248,255,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.footer{margin-top:22px;color:rgba(245,248,255,.65);font-size:12px;text-align:center;text-shadow:0 1px 8px rgba(0,0,0,.3)}
-.footer a{color:rgba(245,248,255,.82);text-decoration:none;margin-left:8px}
-.footer a:hover{color:#fff;text-decoration:underline}
-@keyframes start-page-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@keyframes start-page-fade{from{opacity:0}to{opacity:1}}@media(max-width:700px){.tile{width:calc(50% - 6px)}.page{padding-top:28px}.tiles{justify-content:center}.branding{margin-bottom:22px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}</style>
-</head>
-<body>
+.reading-list{width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.reading-item{min-width:0;display:flex;flex-direction:column;gap:5px;padding:13px 15px;border:1px solid var(--card-border);border-radius:11px;background:var(--card);color:var(--text);text-decoration:none;transition:background .16s ease,border-color .16s ease}
+.reading-item:hover{background:var(--hover);border-color:var(--card-border)}
+.reading-name{font-size:13px;line-height:1.4;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reading-url{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes start-page-fade{from{opacity:0}to{opacity:1}}
+@media(max-width:700px){.page{padding-top:32px}.tiles{grid-template-columns:repeat(auto-fill,minmax(82px,96px));gap:8px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+</style>
+<body class="__AURORA_THEME_CLASS__">
 <div class="wallpaper" id="wallpaper" style="__AURORA_BACKGROUND_IMAGE__"></div>
 <div class="page">
 <div class="branding">
@@ -4962,29 +4949,13 @@ linear-gradient(135deg,#081a32 0%,#17425b 49%,#28234f 100%);background-size:cove
                 }
             }
 
-            std::wstring lowerHost = host;
-            if (!lowerHost.empty())
-                CharLowerBuffW(lowerHost.data(), static_cast<DWORD>(lowerHost.size()));
-            std::string iconBackground = "linear-gradient(145deg,#36cbb8,#287ca3)";
-            std::string iconForeground = "#ffffff";
-            if (lowerHost.find(L"youtube") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ff6961,#d81728)";
-            else if (lowerHost.find(L"github") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#50545b,#202124)";
-            else if (lowerHost.find(L"reddit") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ff9850,#e54a16)";
-            else if (lowerHost.find(L"google") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#ffffff,#eaf1ff)"; iconForeground = "#4285f4"; }
-            else if (lowerHost.find(L"wikipedia") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#ffffff,#e7e9ed)"; iconForeground = "#34383e"; }
-            else if (lowerHost.find(L"duckduckgo") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#ffac54,#dd690d)";
-            else if (lowerHost.find(L"microsoft") != std::wstring::npos) iconBackground = "linear-gradient(145deg,#5aa9ff,#6556ce)";
-            else if (lowerHost.find(L"apple") != std::wstring::npos) { iconBackground = "linear-gradient(145deg,#f6f7f9,#d4d7dd)"; iconForeground = "#34383e"; }
-
             html += "<div class=\"tile\" onclick=\"location.href='";
             html += safeUrl;
-            html += "'\"><div class=\"icon\" style=\"background:";
-            html += iconBackground;
-            html += ";color:";
-            html += iconForeground;
-            html += "\">";
+            html += "'\"><div class=\"icon\"><span>";
             html += letter;
-            html += "</div><div class=\"name\">";
+            html += "</span><img loading=\"lazy\" referrerpolicy=\"no-referrer\" src=\"https://www.google.com/s2/favicons?domain=";
+            html += safeHost;
+            html += "&amp;sz=128\" alt=\"\" onerror=\"this.remove()\"></div><div class=\"name\">";
             html += safeName;
             html += "</div><div class=\"host\">";
             html += safeHost;
@@ -5106,6 +5077,14 @@ search.addEventListener('keydown',e=>{
             html.replace(logoAt, logoPlaceholder.size(), logoData);
         }
         const std::string backgroundDataUrl = startPageBackgroundDataUrl();
+        const std::string themePlaceholder = "__AURORA_THEME_CLASS__";
+        const size_t themePosition = html.find(themePlaceholder);
+        if (themePosition != std::string::npos) {
+            std::string themeClass = dark ? "dark" : "light";
+            if (!backgroundDataUrl.empty())
+                themeClass += " custom-wallpaper";
+            html.replace(themePosition, themePlaceholder.size(), themeClass);
+        }
         const std::string backgroundPlaceholder = "__AURORA_BACKGROUND_IMAGE__";
         const size_t backgroundPlaceholderPosition = html.find(backgroundPlaceholder);
         if (backgroundPlaceholderPosition != std::string::npos) {
