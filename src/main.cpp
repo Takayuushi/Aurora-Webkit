@@ -2186,9 +2186,7 @@ struct BrowserState {
                         || previous.left != 0 || previous.top != toolbarBottom
                         || previous.right - previous.left != client.right
                         || previous.bottom - previous.top != tabHeight;
-                    const bool regionChanged = updateTabBarOverlayRegion(
-                        static_cast<int>(client.right), tabHeight);
-                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
                     HWND insertAfter = nullptr;
                     if (!alreadyVisible || forceTop)
                         insertAfter = HWND_TOP;
@@ -2196,16 +2194,21 @@ struct BrowserState {
                         flags |= SWP_NOZORDER;
                     if (!geometryChanged)
                         flags |= SWP_NOMOVE | SWP_NOSIZE;
-                    if (!alreadyVisible)
-                        flags |= SWP_SHOWWINDOW;
+                    // Size/position the popup before applying its region: a new
+                    // 0x0 window would otherwise clip the first tab region to empty.
                     if (geometryChanged || forceTop || !alreadyVisible) {
                         SetWindowPos(tabBarOverlayWindow, insertAfter,
                             origin.x, origin.y, client.right, tabHeight, flags);
                     }
+                    const bool regionChanged = updateTabBarOverlayRegion(
+                        static_cast<int>(client.right), tabHeight);
                     if (!alreadyVisible)
                         ShowWindow(tabBarOverlayWindow, SW_SHOWNOACTIVATE);
-                    if (geometryChanged || regionChanged)
+                    if (geometryChanged || regionChanged) {
                         InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+                        RedrawWindow(tabBarOverlayWindow, nullptr, nullptr,
+                            RDW_INVALIDATE | RDW_NOERASE);
+                    }
                 }
             }
         } else if (tabBarOverlayWindow && IsWindow(tabBarOverlayWindow)
@@ -2534,7 +2537,7 @@ struct BrowserState {
         int nextSidebarRow = -1;
         if (sidebarOpen) {
             const int sidebarWidth = scaleForDpi(window, 300);
-            const int rowTop = contentTop() + scaleForDpi(window, 88);
+            const int rowTop = sidebarContentTop() + scaleForDpi(window, 88);
             const int rowHeight = scaleForDpi(window, 46);
             const RECT settings = sidebarSettingsRect();
             const int listBottom = settings.top - scaleForDpi(window, 8);
@@ -2909,7 +2912,12 @@ struct BrowserState {
 
         int captureLeft = screenRect.left;
         int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
-        const int sourceHeight = static_cast<int>(screenRect.bottom - screenRect.top);
+        // The WebKit HWND now extends behind the floating tab row. Skip that
+        // chrome-only strip when capturing a page preview so capsules are not
+        // baked into tab thumbnails.
+        const int captureTop = screenRect.top
+            + (tab.browser ? tab.browser->tabsBarHeight() : 0);
+        const int sourceHeight = static_cast<int>(screenRect.bottom - captureTop);
         if (tab.browser->sidebarOpen && tab.browser->sidebarOverlayWindow
             && IsWindowVisible(tab.browser->sidebarOverlayWindow)) {
             // The drawer is a sibling HWND over the left part of WebKit. Capture only
@@ -2947,7 +2955,7 @@ struct BrowserState {
         DeleteObject(initialCaptureBrush);
 
         const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
-            sourceDC, captureLeft, screenRect.top, SRCCOPY | CAPTUREBLT);
+            sourceDC, captureLeft, captureTop, SRCCOPY | CAPTUREBLT);
         bool looksBlank = false;
         if (copied) {
             int validSamples = 0;
