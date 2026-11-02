@@ -5051,7 +5051,7 @@ body.custom-wallpaper{--text:#fff;--muted:rgba(255,255,255,.78);--tile:rgba(255,
 
         std::vector<SavedPage> startPageTiles;
         auto appendUniqueTile = [&](const std::wstring& url, const std::wstring& title) {
-            if ((url.rfind(L\"https://\", 0) != 0 && url.rfind(L\"http://\", 0) != 0)
+            if ((url.rfind(L"https://", 0) != 0 && url.rfind(L"http://", 0) != 0)
                 || startPageTiles.size() >= 8)
                 return;
             const auto duplicate = std::find_if(startPageTiles.begin(), startPageTiles.end(),
