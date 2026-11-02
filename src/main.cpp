@@ -231,6 +231,7 @@ constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
 constexpr int kTabsBarHeight = 28;
+constexpr int kTabCapsuleVerticalInset = 3;
 constexpr int kToolbarHorizontalPadding = 18;
 constexpr int kToolbarButtonSize = 20;
 constexpr int kToolbarGap = 4;
@@ -1267,8 +1268,14 @@ struct BrowserState {
     HMENU bookmarksMenu { nullptr };
     HWND downloadsPopoverWindow { nullptr };
     HWND sharePopoverWindow { nullptr };
+    HWND tabBarOverlayWindow { nullptr };
     HWND sidebarOverlayWindow { nullptr };
     HWND tabOverviewWindow { nullptr };
+    size_t tabBarOverlayRegionTabCount { 0 };
+    int tabBarOverlayRegionWidth { 0 };
+    int tabBarOverlayRegionHeight { 0 };
+    int tabBarOverlayRegionDpi { 0 };
+    bool tabBarOverlayRegionValid { false };
     HBITMAP chromePaintBitmap { nullptr };
     SIZE chromePaintBitmapSize { 0, 0 };
     HBITMAP sidebarOverlayBitmap { nullptr };
@@ -1837,7 +1844,8 @@ struct BrowserState {
         return webFullscreen || tabs.empty() || (tabs.size() <= 1 && !alwaysShowTabBar)
             ? 0 : scaleForDpi(window, kTabsBarHeight);
     }
-    int contentTop() const { return titleBarHeight() + toolbarHeight() + tabsBarHeight(); }
+    int sidebarContentTop() const { return titleBarHeight() + toolbarHeight(); }
+    int contentTop() const { return sidebarContentTop() + tabsBarHeight(); }
 
     void enterWebFullscreen()
     {
@@ -1927,7 +1935,7 @@ struct BrowserState {
     RECT sidebarRowRect(int index) const
     {
         const int width = scaleForDpi(window, 300);
-        const int rowTop = contentTop() + scaleForDpi(window, 88);
+        const int rowTop = sidebarContentTop() + scaleForDpi(window, 88);
         const int rowHeight = scaleForDpi(window, 46);
         const int inset = scaleForDpi(window, 8);
         return { inset, rowTop + index * rowHeight + scaleForDpi(window, 1),
@@ -1940,7 +1948,7 @@ struct BrowserState {
             || !IsWindowVisible(sidebarOverlayWindow))
             return;
         RECT localRect = parentRect;
-        OffsetRect(&localRect, 0, -contentTop());
+        OffsetRect(&localRect, 0, -sidebarContentTop());
         InvalidateRect(sidebarOverlayWindow, &localRect, FALSE);
     }
 
@@ -2063,7 +2071,13 @@ struct BrowserState {
             return false;
         if (handle && IsWindow(handle))
             return true;
-        if (&handle == &sidebarOverlayWindow) {
+        if (&handle == &tabBarOverlayWindow) {
+            // A shaped popup keeps only the individual tab capsules opaque. The
+            // gaps are outside its window region and reveal the live page below.
+            handle = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                overlayWindowClassName, L"", WS_POPUP,
+                0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), this);
+        } else if (&handle == &sidebarOverlayWindow) {
             // A moving child HWND shares the same sibling-composition path as
             // WebKit's accelerated child surface. Use an owned popup for the
             // sidebar so DWM composes it independently above the browser client.
@@ -2083,6 +2097,62 @@ struct BrowserState {
             && ensureOverlayWindow(tabOverviewWindow);
     }
 
+    bool updateTabBarOverlayRegion(int width, int height)
+    {
+        if (!tabBarOverlayWindow || !IsWindow(tabBarOverlayWindow))
+            return false;
+        const int dpi = windowDpi(window);
+        const size_t count = tabs.size();
+        if (tabBarOverlayRegionValid && tabBarOverlayRegionWidth == width
+            && tabBarOverlayRegionHeight == height && tabBarOverlayRegionDpi == dpi
+            && tabBarOverlayRegionTabCount == count)
+            return false;
+
+        HRGN combined = CreateRectRgn(0, 0, 0, 0);
+        if (!combined)
+            return false;
+
+        const int inset = scaleForDpi(window, kTabCapsuleVerticalInset);
+        const int corner = scaleForDpi(window, 11);
+        const int rowTop = sidebarContentTop();
+        bool addedAny = false;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            RECT capsule = tabBarItemRect(i);
+            capsule.top += inset;
+            capsule.bottom -= inset;
+            OffsetRect(&capsule, 0, -rowTop);
+            if (capsule.right <= capsule.left || capsule.bottom <= capsule.top)
+                continue;
+            HRGN itemRegion = CreateRoundRectRgn(capsule.left, capsule.top,
+                capsule.right + 1, capsule.bottom + 1, corner * 2, corner * 2);
+            if (!itemRegion)
+                continue;
+            CombineRgn(combined, combined, itemRegion, RGN_OR);
+            DeleteObject(itemRegion);
+            addedAny = true;
+        }
+
+        if (!addedAny) {
+            DeleteObject(combined);
+            combined = CreateRectRgn(0, 0, 0, 0);
+            if (!combined)
+                return false;
+        }
+
+        if (!SetWindowRgn(tabBarOverlayWindow, combined, TRUE)) {
+            DeleteObject(combined);
+            return false;
+        }
+
+        // SetWindowRgn transfers ownership of the region to the window.
+        tabBarOverlayRegionWidth = width;
+        tabBarOverlayRegionHeight = height;
+        tabBarOverlayRegionDpi = dpi;
+        tabBarOverlayRegionTabCount = count;
+        tabBarOverlayRegionValid = true;
+        return true;
+    }
+
     void positionOverlayWindows(bool forceTop = false)
     {
         if (!window || IsIconic(window))
@@ -2092,25 +2162,70 @@ struct BrowserState {
         if (!GetClientRect(window, &client))
             return;
 
-        const int top = contentTop();
-        const int height = std::max(0, static_cast<int>(client.bottom) - top);
-        // Keep the sidebar on its own HWND both while moving and while settled.
-        // The WebKit view remains stationary underneath it, avoiding renderer
-        // blackouts caused by moving/resizing the accelerated WKView child.
+        const int toolbarBottom = sidebarContentTop();
+        const int sidebarHeight = std::max(0, static_cast<int>(client.bottom) - toolbarBottom);
+        const int overviewTop = contentTop();
+        const int overviewHeight = std::max(0, static_cast<int>(client.bottom) - overviewTop);
+
+        // Float the tab capsules above a full-height WebKit viewport. The window
+        // region contains only the capsules, so page pixels remain visible between.
+        const int tabHeight = tabsBarHeight();
+        if (tabHeight > 0 && !webFullscreen) {
+            if (ensureOverlayWindow(tabBarOverlayWindow)) {
+                POINT origin { 0, toolbarBottom };
+                if (ClientToScreen(window, &origin)) {
+                    const bool alreadyVisible = IsWindowVisible(tabBarOverlayWindow) != FALSE;
+                    RECT previous { };
+                    bool havePrevious = alreadyVisible
+                        && GetWindowRect(tabBarOverlayWindow, &previous);
+                    if (havePrevious) {
+                        MapWindowPoints(nullptr, window,
+                            reinterpret_cast<POINT*>(&previous), 2);
+                    }
+                    const bool geometryChanged = !alreadyVisible || !havePrevious
+                        || previous.left != 0 || previous.top != toolbarBottom
+                        || previous.right - previous.left != client.right
+                        || previous.bottom - previous.top != tabHeight;
+                    const bool regionChanged = updateTabBarOverlayRegion(
+                        static_cast<int>(client.right), tabHeight);
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                    HWND insertAfter = nullptr;
+                    if (!alreadyVisible || forceTop)
+                        insertAfter = HWND_TOP;
+                    else
+                        flags |= SWP_NOZORDER;
+                    if (!geometryChanged)
+                        flags |= SWP_NOMOVE | SWP_NOSIZE;
+                    if (!alreadyVisible)
+                        flags |= SWP_SHOWWINDOW;
+                    if (geometryChanged || forceTop || !alreadyVisible) {
+                        SetWindowPos(tabBarOverlayWindow, insertAfter,
+                            origin.x, origin.y, client.right, tabHeight, flags);
+                    }
+                    if (!alreadyVisible)
+                        ShowWindow(tabBarOverlayWindow, SW_SHOWNOACTIVATE);
+                    if (geometryChanged || regionChanged)
+                        InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+                }
+            }
+        } else if (tabBarOverlayWindow && IsWindow(tabBarOverlayWindow)
+            && IsWindowVisible(tabBarOverlayWindow)) {
+            ShowWindow(tabBarOverlayWindow, SW_HIDE);
+        }
+
+        // The edge-to-edge sidebar begins at the same toolbar boundary as the page.
+        // It is positioned after the tab layer so an open drawer remains above it.
         if (sidebarOpen || sidebarAnimating) {
             if (ensureOverlayWindow(sidebarOverlayWindow)) {
                 const int width = scaleForDpi(window, 300);
                 const int left = sidebarOffset() - width;
-                // Anchor the popup to the actual active WebKit viewport, not the
-                // top-level window rectangle. The latter includes frame geometry
-                // that can differ from the accelerated page's visible left edge.
                 RECT pageRect { };
                 bool havePageRect = false;
                 if (auto* selected = active()) {
                     if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
                         havePageRect = GetWindowRect(viewWindow, &pageRect) != FALSE;
                 }
-                POINT popupOrigin { left, top };
+                POINT popupOrigin { left, toolbarBottom };
                 if (havePageRect) {
                     popupOrigin.x += pageRect.left;
                     popupOrigin.y = pageRect.top;
@@ -2119,7 +2234,6 @@ struct BrowserState {
                 }
                 const int popupLeft = popupOrigin.x;
                 const int popupTop = popupOrigin.y;
-                const int popupWidth = width;
                 const bool alreadyVisible = IsWindowVisible(sidebarOverlayWindow) != FALSE;
                 RECT previousRect { };
                 bool havePreviousRect = alreadyVisible
@@ -2130,23 +2244,19 @@ struct BrowserState {
                 }
 
                 const bool geometryChanged = !alreadyVisible || !havePreviousRect
-                    || previousRect.left != left || previousRect.top != top
-                    || previousRect.right - previousRect.left != popupWidth
-                    || previousRect.bottom - previousRect.top != height;
+                    || previousRect.left != left || previousRect.top != toolbarBottom
+                    || previousRect.right - previousRect.left != width
+                    || previousRect.bottom - previousRect.top != sidebarHeight;
 
                 if (!alreadyVisible) {
-                    // Show the drawer once; its cached bitmap then moves without
-                    // repeatedly changing sibling HWND order during the animation.
                     SetWindowPos(sidebarOverlayWindow, HWND_TOP,
-                        popupLeft, popupTop, popupWidth, height,
+                        popupLeft, popupTop, width, sidebarHeight,
                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
                     ShowWindow(sidebarOverlayWindow, SW_SHOWNOACTIVATE);
                     InvalidateRect(sidebarOverlayWindow, nullptr, TRUE);
                     RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
                         RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
                 } else {
-                    // Raising and invalidating the full drawer on every tick competes
-                    // with WebKit's accelerated surface and leaves stale overlay pixels.
                     if (geometryChanged || (forceTop && !sidebarAnimating)) {
                         UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                         const bool preserveStack = sidebarAnimating || !forceTop;
@@ -2158,9 +2268,8 @@ struct BrowserState {
                             flags |= SWP_NOMOVE | SWP_NOSIZE;
                         SetWindowPos(sidebarOverlayWindow,
                             preserveStack ? nullptr : HWND_TOP,
-                            popupLeft, popupTop, popupWidth, height, flags);
+                            popupLeft, popupTop, width, sidebarHeight, flags);
                     }
-
                     if (!sidebarAnimating && geometryChanged)
                         InvalidateRect(sidebarOverlayWindow, nullptr, FALSE);
                     if (forceTop && !sidebarAnimating && !userSizingWindow
@@ -2168,24 +2277,14 @@ struct BrowserState {
                         RedrawWindow(sidebarOverlayWindow, nullptr, nullptr,
                             RDW_INVALIDATE | RDW_NOERASE);
                 }
-
-                // Keep the underlying WebKit surface untouched while the drawer
-                // moves. The view remains stationary and already contains the page
-                // pixels being revealed by the moving popup.
             }
         } else if (sidebarOverlayWindow && IsWindow(sidebarOverlayWindow)
             && IsWindowVisible(sidebarOverlayWindow)) {
-            // Hiding the popup reveals the still-live WebKit surface underneath.
-            // Do not invalidate the whole accelerated child here: on this WebKit
-            // port that can clear the composed page to white until a later frame.
             ShowWindow(sidebarOverlayWindow, SW_HIDE);
         }
 
         if (tabOverviewVisible || tabOverviewClosing) {
             if (ensureOverlayWindow(tabOverviewWindow)) {
-                // Keep the overview canvas full-width even when the sidebar is open.
-                // The sidebar is an independently composed owned popup above this
-                // canvas; shifting the canvas right creates an exposed seam at the edge.
                 const int left = 0;
                 const int width = std::max(0, static_cast<int>(client.right));
                 const bool alreadyVisible = IsWindowVisible(tabOverviewWindow) != FALSE;
@@ -2194,16 +2293,11 @@ struct BrowserState {
                 if (alreadyVisible && GetWindowRect(tabOverviewWindow, &currentRect)) {
                     MapWindowPoints(nullptr, window,
                         reinterpret_cast<POINT*>(&currentRect), 2);
-                    geometryChanged = currentRect.left != left || currentRect.top != top
+                    geometryChanged = currentRect.left != left || currentRect.top != overviewTop
                         || currentRect.right - currentRect.left != width
-                        || currentRect.bottom - currentRect.top != height;
+                        || currentRect.bottom - currentRect.top != overviewHeight;
                 }
 
-                // The overview is a full-page native canvas. While the drawer animates,
-                // its target geometry is constant; repeatedly SetWindowPos + invalidating
-                // this entire canvas makes every 16 ms drawer frame redraw every tab card.
-                // Only move/paint the canvas when its actual geometry changes, or when a
-                // settled layout explicitly needs its z-order restored.
                 const bool freezeOverviewDuringSidebarSlide = alreadyVisible
                     && sidebarAnimating && tabOverviewVisible
                     && !tabOverviewAnimating && !tabOverviewClosing;
@@ -2217,7 +2311,7 @@ struct BrowserState {
                         flags |= SWP_SHOWWINDOW;
                     SetWindowPos(tabOverviewWindow,
                         alreadyVisible && !forceTop ? nullptr : HWND_TOP,
-                        left, top, width, height, flags);
+                        left, overviewTop, width, overviewHeight, flags);
                 }
                 if (!alreadyVisible || geometryChanged
                     || (forceTop && !freezeOverviewDuringSidebarSlide))
@@ -2228,8 +2322,6 @@ struct BrowserState {
             ShowWindow(tabOverviewWindow, SW_HIDE);
         }
 
-        // When both overlays are visible, keep the drawer above the overview. Apply
-        // this once after forced layout passes rather than on each animation tick.
         if (forceTop && (sidebarOpen || sidebarAnimating)
             && sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
             SetWindowPos(sidebarOverlayWindow, HWND_TOP, 0, 0, 0, 0,
@@ -2604,14 +2696,10 @@ struct BrowserState {
 
         if (tabSwitchAnimating) {
             const bool transitionStillActive = GetTickCount64() - tabSwitchAnimationStart < 180;
-            const RECT activeRect = tabBarItemRect(activeTab);
-            if (activeRect.right > activeRect.left)
-                InvalidateRect(window, &activeRect, FALSE);
-            if (previousActiveTab < tabs.size() && previousActiveTab != activeTab) {
-                const RECT previousRect = tabBarItemRect(previousActiveTab);
-                if (previousRect.right > previousRect.left)
-                    InvalidateRect(window, &previousRect, FALSE);
-            }
+            if (tabBarOverlayWindow && IsWindowVisible(tabBarOverlayWindow))
+                InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+            else
+                invalidateTabStrip();
             if (transitionStillActive)
                 continueAnimation = true;
             else
@@ -5232,16 +5320,14 @@ search.addEventListener('keydown',e=>{
     {
         if (!window || webFullscreen)
             return;
-        RECT client { };
-        if (!GetClientRect(window, &client))
-            return;
-        const int top = titleBarHeight() + toolbarHeight();
-        const int height = scaleForDpi(window, kTabsBarHeight);
-        const RECT row { 0, top, client.right, top + height };
-        // Tab widths and horizontal positions are recomputed from the tab count.
-        // Invalidate the complete band so stale pixels from the previous layout
-        // cannot remain beside the newly positioned tabs.
-        InvalidateRect(window, &row, FALSE);
+        if (tabBarOverlayWindow && IsWindow(tabBarOverlayWindow)
+            && IsWindowVisible(tabBarOverlayWindow)) {
+            updateTabBarOverlayRegion(GetClientWidth(window), tabsBarHeight());
+            InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+        } else {
+            InvalidateRect(window, nullptr, FALSE);
+            positionOverlayWindows(false);
+        }
     }
 
     void invalidateTabChrome(TabState* tab)
@@ -5251,10 +5337,8 @@ search.addEventListener('keydown',e=>{
         for (size_t i = 0; i < tabs.size(); ++i) {
             if (tabs[i].get() != tab)
                 continue;
-            if (tabsBarHeight() > 0) {
-                const RECT tabRect = tabBarItemRect(i);
-                InvalidateRect(window, &tabRect, FALSE);
-            }
+            if (tabsBarHeight() > 0)
+                invalidateTabStrip();
             break;
         }
         if (active() == tab) {
@@ -6409,12 +6493,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        const int contentTop = this->contentTop();
-        // Extend the WebKit surface one physical pixel beneath the tab-strip edge.
-        // The native tab row and the accelerated child HWND are separate surfaces;
-        // exact edge-to-edge placement can leave a one-pixel parent-background seam
-        // after DPI rounding or a compositor resize.
-        const int viewTop = contentTop;
+        // Let the live page extend underneath the floating tabs. The capsules are
+        // a separate shaped overlay and do not force a synthetic WebKit resize.
+        const int viewTop = sidebarContentTop();
         // Only the selected WKView participates in foreground resizing. Resizing all
         // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
         // low-resolution frames. An inactive page is resized when activateTab selects it.
@@ -7263,6 +7344,94 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         return false;
     }
 
+    void drawTabBar(HDC dc)
+    {
+        if (!dc || tabsBarHeight() <= 0)
+            return;
+        const int saved = SaveDC(dc);
+        if (!saved)
+            return;
+
+        const bool dark = chromeDarkTheme();
+        const int dpi = windowDpi(window);
+        HFONT tabFont = CreateFontW(-MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, uiFontFamily());
+        HGDIOBJ oldFont = tabFont ? SelectObject(dc, tabFont) : nullptr;
+        SetBkMode(dc, TRANSPARENT);
+
+        const int verticalInset = scaleForDpi(window, kTabCapsuleVerticalInset);
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            RECT tabRect = tabBarItemRect(i);
+            tabRect.top += verticalInset;
+            tabRect.bottom -= verticalInset;
+            if (tabRect.right <= tabRect.left || tabRect.bottom <= tabRect.top)
+                continue;
+
+            const float transitionProgress = tabSwitchEase();
+            const float activeWeight = i == activeTab ? transitionProgress
+                : (tabSwitchAnimating && i == previousActiveTab
+                    ? 1.0f - transitionProgress : 0.0f);
+            const COLORREF inactiveFill = dark ? RGB(52, 52, 56) : RGB(232, 234, 238);
+            const COLORREF activeFill = dark ? RGB(73, 73, 78) : RGB(255, 255, 255);
+            const COLORREF inactiveBorder = dark ? RGB(65, 65, 69) : RGB(211, 215, 221);
+            const COLORREF activeBorder = dark ? RGB(94, 94, 100) : RGB(205, 210, 217);
+            const COLORREF tabFill = blendColor(inactiveFill, activeFill, activeWeight);
+            const COLORREF tabBorder = blendColor(inactiveBorder, activeBorder, activeWeight);
+            const int radius = std::max(1, (tabRect.bottom - tabRect.top) / 2);
+            drawRoundedControl(dc, tabRect, tabFill, tabBorder, static_cast<float>(radius));
+
+            if (activeWeight > 0.04f) {
+                RECT sheen { tabRect.left + MulDiv(12, dpi, 96),
+                    tabRect.top + MulDiv(2, dpi, 96),
+                    tabRect.right - MulDiv(12, dpi, 96),
+                    tabRect.top + MulDiv(3, dpi, 96) };
+                HBRUSH sheenBrush = CreateSolidBrush(blendColor(
+                    inactiveFill, dark ? RGB(112, 112, 118) : RGB(255, 255, 255),
+                    activeWeight));
+                FillRect(dc, &sheen, sheenBrush);
+                DeleteObject(sheenBrush);
+            }
+
+            const int iconSize = MulDiv(16, dpi, 96);
+            const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
+            RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
+                tabRect.left + MulDiv(9, dpi, 96) + iconSize, iconTop + iconSize };
+            if (showWebsiteIconsInTabs) {
+                if (tabs[i]->favicon)
+                    DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon,
+                        iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                else if (gAuroraAppIcon)
+                    DrawIconEx(dc, iconRect.left, iconRect.top, gAuroraAppIcon,
+                        iconSize, iconSize, 0, nullptr, DI_NORMAL);
+                else
+                    drawCompass(dc, iconRect);
+            }
+
+            RECT titleText = tabRect;
+            titleText.left = showWebsiteIconsInTabs
+                ? iconRect.right + MulDiv(6, dpi, 96)
+                : tabRect.left + MulDiv(10, dpi, 96);
+            titleText.right -= MulDiv(31, dpi, 96);
+            SetTextColor(dc, blendColor(
+                dark ? RGB(190, 190, 196) : RGB(91, 95, 102),
+                dark ? RGB(245, 245, 247) : RGB(35, 38, 42), activeWeight));
+            if (tabFont)
+                DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top,
+                tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
+            drawClose(dc, closeRect, dark);
+        }
+
+        if (oldFont)
+            SelectObject(dc, oldFont);
+        if (tabFont)
+            DeleteObject(tabFont);
+        RestoreDC(dc, saved);
+    }
+
     bool handleTopBarHit(POINT point)
     {
         const int top = titleBarHeight() + toolbarHeight();
@@ -7364,7 +7533,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         const bool dark = chromeDarkTheme();
         int width = scaleForDpi(window, 300);
-        int top = contentTop();
+        int top = sidebarContentTop();
         RECT client { };
         GetClientRect(window, &client);
 
@@ -7538,16 +7707,16 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     bool handleSidebarHit(POINT point)
     {
         if (sidebarAnimating) {
-            // The overlay window clips clicks to its visible portion; coordinates
-            // arriving here are local to the sliding panel.
+            // The overlay clips clicks to its visible portion; use browser-client
+            // coordinates so the toolbar edge remains the sidebar's exact origin.
             return point.x >= 0 && point.x < scaleForDpi(window, 300)
-                && point.y >= contentTop();
+                && point.y >= sidebarContentTop();
         }
         if (!sidebarOpen)
             return false;
 
         int width = scaleForDpi(window, 300);
-        int top = contentTop();
+        int top = sidebarContentTop();
         if (point.x < 0 || point.x >= width || point.y < top)
             return false;
 
@@ -7665,8 +7834,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const int light = MulDiv(kTrafficLightSize, dpi, 96);
         const int lightGap = MulDiv(kTrafficLightGap, dpi, 96);
         const int toolbarTop = titleBarHeight();
-        const int tabsTop = toolbarTop + toolbarH;
-        const int tabsH = tabsBarHeight();
 
         const int lightY = toolbarTop + (toolbarH - light) / 2;
         drawTrafficLight(dc, pad, lightY, light, RGB(255, 95, 87), hoveredTrafficLight == 0);
@@ -7733,83 +7900,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             navigationRect.right - gap, navigationRect.bottom };
         drawChevron(dc, backRect, false, active() && WKPageCanGoBack(WKViewGetPage(active()->view.get())), dark);
         drawChevron(dc, forwardRect, true, active() && WKPageCanGoForward(WKViewGetPage(active()->view.get())), dark);
-
-        if (tabsH > 0) {
-            HBRUSH tabsBrush = CreateSolidBrush(dark ? RGB(35, 35, 37) : RGB(242, 242, 244));
-            RECT tabsRow { 0, tabsTop, client.right, tabsTop + tabsH };
-            FillRect(dc, &tabsRow, tabsBrush);
-            DeleteObject(tabsBrush);
-
-            for (size_t i = 0; i < tabs.size(); ++i) {
-                const RECT tabRect = tabBarItemRect(i);
-                const float transitionProgress = tabSwitchEase();
-                const float activeWeight = i == activeTab ? transitionProgress
-                    : (tabSwitchAnimating && i == previousActiveTab ? 1.0f - transitionProgress : 0.0f);
-                const COLORREF inactiveFill = dark ? RGB(47, 47, 49) : RGB(233, 234, 236);
-                const COLORREF activeFill = dark ? RGB(66, 66, 69) : RGB(255, 255, 255);
-                const COLORREF inactiveBorder = dark ? RGB(55, 55, 58) : RGB(229, 231, 232);
-                const COLORREF activeBorder = dark ? RGB(91, 91, 95) : RGB(211, 214, 216);
-                const COLORREF tabFill = blendColor(inactiveFill, activeFill, activeWeight);
-                const COLORREF tabBorder = blendColor(inactiveBorder, activeBorder, activeWeight);
-                const int tabRadius = static_cast<int>((tabRect.bottom - tabRect.top) / 2.0f);
-                drawRoundedControl(dc, tabRect, tabFill, tabBorder,
-                    static_cast<float>(tabRadius));
-                if (i == activeTab && activeWeight > 0.04f) {
-                    // Square the lower corners so the active tab meets the page surface.
-                    RECT tabJoin { tabRect.left, tabRect.bottom - tabRadius,
-                        tabRect.right, tabRect.bottom };
-                    HBRUSH joinBrush = CreateSolidBrush(tabFill);
-                    FillRect(dc, &tabJoin, joinBrush);
-                    DeleteObject(joinBrush);
-                    HPEN joinPen = CreatePen(PS_SOLID, 1, tabBorder);
-                    HGDIOBJ oldJoinPen = SelectObject(dc, joinPen);
-                    MoveToEx(dc, tabRect.left, tabRect.top + tabRadius, nullptr);
-                    LineTo(dc, tabRect.left, tabRect.bottom);
-                    MoveToEx(dc, tabRect.right - 1, tabRect.top + tabRadius, nullptr);
-                    LineTo(dc, tabRect.right - 1, tabRect.bottom);
-                    SelectObject(dc, oldJoinPen);
-                    DeleteObject(joinPen);
-                }
-                if (activeWeight > 0.04f) {
-                    const int inset = MulDiv(10, dpi, 96);
-                    RECT tabSheen { tabRect.left + inset, tabRect.top + MulDiv(2, dpi, 96),
-                        tabRect.right - inset, tabRect.top + MulDiv(3, dpi, 96) };
-                    const COLORREF sheen = blendColor(dark ? RGB(47, 47, 49) : RGB(233, 234, 236),
-                        dark ? RGB(101, 101, 106) : RGB(255, 255, 255), activeWeight);
-                    HBRUSH tabSheenBrush = CreateSolidBrush(sheen);
-                    FillRect(dc, &tabSheen, tabSheenBrush);
-                    DeleteObject(tabSheenBrush);
-                }
-                const int iconSize = MulDiv(16, dpi, 96);
-                const int iconTop = tabRect.top + (tabRect.bottom - tabRect.top - iconSize) / 2;
-                RECT iconRect { tabRect.left + MulDiv(9, dpi, 96), iconTop,
-                    tabRect.left + MulDiv(9, dpi, 96) + iconSize, iconTop + iconSize };
-                if (showWebsiteIconsInTabs) {
-                    if (tabs[i]->favicon)
-                        DrawIconEx(dc, iconRect.left, iconRect.top, tabs[i]->favicon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-                    else if (gAuroraAppIcon)
-                        DrawIconEx(dc, iconRect.left, iconRect.top, gAuroraAppIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-                    else
-                        drawCompass(dc, iconRect);
-                }
-                RECT titleText = tabRect;
-                titleText.left = showWebsiteIconsInTabs
-                    ? iconRect.right + MulDiv(6, dpi, 96)
-                    : tabRect.left + MulDiv(10, dpi, 96);
-                titleText.right -= MulDiv(31, dpi, 96);
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, dark ? RGB(240, 240, 242) : RGB(45, 49, 52));
-                // Use Aurora's explicit 12px UI font for tab labels. Without selecting
-                // a font here, the paint DC falls back to a larger system default font.
-                HGDIOBJ oldTabFont = SelectObject(dc, uiFont);
-                DrawTextW(dc, tabs[i]->title.c_str(), -1, &titleText,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                if (oldTabFont)
-                    SelectObject(dc, oldTabFont);
-                RECT closeRect { tabRect.right - MulDiv(26, dpi, 96), tabRect.top, tabRect.right - MulDiv(2, dpi, 96), tabRect.bottom };
-                drawClose(dc, closeRect, dark);
-            }
-        }
 
         RECT pill = addressPillRect();
         drawRoundedControl(dc, pill,
@@ -11354,9 +11444,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_MOVE:
         if (state) {
             state->updateLastNormalWindowRect();
-            // The sidebar is an owned popup rather than a child of the browser.
-            // Re-anchor it whenever the top-level browser window moves.
-            if (state->sidebarOpen || state->sidebarAnimating)
+            if (state->sidebarOpen || state->sidebarAnimating
+                || (state->tabBarOverlayWindow && IsWindowVisible(state->tabBarOverlayWindow)))
                 state->positionOverlayWindows();
         }
         break;
@@ -11420,6 +11509,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             if (state->sharePopoverWindow && IsWindow(state->sharePopoverWindow)) {
                 DestroyWindow(state->sharePopoverWindow);
                 state->sharePopoverWindow = nullptr;
+            }
+            if (state->tabBarOverlayWindow && IsWindow(state->tabBarOverlayWindow)) {
+                DestroyWindow(state->tabBarOverlayWindow);
+                state->tabBarOverlayWindow = nullptr;
+                state->tabBarOverlayRegionValid = false;
             }
             if (state->sidebarOverlayWindow && IsWindow(state->sidebarOverlayWindow)) {
                 DestroyWindow(state->sidebarOverlayWindow);
@@ -11493,6 +11587,16 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
     case WM_PAINT: {
         PAINTSTRUCT paint { };
         HDC dc = BeginPaint(overlay, &paint);
+        if (overlay == state->tabBarOverlayWindow) {
+            const int saved = SaveDC(dc);
+            if (saved) {
+                SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
+                state->drawTabBar(dc);
+                RestoreDC(dc, saved);
+            }
+            EndPaint(overlay, &paint);
+            return 0;
+        }
         RECT client { };
         GetClientRect(overlay, &client);
         const int width = std::max(1L, client.right);
@@ -11541,7 +11645,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 const int saved = SaveDC(bufferDC);
                 if (saved) {
                     if (overlay == state->sidebarOverlayWindow) {
-                        SetViewportOrgEx(bufferDC, 0, -state->contentTop(), nullptr);
+                        SetViewportOrgEx(bufferDC, 0, -state->sidebarContentTop(), nullptr);
                         state->drawSidebarPanel(bufferDC, true);
                     } else if (overlay == state->tabOverviewWindow) {
                         const RECT area = state->tabOverviewAreaRect();
@@ -11611,7 +11715,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
             const int saved = SaveDC(dc);
             if (saved) {
                 if (overlay == state->sidebarOverlayWindow) {
-                    SetViewportOrgEx(dc, 0, -state->contentTop(), nullptr);
+                    SetViewportOrgEx(dc, 0, -state->sidebarContentTop(), nullptr);
                     state->drawSidebarPanel(dc, true);
                 } else if (overlay == state->tabOverviewWindow) {
                     const RECT area = state->tabOverviewAreaRect();
@@ -11655,7 +11759,10 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 
     case WM_LBUTTONDOWN: {
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (overlay == state->sidebarOverlayWindow) {
+        if (overlay == state->tabBarOverlayWindow) {
+            MapWindowPoints(overlay, state->window, &point, 1);
+            state->handleTopBarHit(point);
+        } else if (overlay == state->sidebarOverlayWindow) {
             MapWindowPoints(overlay, state->window, &point, 1);
             state->handleSidebarHit(point);
         } else if (overlay == state->tabOverviewWindow && !state->tabOverviewClosing) {
