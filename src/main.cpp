@@ -5598,7 +5598,7 @@ search.addEventListener('keydown',e=>{
                 const solid = normalize(style.backgroundColor);
                 if (solid) return solid;
                 const image = String(style.backgroundImage || '');
-                const match = image.match(/(rgba?\\([^)]*\\)|#[0-9a-f]{3,8})/i);
+                const match = image.match(/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i);
                 return match ? normalize(match[1]) : null;
             };
             // Sample both the browser's top edge and the first content rows. A
