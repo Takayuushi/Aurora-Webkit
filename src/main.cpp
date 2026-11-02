@@ -2917,12 +2917,18 @@ struct BrowserState {
                     if (tabOverviewWindow && IsWindow(tabOverviewWindow))
                         ShowWindow(tabOverviewWindow, SW_HIDE);
                     positionOverlayWindows(true);
-                    // Return keyboard focus only after the transition overlay is gone.
-                    // No synchronous redraw is requested here.
+                    // A tab-bar click normally raises, focuses and invalidates the
+                    // selected WKView. Overview selection must perform the same wake
+                    // after its popup is removed; repainting only underneath the
+                    // animation snapshot can leave some accelerated pages black/stale.
                     if (auto* selected = active()) {
-                        if (HWND viewWindow = WKViewGetWindow(selected->view.get()))
+                        if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
+                            if (!IsWindowVisible(viewWindow))
+                                ShowWindow(viewWindow, SW_SHOWNA);
                             SetFocus(viewWindow);
+                        }
                     }
+                    requestActivePageRepaint(false, false, true);
                 }
             }
         }
