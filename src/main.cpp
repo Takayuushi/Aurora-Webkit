@@ -1348,8 +1348,9 @@ struct BrowserState {
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
     bool sidebarAnimating { false };
+    // Logical inset is used only to position the native tab-overview surface.
+    // The live WKView remains full-width beneath the independently composited drawer.
     bool sidebarContentInsetActive { false };
-    bool sidebarRepaintPendingAfterAnimation { false };
     float sidebarAnimationFrom { 0.0f };
     float sidebarAnimationTarget { 0.0f };
     ULONGLONG sidebarAnimationStart { 0 };
@@ -2543,13 +2544,12 @@ struct BrowserState {
         if (sidebarAnimating)
             startChromeAnimationTimer();
 
-        // On close, expand the page while the drawer still covers its left edge.
-        // On open, wait until the drawer finishes sliding before applying the inset.
-        // This keeps WebKit to one viewport resize per action, never one per frame.
+        // The drawer is a native overlay. Keep the accelerated WKView untouched;
+        // changing its viewport on a sidebar toggle caused black frames on Settings
+        // and other internal pages.
         if (!sidebarOpen && sidebarContentInsetActive) {
             sidebarContentInsetActive = false;
             resize(false);
-            sidebarRepaintPendingAfterAnimation = true;
         }
         positionOverlayWindows();
         updateSidebarZOrderTimer();
@@ -2842,24 +2842,15 @@ struct BrowserState {
             if (transitionStillActive) {
                 continueAnimation = true;
             } else if (!tabOverviewClosingSettling) {
-                // Keep the final full-size snapshot over WebKit until the renderer
-                // confirms that a fresh frame has completed. A fixed delay can expire
-                // while the accelerated surface is still white, exposing a flash.
+                // The fresh-frame request was issued at the start of the zoom.
+                // Keep the snapshot for only a short settle window; do not launch a
+                // second repaint after it has already reached full size.
                 SetFocus(window);
                 tabOverviewClosingSettling = true;
                 tabOverviewClosingSettleStart = now;
                 tabOverviewClosingSettleFramesRendered = 0;
-                tabOverviewClosingWaitingForRepaint = true;
-                tabOverviewClosingRepaintReady = false;
-                tabOverviewClosingRepaintReadyAt = 0;
-                if (auto* selected = active()) {
-                    if (WKViewGetPage(selected->view.get()))
-                        requestActivePageRepaint(false, true, true);
-                    else {
-                        tabOverviewClosingRepaintReady = true;
-                        tabOverviewClosingRepaintReadyAt = now;
-                    }
-                } else {
+                if (!tabOverviewClosingWaitingForRepaint) {
+                    tabOverviewClosingWaitingForRepaint = true;
                     tabOverviewClosingRepaintReady = true;
                     tabOverviewClosingRepaintReadyAt = now;
                 }
@@ -2870,7 +2861,7 @@ struct BrowserState {
                 // Require both WebKit's repaint-completion signal and several
                 // composed overlay frames after it. Keep a bounded fallback so a
                 // failed renderer callback cannot strand the browser in overview.
-                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 1200;
+                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 600;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
                     && (now - tabOverviewClosingRepaintReadyAt < 48
@@ -2912,12 +2903,9 @@ struct BrowserState {
                 sidebarAnimating = false;
                 if (sidebarContentInsetActive != sidebarOpen) {
                     sidebarContentInsetActive = sidebarOpen;
+                    // Reposition only the native overlays. The WebKit viewport stays
+                    // full-width, so showing/hiding the drawer cannot recreate its GPU surface.
                     resize(false);
-                    sidebarRepaintPendingAfterAnimation = true;
-                }
-                if (sidebarRepaintPendingAfterAnimation) {
-                    sidebarRepaintPendingAfterAnimation = false;
-                    requestActivePageRepaint(false, false, true);
                 }
                 positionOverlayWindows(true);
                 const RECT buttonRect = sidebarButtonRect();
@@ -5546,7 +5534,7 @@ search.addEventListener('keydown',e=>{
                 (document.documentElement || document.body).appendChild(probe);
                 const normalized = getComputedStyle(probe).color;
                 probe.remove();
-                const match = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+                const match = normalized.match(/^rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)$/i);
                 if (!match) return null;
                 if (match[4] !== undefined && Number(match[4]) < 0.82) return null;
                 const values = match.slice(1, 4).map(Number);
@@ -5555,10 +5543,37 @@ search.addEventListener('keydown',e=>{
                     Math.max(0, Math.min(255, Math.round(number))).toString(16).padStart(2, '0')
                 ).join('');
             };
-            const themeColor = document.querySelector('meta[name="theme-color" i]');
+
+            const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
+            const seen = new Set();
+            // Safari 26+ samples a wide fixed/sticky header near the top before
+            // falling back to the document background. Use multiple horizontal
+            // points so transparent logos/overlays do not hide a colored header.
+            if (document.elementsFromPoint) {
+                for (const x of [width * 0.05, width * 0.5, width * 0.95]) {
+                    for (const y of [0, 2, 3]) {
+                        for (const hit of document.elementsFromPoint(x, y)) {
+                            let element = hit;
+                            for (let depth = 0; element && depth < 8; ++depth, element = element.parentElement) {
+                                if (seen.has(element)) continue;
+                                seen.add(element);
+                                const style = getComputedStyle(element);
+                                if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+                                const rect = element.getBoundingClientRect();
+                                if (rect.top > 4 || rect.bottom < 3
+                                    || rect.width < width * 0.9 || rect.height < 3) continue;
+                                const color = normalize(style.backgroundColor);
+                                if (color) return color;
+                            }
+                        }
+                    }
+                }
+            }
+
             const bodyColor = document.body ? getComputedStyle(document.body).backgroundColor : '';
-            const rootColor = document.documentElement ? getComputedStyle(document.documentElement).backgroundColor : '';
-            for (const candidate of [themeColor && themeColor.content, bodyColor, rootColor]) {
+            const rootColor = document.documentElement
+                ? getComputedStyle(document.documentElement).backgroundColor : '';
+            for (const candidate of [bodyColor, rootColor]) {
                 const color = normalize(candidate);
                 if (color) return color;
             }
@@ -5633,7 +5648,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingWaitingForRepaint = true;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
 
@@ -5641,6 +5656,10 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
+            // Wake the live page while the overview snapshot is still zooming.
+            // WebKit can render behind the overlay instead of waiting until the
+            // zoom reaches full size.
+            requestActivePageRepaint(false, true, true);
             invalidateTabStrip();
 
             if (auto* selected = active()) {
@@ -5740,7 +5759,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewZoomTo = 1.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
-            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingWaitingForRepaint = true;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewAnimating = false;
@@ -5748,6 +5767,8 @@ search.addEventListener('keydown',e=>{
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
+            // Start repainting underneath the zoom snapshot rather than after it.
+            requestActivePageRepaint(false, true, true);
             // Refresh this page's snapshot after the overlay has finished closing.
             // This replaces stale skeleton previews after a tab was selected mid-load.
             scheduleTabThumbnailCapture(tab, 420);
@@ -6640,7 +6661,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         sidebarAnimating = false;
         sidebarContentInsetActive = true;
         resize(false);
-        requestActivePageRepaint(false, false, true);
         InvalidateRect(window, nullptr, FALSE);
     }
 
@@ -6816,14 +6836,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        // Let the live page extend underneath the floating tabs. The capsules are
-        // a separate shaped overlay and do not force a synthetic WebKit resize.
+        // Keep the accelerated page at a stable full-client width underneath both
+        // floating overlays. The sidebar masks its left edge; it must not shrink the
+        // WKView because changing its viewport repeatedly exposed black GPU surfaces.
         const int viewTop = sidebarContentTop();
-        // Only the selected WKView participates in foreground resizing. Resizing all
-        // overlapping inactive GPU surfaces on every WM_SIZE was triggering black and
-        // low-resolution frames. An inactive page is resized when activateTab selects it.
-        const int viewLeft = sidebarContentInsetActive ? scaleForDpi(window, 300) : 0;
-        const int viewWidth = std::max(0, static_cast<int>(client.right) - viewLeft);
+        const int viewLeft = 0;
+        const int viewWidth = std::max(0, static_cast<int>(client.right));
         const int viewHeight = std::max(0, static_cast<int>(client.bottom - viewTop));
         auto* selectedTab = active();
         for (const auto& tab : tabs) {
@@ -7450,9 +7468,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         case kEditCopy: executeWebEditCommand("Copy"); break;
         case kEditPaste: executeWebEditCommand("Paste"); break;
         case kEditSelectAll: executeWebEditCommand("SelectAll"); break;
-        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
-        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
-        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); requestActivePageRepaint(false, false, true); break;
+        case kSidebarBookmarks: sidebarSection = 0; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); break;
+        case kSidebarReadingList: sidebarSection = 1; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); break;
+        case kSidebarHistory: sidebarSection = 2; sidebarOpen = true; sidebarAnimating = false; sidebarContentInsetActive = true; resize(false); break;
         case kMenuZoomIn:
             if (auto* tab = active()) {
                 auto page = WKViewGetPage(tab->view.get());
@@ -8133,17 +8151,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         FillRect(dc, &client, pageBrush);
         DeleteObject(pageBrush);
 
-        if (showPageColorInTabBar && activePageTintValid && tabsBarHeight() > 0) {
+        const bool pageTintVisible = showPageColorInTabBar && activePageTintValid
+            && tabsBarHeight() > 0;
+        if (pageTintVisible) {
             const int tabBandTop = titleBarHeight() + toolbarH;
             RECT tabBand { 0, tabBandTop, client.right, tabBandTop + tabsBarHeight() };
             const COLORREF base = dark ? RGB(28, 28, 30) : RGB(250, 250, 251);
-            const COLORREF tinted = blendColor(base, activePageTintColor, dark ? 0.32f : 0.28f);
+            const COLORREF tinted = blendColor(base, activePageTintColor, dark ? 0.48f : 0.50f);
             HBRUSH tabBandBrush = CreateSolidBrush(tinted);
             FillRect(dc, &tabBand, tabBandBrush);
             DeleteObject(tabBandBrush);
         }
 
-        HBRUSH toolbarBrush = CreateSolidBrush(dark ? RGB(44, 44, 48) : RGB(247, 248, 251));
+        const COLORREF toolbarBase = dark ? RGB(44, 44, 48) : RGB(247, 248, 251);
+        const COLORREF toolbarColor = pageTintVisible
+            ? blendColor(toolbarBase, activePageTintColor, dark ? 0.40f : 0.42f)
+            : toolbarBase;
+        HBRUSH toolbarBrush = CreateSolidBrush(toolbarColor);
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
         DeleteObject(toolbarBrush);
@@ -8842,17 +8866,15 @@ void openBrowserSettings(BrowserState* browser, int requestedSection)
     if (browser->sidebarOpen || browser->sidebarAnimating || browser->sidebarContentInsetActive) {
         browser->hoveredSidebarRow = -1;
         browser->hoveredSidebarSettings = false;
-        const bool restoreFullViewport = browser->sidebarContentInsetActive;
+        const bool repositionOverlays = browser->sidebarContentInsetActive;
         browser->sidebarOpen = false;
         browser->sidebarAnimating = false;
         browser->sidebarContentInsetActive = false;
         browser->sidebarAnimationFrom = 0.0f;
         browser->sidebarAnimationTarget = 0.0f;
         browser->sidebarOverlayAnimationFrameReady = false;
-        if (restoreFullViewport) {
+        if (repositionOverlays)
             browser->resize(false);
-            browser->requestActivePageRepaint(false, false, true);
-        }
         browser->positionOverlayWindows(true);
         const RECT sidebarButton = browser->sidebarButtonRect();
         InvalidateRect(browser->window, &sidebarButton, FALSE);
