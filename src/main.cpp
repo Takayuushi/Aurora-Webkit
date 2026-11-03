@@ -238,7 +238,7 @@ constexpr UINT kSettingsRememberWindowState = 7117;
 constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
-constexpr UINT WM_AURORA_NO_PREVIEW_TAB_READY = WM_APP + 25;
+
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 
 constexpr int kTitleBarHeight = 0;
@@ -1670,6 +1670,7 @@ struct BrowserState {
     ULONGLONG tabOverviewClosingSettleStart { 0 };
     int tabOverviewClosingSettleFramesRendered { 0 };
     bool tabOverviewClosingWaitingForRepaint { false };
+    bool tabOverviewNoPreviewHandoff { false };
     bool tabOverviewClosingRepaintReady { false };
     ULONGLONG tabOverviewClosingRepaintReadyAt { 0 };
     ULONGLONG tabOverviewTransitionDuration { 420 };
@@ -3240,7 +3241,8 @@ struct BrowserState {
                 // Require both WebKit's repaint-completion signal and several
                 // composed overlay frames after it. Keep a bounded fallback so a
                 // failed renderer callback cannot strand the browser in overview.
-                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= 260;
+                const ULONGLONG repaintWaitLimit = tabOverviewNoPreviewHandoff ? 1200 : 260;
+                const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= repaintWaitLimit;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
                     && now - tabOverviewClosingRepaintReadyAt < 32;
@@ -3253,8 +3255,10 @@ struct BrowserState {
                         + L" settle_frames=" + std::to_wstring(tabOverviewClosingSettleFramesRendered)
                         + L" elapsed_ms=" + std::to_wstring(now - tabOverviewClosingStart)
                         + L" repaint_timed_out=" + (repaintTimedOut ? L"1" : L"0")
+                        + L" no_preview_handoff=" + (tabOverviewNoPreviewHandoff ? L"1" : L"0")
                         + L" active_index=" + std::to_wstring(activeTab));
                     tabOverviewClosing = false;
+                    tabOverviewNoPreviewHandoff = false;
                     tabOverviewClosingSettling = false;
                     tabOverviewClosingWaitingForRepaint = false;
                     tabOverviewClosingRepaintReady = false;
@@ -6169,7 +6173,20 @@ search.addEventListener('keydown',e=>{
         if (!animateOverviewClose) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
-            tabOverviewClosing = false;
+            tabOverviewClosing = switchingFromOverview;
+            tabOverviewNoPreviewHandoff = switchingFromOverview;
+            tabOverviewClosingTab = -1;
+            tabOverviewClosingSettling = false;
+            tabOverviewClosingSettleFramesRendered = 0;
+            tabOverviewClosingStart = GetTickCount64();
+            tabOverviewTransitionDuration = 0;
+            tabOverviewZoomFrom = 0.0f;
+            tabOverviewZoomTo = 0.0f;
+            tabOverviewClosingWaitingForRepaint = switchingFromOverview;
+            tabOverviewClosingRepaintReady = false;
+            tabOverviewClosingRepaintReadyAt = 0;
+            tabOverviewClosingFramesRendered = 0;
+            tabOverviewAnimationFrameReady = false;
         } else {
             // Leave the overview overlay above the content while the selected
             // WebKit view is restored and synchronously painted underneath it.
@@ -6256,6 +6273,7 @@ search.addEventListener('keydown',e=>{
         }
 
         if (animateOverviewClose) {
+            tabOverviewNoPreviewHandoff = false;
             // Put the selected live page at the front of the WebKit stack before the
             // animation finishes, but keep the overview HWND above it for the whole
             // transition. That lets WebKit settle its backing surface while covered.
@@ -6287,20 +6305,15 @@ search.addEventListener('keydown',e=>{
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         } else if (switchingFromOverview) {
-            // The live page has no trustworthy snapshot to animate. Close the
-            // overview immediately instead of stretching a generic skeleton across
-            // the page and waiting for an overlay frame that may never be presented.
-            logTabDiagnostic(L"OVERVIEW_CLOSE_NO_PREVIEW_FALLBACK",
+            // No trustworthy preview exists for this tab. Keep the overview
+            // visible as a static cover while WebKit produces a confirmed fresh
+            // frame; do not expose the old tab's accelerated surface in between.
+            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_WAIT_BEGIN",
                 WKViewGetPage(tab->view.get()), tab,
                 L"selected_index=" + std::to_wstring(index)
-                    + L" preview_url=" + safeDiagnosticUrl(tab->previewURL));
-            if (!PostMessageW(window, WM_AURORA_NO_PREVIEW_TAB_READY,
-                static_cast<WPARAM>(tabActivationGeneration), 0)) {
-                logTabDiagnostic(L"NO_PREVIEW_HANDOFF_POST_FAILED",
-                    WKViewGetPage(tab->view.get()), tab,
-                    L"error=" + std::to_wstring(GetLastError())
-                        + L" selected_index=" + std::to_wstring(index));
-            }
+                    + L" preview_url=" + safeDiagnosticUrl(tab->previewURL)
+                    + L" repaint_wait=1 timeout_ms=1200");
+            startChromeAnimationTimer();
         }
         // activateTab raises the selected WKView last; restore overlay z-order after
         // that so an open sidebar remains above it without touching the renderer.
@@ -6320,11 +6333,17 @@ search.addEventListener('keydown',e=>{
                 + L"x" + std::to_wstring(appliedViewRect.bottom - appliedViewRect.top);
         logTabDiagnostic(L"TAB_ACTIVATE_APPLIED", WKViewGetPage(tab->view.get()), tab, appliedDetails);
 
-        // RedrawWindow on the wrapper HWND does not guarantee a fresh accelerated
-        // WebKit frame. Request that frame after the tab switch has settled, without
-        // changing focus, view geometry, or the native overlay z-order.
-        if (!switchingFromOverview && window)
+        if (switchingFromOverview && !animateOverviewClose) {
+            // The overview popup is still visible above the selected WKView.
+            // WKPageForceRepaint completion is the handoff signal that permits
+            // the no-preview path to uncover the real page.
+            requestActivePageRepaint(false, true, true);
+            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_REPAINT_REQUESTED",
+                WKViewGetPage(tab->view.get()), tab,
+                L"waiting_for_webkit_callback=1 overlay_preserved=1");
+        } else if (!switchingFromOverview && window) {
             SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
+        }
 
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -7141,7 +7160,11 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             tabOverviewZoomTo = 0.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(currentZoom, 0.0f);
             tabOverviewClosing = false;
+            tabOverviewNoPreviewHandoff = false;
             tabOverviewClosingSettling = false;
+            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingRepaintReady = false;
+            tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewClosingTab = -1;
             tabOverviewVisible = true;
@@ -12643,65 +12666,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
 
-    case WM_AURORA_NO_PREVIEW_TAB_READY:
-        if (!state)
-            return 0;
-        if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
-            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=stale_generation");
-            return 0;
-        }
-        if (state->tabOverviewVisible || state->tabOverviewAnimating
-            || state->tabOverviewClosing || state->addressEditing || state->findBarVisible
-            || IsIconic(window)) {
-            logDiagnostic(std::wstring(L"NO_PREVIEW_HANDOFF_SKIPPED reason=ui_state")
-                + L" overview_visible=" + (state->tabOverviewVisible ? L"1" : L"0")
-                + L" overview_animating=" + (state->tabOverviewAnimating ? L"1" : L"0")
-                + L" overview_closing=" + (state->tabOverviewClosing ? L"1" : L"0")
-                + L" address_editing=" + (state->addressEditing ? L"1" : L"0")
-                + L" find_bar=" + (state->findBarVisible ? L"1" : L"0"));
-            return 0;
-        }
-        if (auto* selected = state->active()) {
-            HWND viewWindow = WKViewGetWindow(selected->view.get());
-            const HWND oldFocus = GetFocus();
-            const HWND previousSibling = viewWindow ? GetWindow(viewWindow, GW_HWNDPREV) : nullptr;
-            const bool foreground = GetForegroundWindow() == window;
-            std::wstring details = L"active_index=" + std::to_wstring(state->activeTab)
-                + L" view=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(viewWindow)))
-                + L" old_focus=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(oldFocus)))
-                + L" previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(previousSibling)))
-                + L" foreground=" + (foreground ? L"1" : L"0")
-                + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0")
-                + L" page_progress=" + std::to_wstring(WKPageGetEstimatedProgress(WKViewGetPage(selected->view.get())));
-            logTabDiagnostic(L"NO_PREVIEW_TAB_PRESENT_BEGIN", WKViewGetPage(selected->view.get()),
-                selected, details);
-
-            if (viewWindow && IsWindow(viewWindow) && IsWindowVisible(viewWindow)) {
-                // Only move keyboard focus when Aurora is still the foreground
-                // window. Regardless of foreground state, request a new page frame.
-                if (foreground)
-                    SetFocus(viewWindow);
-                // The no-preview route closes the overview immediately, so a single
-                // forced repaint can leave WebKit's accelerated surface showing the
-                // previously active tab. Run the bounded recovery cycle without
-                // changing the page viewport or promoting it over native overlays.
-                state->beginWindowSurfaceRecovery(false, true, false, true);
-                const HWND newFocus = GetFocus();
-                logTabDiagnostic(L"NO_PREVIEW_TAB_PRESENT_REQUESTED", WKViewGetPage(selected->view.get()),
-                    selected,
-                    L"focus_after=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(newFocus)))
-                        + L" focus_target=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(viewWindow)))
-                        + L" focus_matches=" + (newFocus == viewWindow ? L"1" : L"0"));
-            } else {
-                logTabDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED", WKViewGetPage(selected->view.get()),
-                    selected, L"reason=invalid_or_hidden_view");
-            }
-        } else {
-            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=no_active_tab");
-        }
-        return 0;
-
-    case WM_AURORA_SETTINGS_PAGE_READY:
+undefined    case WM_AURORA_SETTINGS_PAGE_READY:
         if (!state)
             return 0;
         if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
@@ -12732,6 +12697,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             && state->tabOverviewClosingWaitingForRepaint) {
             state->tabOverviewClosingRepaintReady = true;
             state->tabOverviewClosingRepaintReadyAt = GetTickCount64();
+            if (state->tabOverviewNoPreviewHandoff) {
+                if (auto* selected = state->active())
+                    logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_REPAINT_READY",
+                        WKViewGetPage(selected->view.get()), selected,
+                        L"active_index=" + std::to_wstring(state->activeTab));
+                else
+                    logDiagnostic(L"OVERVIEW_NO_PREVIEW_REPAINT_READY active_index=none");
+            }
             if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
                 InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
             state->startChromeAnimationTimer();
