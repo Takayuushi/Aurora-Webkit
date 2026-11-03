@@ -54,6 +54,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -163,6 +164,7 @@ constexpr UINT kSidebarHistory = 2232;
 constexpr UINT WM_AURORA_FAVICON_READY = WM_APP + 20;
 constexpr UINT WM_AURORA_TRANSITION_REPAINT_READY = WM_APP + 21;
 constexpr UINT WM_AURORA_PAGE_TINT_READY = WM_APP + 23;
+constexpr UINT WM_AURORA_THUMBNAIL_READY = WM_APP + 24;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
@@ -1250,6 +1252,8 @@ struct TabState {
     int previewHeight { 0 };
     std::wstring previewURL;
     bool thumbnailCaptureNeeded { true };
+    bool thumbnailCaptureInFlight { false };
+    unsigned thumbnailCaptureFailures { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
 
@@ -1257,6 +1261,26 @@ struct TabState {
     {
         if (previewBitmap)
             DeleteObject(previewBitmap);
+    }
+};
+
+struct ThumbnailCaptureLifetime {
+    std::mutex mutex;
+    bool alive { true };
+};
+
+struct ThumbnailCaptureResult {
+    uintptr_t tabIdentity { 0 };
+    unsigned long long activationGeneration { 0 };
+    std::wstring url;
+    HBITMAP bitmap { nullptr };
+    int width { 0 };
+    int height { 0 };
+
+    ~ThumbnailCaptureResult()
+    {
+        if (bitmap)
+            DeleteObject(bitmap);
     }
 };
 
@@ -1439,6 +1463,10 @@ struct BrowserState {
     std::wstring pendingThumbnailCaptureURL;
     bool sidebarZOrderTimerActive { false };
     bool userSizingWindow { false };
+    unsigned long long tabActivationGeneration { 0 };
+    std::shared_ptr<ThumbnailCaptureLifetime> thumbnailCaptureLifetime {
+        std::make_shared<ThumbnailCaptureLifetime>()
+    };
 
     bool darkTheme() const { return themeMode == ThemeMode::Dark || (themeMode == ThemeMode::System && windowsPrefersDarkMode()); }
     // Safari's toolbar has its own appearance; keep System mode light by default
@@ -3030,7 +3058,9 @@ struct BrowserState {
 
     bool captureTabThumbnail(TabState& tab, bool allowPreviouslyLoadedPartial = false)
     {
-        // Capture only while this tab owns the visible WebKit surface.
+        // Capture only while this tab owns the visible WebKit surface. The costly
+        // desktop BitBlt, pixel validation and scaling are performed by a worker
+        // so a complex accelerated page cannot stall Aurora's message/animation loop.
         if (!tab.browser || tab.browser->active() != &tab || IsIconic(tab.browser->window)
             || tab.browser->sidebarAnimating
             || tab.browser->tabOverviewVisible || tab.browser->tabOverviewAnimating
@@ -3038,18 +3068,18 @@ struct BrowserState {
             || (tab.browser->downloadsPopoverWindow && IsWindowVisible(tab.browser->downloadsPopoverWindow))
             || (tab.browser->sharePopoverWindow && IsWindowVisible(tab.browser->sharePopoverWindow)))
             return false;
+        if (tab.thumbnailCaptureInFlight)
+            return true;
 
         auto page = WKViewGetPage(tab.view.get());
         if (!page)
             return false;
         const double loadProgress = WKPageGetEstimatedProgress(page);
-        // For a tab-switch capture during a reload, a previously-completed render
-        // of the same URL is safe to reuse. Never label old-page pixels with a URL
-        // that has not completed its first render.
         if (loadProgress < 1.0
             && (!allowPreviouslyLoadedPartial
                 || tab.lastCompletedThumbnailURL != tab.activeUrl))
             return false;
+
         HWND viewWindow = WKViewGetWindow(tab.view.get());
         if (!viewWindow || !IsWindowVisible(viewWindow))
             return false;
@@ -3058,20 +3088,12 @@ struct BrowserState {
             return false;
 
         int captureLeft = screenRect.left;
+        const int captureTop = screenRect.top + tabsBarHeight();
         int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
-        // The WebKit HWND now extends behind the floating tab row. Skip that
-        // chrome-only strip when capturing a page preview so capsules are not
-        // baked into tab thumbnails.
-        const int captureTop = screenRect.top
-            + (tab.browser ? tab.browser->tabsBarHeight() : 0);
         const int sourceHeight = static_cast<int>(screenRect.bottom - captureTop);
-        if (tab.browser->sidebarOpen && tab.browser->sidebarOverlayWindow
-            && IsWindowVisible(tab.browser->sidebarOverlayWindow)) {
-            // The drawer is a sibling HWND over the left part of WebKit. Capture only
-            // the unobscured part of the already-presented page; copying the covered
-            // pixels would put the sidebar itself into every tab preview.
+        if (sidebarOpen && sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
             RECT drawerRect { };
-            if (GetWindowRect(tab.browser->sidebarOverlayWindow, &drawerRect)) {
+            if (GetWindowRect(sidebarOverlayWindow, &drawerRect)) {
                 const int obscuredLeft = std::clamp(
                     static_cast<int>(drawerRect.right - screenRect.left), 0, sourceWidth);
                 captureLeft += obscuredLeft;
@@ -3081,107 +3103,124 @@ struct BrowserState {
         if (sourceWidth < 80 || sourceHeight < 60)
             return false;
 
-        // Capture the already-presented pixels. Synthetic PrintWindow paints can
-        // return stale or blank content for accelerated WebKit child windows.
-        HDC sourceDC = GetDC(nullptr);
-        if (!sourceDC)
-            return false;
-        HDC captureDC = CreateCompatibleDC(sourceDC);
-        HBITMAP captureBitmap = CreateCompatibleBitmap(sourceDC, sourceWidth, sourceHeight);
-        if (!captureDC || !captureBitmap) {
-            if (captureBitmap) DeleteObject(captureBitmap);
-            if (captureDC) DeleteDC(captureDC);
-            ReleaseDC(nullptr, sourceDC);
-            return false;
-        }
+        const HWND ownerWindow = window;
+        const uintptr_t tabIdentity = reinterpret_cast<uintptr_t>(&tab);
+        const unsigned long long activationGeneration = tabActivationGeneration;
+        const std::wstring capturedURL = tab.activeUrl;
+        const auto lifetime = thumbnailCaptureLifetime;
+        tab.thumbnailCaptureInFlight = true;
 
-        HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
-        RECT captureRect { 0, 0, sourceWidth, sourceHeight };
-        HBRUSH initialCaptureBrush = CreateSolidBrush(RGB(8, 12, 18));
-        FillRect(captureDC, &captureRect, initialCaptureBrush);
-        DeleteObject(initialCaptureBrush);
+        try {
+            std::thread([ownerWindow, tabIdentity, activationGeneration, capturedURL,
+                lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
+                auto result = std::make_unique<ThumbnailCaptureResult>();
+                result->tabIdentity = tabIdentity;
+                result->activationGeneration = activationGeneration;
+                result->url = capturedURL;
 
-        const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
-            sourceDC, captureLeft, captureTop, SRCCOPY | CAPTUREBLT);
-        bool looksBlank = false;
-        if (copied) {
-            int validSamples = 0;
-            int nearBlackSamples = 0;
-            int nearWhiteSamples = 0;
-            int minLuminance = 255;
-            int maxLuminance = 0;
-            for (int sy = 1; sy <= 7; ++sy) {
-                const int y = (sourceHeight * sy) / 8;
-                for (int sx = 1; sx <= 9; ++sx) {
-                    const int x = (sourceWidth * sx) / 10;
-                    const COLORREF pixel = GetPixel(captureDC, x, y);
-                    if (pixel == CLR_INVALID)
-                        continue;
-                    const int luminance = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
-                        + GetBValue(pixel) * 11) / 100;
-                    ++validSamples;
-                    minLuminance = std::min(minLuminance, luminance);
-                    maxLuminance = std::max(maxLuminance, luminance);
-                    if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
-                        ++nearBlackSamples;
-                    if (GetRValue(pixel) > 245 && GetGValue(pixel) > 245 && GetBValue(pixel) > 245)
-                        ++nearWhiteSamples;
-                }
-            }
-            looksBlank = validSamples >= 20
-                && maxLuminance - minLuminance <= 9
-                && (nearBlackSamples * 100 >= validSamples * 94
-                    || nearWhiteSamples * 100 >= validSamples * 94);
-        }
+                HDC sourceDC = GetDC(nullptr);
+                if (sourceDC) {
+                    HDC captureDC = CreateCompatibleDC(sourceDC);
+                    HBITMAP captureBitmap = CreateCompatibleBitmap(sourceDC, sourceWidth, sourceHeight);
+                    if (captureDC && captureBitmap) {
+                        HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
+                        RECT captureRect { 0, 0, sourceWidth, sourceHeight };
+                        HBRUSH initialCaptureBrush = CreateSolidBrush(RGB(8, 12, 18));
+                        FillRect(captureDC, &captureRect, initialCaptureBrush);
+                        DeleteObject(initialCaptureBrush);
 
-        bool saved = false;
-        if (copied && !looksBlank) {
-            const double factor = std::min(1.0,
-                std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
-            const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
-            const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
-            HDC previewDC = CreateCompatibleDC(sourceDC);
-            HBITMAP preview = CreateCompatibleBitmap(sourceDC, targetWidth, targetHeight);
-            if (previewDC && preview) {
-                HGDIOBJ oldPreview = SelectObject(previewDC, preview);
-                SetStretchBltMode(previewDC, HALFTONE);
-                SetBrushOrgEx(previewDC, 0, 0, nullptr);
-                const BOOL scaled = StretchBlt(previewDC, 0, 0, targetWidth, targetHeight,
-                    captureDC, 0, 0, sourceWidth, sourceHeight, SRCCOPY);
-                SelectObject(previewDC, oldPreview);
-                if (scaled) {
-                    if (tab.previewBitmap)
-                        DeleteObject(tab.previewBitmap);
-                    tab.previewBitmap = preview;
-                    tab.previewWidth = targetWidth;
-                    tab.previewHeight = targetHeight;
-                    tab.previewURL = tab.activeUrl;
-                    tab.thumbnailCaptureNeeded = false;
-                    saved = true;
-                    if (tab.browser->tabOverviewVisible && tab.browser->tabOverviewWindow) {
-                        tab.browser->tabOverviewAnimationFrameReady = false;
-                        InvalidateRect(tab.browser->tabOverviewWindow, nullptr, FALSE);
+                        const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
+                            sourceDC, captureLeft, captureTop, SRCCOPY | CAPTUREBLT);
+                        bool looksBlank = false;
+                        if (copied) {
+                            int validSamples = 0;
+                            int nearBlackSamples = 0;
+                            int nearWhiteSamples = 0;
+                            int minLuminance = 255;
+                            int maxLuminance = 0;
+                            for (int sy = 1; sy <= 7; ++sy) {
+                                const int y = (sourceHeight * sy) / 8;
+                                for (int sx = 1; sx <= 9; ++sx) {
+                                    const int x = (sourceWidth * sx) / 10;
+                                    const COLORREF pixel = GetPixel(captureDC, x, y);
+                                    if (pixel == CLR_INVALID)
+                                        continue;
+                                    const int luminance = (GetRValue(pixel) * 30 + GetGValue(pixel) * 59
+                                        + GetBValue(pixel) * 11) / 100;
+                                    ++validSamples;
+                                    minLuminance = std::min(minLuminance, luminance);
+                                    maxLuminance = std::max(maxLuminance, luminance);
+                                    if (GetRValue(pixel) < 10 && GetGValue(pixel) < 10 && GetBValue(pixel) < 12)
+                                        ++nearBlackSamples;
+                                    if (GetRValue(pixel) > 245 && GetGValue(pixel) > 245 && GetBValue(pixel) > 245)
+                                        ++nearWhiteSamples;
+                                }
+                            }
+                            looksBlank = validSamples >= 20
+                                && maxLuminance - minLuminance <= 9
+                                && (nearBlackSamples * 100 >= validSamples * 94
+                                    || nearWhiteSamples * 100 >= validSamples * 94);
+                        }
+
+                        if (copied && !looksBlank) {
+                            const double factor = std::min(1.0,
+                                std::min(1920.0 / sourceWidth, 1080.0 / sourceHeight));
+                            const int targetWidth = std::max(1, static_cast<int>(sourceWidth * factor));
+                            const int targetHeight = std::max(1, static_cast<int>(sourceHeight * factor));
+                            HDC previewDC = CreateCompatibleDC(sourceDC);
+                            HBITMAP preview = CreateCompatibleBitmap(sourceDC, targetWidth, targetHeight);
+                            if (previewDC && preview) {
+                                HGDIOBJ oldPreview = SelectObject(previewDC, preview);
+                                SetStretchBltMode(previewDC, HALFTONE);
+                                SetBrushOrgEx(previewDC, 0, 0, nullptr);
+                                const BOOL scaled = StretchBlt(previewDC, 0, 0, targetWidth, targetHeight,
+                                    captureDC, 0, 0, sourceWidth, sourceHeight, SRCCOPY);
+                                SelectObject(previewDC, oldPreview);
+                                if (scaled) {
+                                    result->bitmap = preview;
+                                    result->width = targetWidth;
+                                    result->height = targetHeight;
+                                } else {
+                                    DeleteObject(preview);
+                                }
+                            } else if (preview) {
+                                DeleteObject(preview);
+                            }
+                            if (previewDC)
+                                DeleteDC(previewDC);
+                        }
+
+                        SelectObject(captureDC, oldCapture);
                     }
-                } else {
-                    DeleteObject(preview);
+                    if (captureBitmap)
+                        DeleteObject(captureBitmap);
+                    if (captureDC)
+                        DeleteDC(captureDC);
+                    ReleaseDC(nullptr, sourceDC);
                 }
-            } else if (preview) {
-                DeleteObject(preview);
-            }
-            if (previewDC)
-                DeleteDC(previewDC);
-        }
 
-        SelectObject(captureDC, oldCapture);
-        DeleteObject(captureBitmap);
-        DeleteDC(captureDC);
-        ReleaseDC(nullptr, sourceDC);
-        return saved;
+                // Serialize posting with WM_DESTROY so no result can be queued
+                // after the browser starts tearing down its native state.
+                std::lock_guard<std::mutex> lock(lifetime->mutex);
+                if (!lifetime->alive || !IsWindow(ownerWindow))
+                    return;
+                auto* rawResult = result.release();
+                if (!PostMessageW(ownerWindow, WM_AURORA_THUMBNAIL_READY, 0,
+                        reinterpret_cast<LPARAM>(rawResult)))
+                    delete rawResult;
+            }).detach();
+        } catch (...) {
+            tab.thumbnailCaptureInFlight = false;
+            return false;
+        }
+        return true;
     }
 
     void scheduleTabThumbnailCapture(TabState* tab, UINT delayMilliseconds = 420)
     {
         if (!window || !tab)
+            return;
+        if (tab->thumbnailCaptureInFlight)
             return;
         pendingThumbnailCaptureTab = tab;
         tab->thumbnailCaptureNeeded = true;
