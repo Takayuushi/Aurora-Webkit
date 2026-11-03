@@ -3244,8 +3244,9 @@ struct BrowserState {
                 const ULONGLONG repaintWaitLimit = tabOverviewNoPreviewHandoff ? 1200 : 260;
                 const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= repaintWaitLimit;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
+                const ULONGLONG postRepaintSettleMs = tabOverviewNoPreviewHandoff ? 420 : 32;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
-                    && now - tabOverviewClosingRepaintReadyAt < 32;
+                    && now - tabOverviewClosingRepaintReadyAt < postRepaintSettleMs;
                 const bool settleStillActive = repaintPending || postRepaintSettle;
                 if (settleStillActive) {
                     continueAnimation = true;
@@ -5145,11 +5146,11 @@ struct BrowserState {
             + R"HTML(;--line:)HTML" + (dark ? "#414144" : "#dedee2") + R"HTML(;--selected:)HTML"
             + (dark ? "#3b3b3f" : "#e6e6ea") + R"HTML(;--blue:)HTML" + (dark ? "#0a84ff" : "#007aff")
             + R"HTML(}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:radial-gradient(ellipse at 12% 0%,rgba(30,160,190,.12),transparent 45%),radial-gradient(ellipse at 88% 8%,rgba(133,98,230,.12),transparent 42%),var(--bg);color:var(--text)}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;background:var(--bg);color:var(--text)}
 form{margin:0}
 button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
-.shell{width:min(1040px,calc(100% - 48px));margin:0 auto 32px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035);transform-origin:50% 0;will-change:opacity,transform;animation:settings-shell-in .34s cubic-bezier(.16,1,.3,1) both}
-.top{padding:13px 22px 0;background:var(--glass-bar);backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);border-bottom:1px solid var(--line)}
+.shell{width:min(1040px,calc(100% - 48px));margin:0 auto 32px;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 44px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.035)}
+.top{padding:13px 22px 0;background:var(--bar);border-bottom:1px solid var(--line)}
 .topline{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin-bottom:11px}
 .topline strong{font-size:14px;line-height:1.35;font-weight:600;letter-spacing:-.1px}
 .done{display:inline-block;text-decoration:none;border:1px solid transparent;border-radius:8px;padding:7px 13px;background:var(--selected);color:var(--text);font:inherit;line-height:1.35;cursor:pointer}
@@ -5182,7 +5183,7 @@ button,input,select,a{font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-
 .content{max-width:790px;margin:0 auto;padding:30px 34px 34px}
 h1{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.35px;margin:0 0 6px}
 .sub{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 27px}
-@keyframes settings-shell-in{from{opacity:0;transform:translateY(14px) scale(.978)}70%{opacity:1;transform:translateY(-1px) scale(1.002)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes settings-panel-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}.panel{display:none}.panel.active{display:block;animation:settings-panel-in .26s cubic-bezier(.16,1,.3,1) both}
+.panel{display:none}.panel.active{display:block}
 .field{display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}
 .field:first-child{border-top:1px solid var(--line)}
 .field label,.field .fieldname{font-size:13px;line-height:1.4;font-weight:500}
@@ -6333,11 +6334,28 @@ search.addEventListener('keydown',e=>{
                 + L"x" + std::to_wstring(appliedViewRect.bottom - appliedViewRect.top);
         logTabDiagnostic(L"TAB_ACTIVATE_APPLIED", WKViewGetPage(tab->view.get()), tab, appliedDetails);
 
+        // Navigation completion is not guaranteed to occur while this tab is
+        // active (Settings may have loaded in the background). Re-arm presentation
+        // recovery whenever the existing Settings tab becomes active.
+        if (tab->internalPage == L"settings" && window) {
+            const bool posted = PostMessageW(window, WM_AURORA_SETTINGS_PAGE_READY,
+                static_cast<WPARAM>(tabActivationGeneration), 0) != FALSE;
+            logTabDiagnostic(posted ? L"SETTINGS_ACTIVATION_RECOVERY_QUEUED"
+                                    : L"SETTINGS_ACTIVATION_RECOVERY_POST_FAILED",
+                WKViewGetPage(tab->view.get()), tab, posted
+                    ? L"activation_generation=" + std::to_wstring(tabActivationGeneration)
+                    : L"error=" + std::to_wstring(GetLastError()));
+        }
+
         if (switchingFromOverview && !animateOverviewClose) {
             // The overview popup is still visible above the selected WKView.
             // WKPageForceRepaint completion is the handoff signal that permits
             // the no-preview path to uncover the real page.
             requestActivePageRepaint(false, true, true);
+            // A ForceRepaint callback confirms request completion, not that the
+            // accelerated HWND has presented the new surface. Keep requesting
+            // real frames while the overview covers the page and during settling.
+            beginWindowSurfaceRecovery(false, true, false, true);
             logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_REPAINT_REQUESTED",
                 WKViewGetPage(tab->view.get()), tab,
                 L"waiting_for_webkit_callback=1 overlay_preserved=1");
