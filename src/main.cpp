@@ -175,6 +175,7 @@ constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
 constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
 constexpr UINT_PTR kSidebarZOrderTimerId = 0xA11A;
 constexpr UINT_PTR kDeferredPageTintTimerId = 0xA11B;
+constexpr UINT_PTR kChromeHoverSyncTimerId = 0xA11C;
 constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
@@ -1639,6 +1640,7 @@ struct BrowserState {
     int hoveredTrafficLight { -1 };
     float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
     bool mouseTrackingForChrome { false };
+    bool chromeHoverSyncTimerActive { false };
     bool chromeAnimationTimerActive { false };
     bool tabSwitchAnimating { false };
     size_t previousActiveTab { 0 };
@@ -2873,6 +2875,14 @@ struct BrowserState {
 
     void updateToolbarHover(POINT point)
     {
+        const int previousToolbarHover = hoveredToolbarButton;
+        const int previousLeftHover = hoveredLeftControl;
+        const int previousNavigationHover = hoveredNavigationButton;
+        const int previousSidebarRowHover = hoveredSidebarRow;
+        const int previousTabHover = hoveredTabBarIndex;
+        const bool previousSidebarSettingsHover = hoveredSidebarSettings;
+        const int previousTrafficLightHover = hoveredTrafficLight;
+
         int nextHovered = -1;
         const int tabTop = titleBarHeight() + toolbarHeight();
         const int tabBottom = tabTop + tabsBarHeight();
@@ -3040,6 +3050,45 @@ struct BrowserState {
             if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         }
+
+        const bool hoverChanged = previousToolbarHover != hoveredToolbarButton
+            || previousLeftHover != hoveredLeftControl
+            || previousNavigationHover != hoveredNavigationButton
+            || previousSidebarRowHover != hoveredSidebarRow
+            || previousTabHover != hoveredTabBarIndex
+            || previousSidebarSettingsHover != hoveredSidebarSettings
+            || previousTrafficLightHover != hoveredTrafficLight;
+        if (hoverChanged) {
+            std::wstring details = L"CHROME_HOVER_CHANGE point="
+                + std::to_wstring(point.x) + L"," + std::to_wstring(point.y)
+                + L" toolbar=" + std::to_wstring(hoveredToolbarButton)
+                + L" left=" + std::to_wstring(hoveredLeftControl)
+                + L" navigation=" + std::to_wstring(hoveredNavigationButton)
+                + L" tab=" + std::to_wstring(hoveredTabBarIndex)
+                + L" sidebar_row=" + std::to_wstring(hoveredSidebarRow)
+                + L" sidebar_settings=" + (hoveredSidebarSettings ? L"1" : L"0")
+                + L" traffic_light=" + std::to_wstring(hoveredTrafficLight)
+                + L" active_index=" + std::to_wstring(activeTab);
+            logDiagnostic(std::move(details));
+        }
+
+        // Keep tracking only while a parent-painted control has a hover state.
+        // This catches movement into the WebKit child HWND, where the parent no
+        // longer receives WM_MOUSEMOVE and therefore cannot clear hover itself.
+        const bool needsHoverSync = hoveredToolbarButton >= 0
+            || hoveredLeftControl >= 0
+            || hoveredNavigationButton >= 0
+            || hoveredSidebarRow >= 0
+            || hoveredTabBarIndex >= 0
+            || hoveredSidebarSettings
+            || hoveredTrafficLight >= 0;
+        if (needsHoverSync && !chromeHoverSyncTimerActive) {
+            chromeHoverSyncTimerActive = SetTimer(window,
+                kChromeHoverSyncTimerId, 32, nullptr) != 0;
+        } else if (!needsHoverSync && chromeHoverSyncTimerActive) {
+            KillTimer(window, kChromeHoverSyncTimerId);
+            chromeHoverSyncTimerActive = false;
+        }
     }
 
     float tabSwitchEase() const
@@ -3137,6 +3186,11 @@ struct BrowserState {
             if (transitionStillActive) {
                 continueAnimation = true;
             } else {
+                logDiagnostic(L"OVERVIEW_OPEN_COMPLETE frames="
+                    + std::to_wstring(tabOverviewOpeningFramesRendered)
+                    + L" minimum_frames=" + std::to_wstring(tabOverviewMinimumFrames())
+                    + L" duration_ms=" + std::to_wstring(tabOverviewTransitionDuration)
+                    + L" active_index=" + std::to_wstring(activeTab));
                 tabOverviewAnimating = false;
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
                     SetWindowPos(tabOverviewWindow, nullptr, 0, contentTop(), 0, 0,
@@ -3184,6 +3238,12 @@ struct BrowserState {
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
+                    logDiagnostic(L"OVERVIEW_CLOSE_COMPLETE frames="
+                        + std::to_wstring(tabOverviewClosingFramesRendered)
+                        + L" settle_frames=" + std::to_wstring(tabOverviewClosingSettleFramesRendered)
+                        + L" elapsed_ms=" + std::to_wstring(now - tabOverviewClosingStart)
+                        + L" repaint_timed_out=" + (repaintTimedOut ? L"1" : L"0")
+                        + L" active_index=" + std::to_wstring(activeTab));
                     tabOverviewClosing = false;
                     tabOverviewClosingSettling = false;
                     tabOverviewClosingWaitingForRepaint = false;
@@ -6028,6 +6088,18 @@ search.addEventListener('keydown',e=>{
         ++tabActivationGeneration;
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
+        if (switchingFromOverview) {
+            const TabState* target = tabs[index].get();
+            const bool hasPreview = target->previewBitmap && target->previewWidth > 0
+                && target->previewHeight > 0 && target->previewURL == target->activeUrl;
+            logDiagnostic(L"OVERVIEW_CLOSE_REQUEST target_index=" + std::to_wstring(index)
+                + L" active_url=" + safeDiagnosticUrl(target->activeUrl)
+                + L" internal_page=" + target->internalPage
+                + L" initial_pending=" + (target->initialPageLoadPending ? L"1" : L"0")
+                + L" preview_valid=" + (hasPreview ? L"1" : L"0")
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+                + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0"));
+        }
         // Preserve the current animation position if a tab is selected while the
         // overview is still opening. Resetting this to zero causes a visible jump
         // back to the card before the selected-tab zoom can continue.
@@ -6191,6 +6263,19 @@ search.addEventListener('keydown',e=>{
         positionOverlayWindows(true);
         if (tab->thumbnailCaptureNeeded || tab->previewURL != tab->activeUrl)
             scheduleTabThumbnailCapture(tab, 420);
+        RECT appliedViewRect { };
+        const bool appliedRectValid = selectedView && GetClientRect(selectedView, &appliedViewRect);
+        std::wstring appliedDetails = L"selected_index=" + std::to_wstring(index)
+            + L" from_index=" + std::to_wstring(previouslyActive)
+            + L" overview_closing=" + (tabOverviewClosing ? L"1" : L"0")
+            + L" overview_visible=" + (tabOverviewVisible ? L"1" : L"0")
+            + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+            + L" view_visible=" + (selectedView && IsWindowVisible(selectedView) ? L"1" : L"0");
+        if (appliedRectValid)
+            appliedDetails += L" view_size=" + std::to_wstring(appliedViewRect.right - appliedViewRect.left)
+                + L"x" + std::to_wstring(appliedViewRect.bottom - appliedViewRect.top);
+        logTabDiagnostic(L"TAB_ACTIVATE_APPLIED", WKViewGetPage(tab->view.get()), tab, appliedDetails);
+
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
             invalidateTabChrome(tabs[previouslyActive].get());
@@ -11968,6 +12053,10 @@ void didChangeActiveURL(const void* clientInfo)
     auto url = createString(adoptWK(WKPageCopyActiveURL(page)).get());
 
     if (tab->activeUrl != url) {
+        const std::wstring changeDetails = L"old_url=" + safeDiagnosticUrl(tab->activeUrl)
+            + L" new_url=" + safeDiagnosticUrl(url)
+            + L" old_internal_page=" + tab->internalPage;
+        logTabDiagnostic(L"ACTIVE_URL_CHANGE", page, tab, changeDetails);
         if (tab == tab->browser->active())
             tab->browser->clearActivePageTint();
         tab->faviconAttempts = 0;
@@ -12167,6 +12256,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         if (state && wParam == kChromeAnimationTimerId) {
             state->animateChrome();
+            return 0;
+        }
+        if (state && wParam == kChromeHoverSyncTimerId) {
+            POINT cursor { -1, -1 };
+            if (GetCursorPos(&cursor) && ScreenToClient(window, &cursor))
+                state->updateToolbarHover(cursor);
+            else
+                state->updateToolbarHover(POINT { -1, -1 });
             return 0;
         }
         break;
