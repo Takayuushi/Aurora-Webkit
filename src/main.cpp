@@ -3063,16 +3063,6 @@ struct BrowserState {
             || previousLeftHover != hoveredLeftControl
             || previousNavigationHover != hoveredNavigationButton
             || previousTrafficLightHover != hoveredTrafficLight;
-        if (mainChromeHoverChanged) {
-            // These controls share one parent-painted toolbar surface. Repainting
-            // only the old/new icon rectangles leaves stale hover pixels when the
-            // pointer crosses child WebKit and overlay HWND boundaries.
-            RECT toolbarRect { 0, titleBarHeight(), GetClientWidth(window),
-                titleBarHeight() + toolbarHeight() };
-            if (toolbarRect.right > toolbarRect.left && toolbarRect.bottom > toolbarRect.top)
-                InvalidateRect(window, &toolbarRect, FALSE);
-        }
-
         const bool hoverChanged = mainChromeHoverChanged
             || previousSidebarRowHover != hoveredSidebarRow
             || previousTabHover != hoveredTabBarIndex
@@ -12510,13 +12500,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 const RECT rect = state->trafficLightHitRect(previousLight);
                 InvalidateRect(window, &rect, FALSE);
             }
-            if (previousHovered >= 0 || previousLeft >= 0 || previousNavigation >= 0
-                || previousLight >= 0) {
-                RECT toolbarRect { 0, state->titleBarHeight(), state->GetClientWidth(window),
-                    state->titleBarHeight() + state->toolbarHeight() };
-                if (toolbarRect.right > toolbarRect.left && toolbarRect.bottom > toolbarRect.top)
-                    InvalidateRect(window, &toolbarRect, FALSE);
-            }
         }
         return 0;
 
@@ -13360,9 +13343,20 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         return 0;
     }
 
-    case WM_MOUSELEAVE:
+    case WM_MOUSELEAVE: {
+        // The overlay HWNDs share the browser's client area. Moving from one
+        // owned overlay to another (or back to the parent) sends WM_MOUSELEAVE,
+        // but must not clear hover if the cursor is still over Aurora.
+        POINT cursor { -1, -1 };
+        RECT client { };
+        if (GetCursorPos(&cursor) && ScreenToClient(state->window, &cursor)
+            && GetClientRect(state->window, &client) && PtInRect(&client, cursor)) {
+            state->updateToolbarHover(cursor);
+            return 0;
+        }
         state->updateToolbarHover(POINT { -1, -1 });
         return 0;
+    }
 
     case WM_LBUTTONDOWN: {
         POINT point { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
