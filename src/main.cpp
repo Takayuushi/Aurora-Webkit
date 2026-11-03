@@ -239,6 +239,7 @@ constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 constexpr UINT WM_AURORA_NO_PREVIEW_TAB_READY = WM_APP + 25;
+constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -3058,13 +3059,24 @@ struct BrowserState {
                 InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         }
 
-        const bool hoverChanged = previousToolbarHover != hoveredToolbarButton
+        const bool mainChromeHoverChanged = previousToolbarHover != hoveredToolbarButton
             || previousLeftHover != hoveredLeftControl
             || previousNavigationHover != hoveredNavigationButton
+            || previousTrafficLightHover != hoveredTrafficLight;
+        if (mainChromeHoverChanged) {
+            // These controls share one parent-painted toolbar surface. Repainting
+            // only the old/new icon rectangles leaves stale hover pixels when the
+            // pointer crosses child WebKit and overlay HWND boundaries.
+            RECT toolbarRect { 0, titleBarHeight(), GetClientWidth(window),
+                titleBarHeight() + toolbarHeight() };
+            if (toolbarRect.right > toolbarRect.left && toolbarRect.bottom > toolbarRect.top)
+                InvalidateRect(window, &toolbarRect, FALSE);
+        }
+
+        const bool hoverChanged = mainChromeHoverChanged
             || previousSidebarRowHover != hoveredSidebarRow
             || previousTabHover != hoveredTabBarIndex
-            || previousSidebarSettingsHover != hoveredSidebarSettings
-            || previousTrafficLightHover != hoveredTrafficLight;
+            || previousSidebarSettingsHover != hoveredSidebarSettings;
         if (hoverChanged) {
             ++chromeHoverChangeGeneration;
             std::wstring details = L"CHROME_HOVER_CHANGE sequence="
@@ -10404,8 +10416,23 @@ void didCommitNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void*
 void didFinishNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (tab && tab->browser)
-        logTabDiagnostic(L"NAV_FINISH", page, tab);
+    if (!tab || !tab->browser)
+        return;
+
+    logTabDiagnostic(L"NAV_FINISH", page, tab);
+
+    // The Settings document can finish after the activation-time repaint has
+    // already run. Queue surface recovery from the browser window thread so the
+    // completed DOM gets a fresh accelerated frame without relying on mouse input.
+    BrowserState* browser = tab->browser;
+    if (tab == browser->active() && tab->internalPage == L"settings"
+        && browser->window && IsWindow(browser->window)) {
+        if (!PostMessageW(browser->window, WM_AURORA_SETTINGS_PAGE_READY,
+            static_cast<WPARAM>(browser->tabActivationGeneration), 0)) {
+            logTabDiagnostic(L"SETTINGS_PAGE_PRESENT_POST_FAILED", page, tab,
+                L"error=" + std::to_wstring(GetLastError()));
+        }
+    }
 }
 
 void didFailNavigation(WKPageRef page, WKNavigationRef, WKErrorRef error, WKTypeRef, const void* clientInfo)
@@ -12434,6 +12461,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 const RECT rect = state->trafficLightHitRect(previousLight);
                 InvalidateRect(window, &rect, FALSE);
             }
+            if (previousHovered >= 0 || previousLeft >= 0 || previousNavigation >= 0
+                || previousLight >= 0) {
+                RECT toolbarRect { 0, state->titleBarHeight(), state->getClientWidth(window),
+                    state->titleBarHeight() + state->toolbarHeight() };
+                if (toolbarRect.right > toolbarRect.left && toolbarRect.bottom > toolbarRect.top)
+                    InvalidateRect(window, &toolbarRect, FALSE);
+            }
         }
         return 0;
 
@@ -12650,6 +12684,28 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
         } else {
             logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=no_active_tab");
+        }
+        return 0;
+
+    case WM_AURORA_SETTINGS_PAGE_READY:
+        if (!state)
+            return 0;
+        if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
+            logDiagnostic(L"SETTINGS_PAGE_PRESENT_SKIPPED reason=stale_activation");
+            return 0;
+        }
+        if (auto* selected = state->active(); selected && selected->internalPage == L"settings") {
+            logTabDiagnostic(L"SETTINGS_PAGE_PRESENT_BEGIN",
+                WKViewGetPage(selected->view.get()), selected,
+                L"active_index=" + std::to_wstring(state->activeTab)
+                    + L" progress=" + std::to_wstring(
+                        WKPageGetEstimatedProgress(WKViewGetPage(selected->view.get()))));
+            state->beginWindowSurfaceRecovery(false, true, false, true);
+            logTabDiagnostic(L"SETTINGS_PAGE_SURFACE_RECOVERY_STARTED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"preserve_overlay_stack=1 layout_refresh=0");
+        } else {
+            logDiagnostic(L"SETTINGS_PAGE_PRESENT_SKIPPED reason=not_active_settings");
         }
         return 0;
 
