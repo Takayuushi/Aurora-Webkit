@@ -12666,7 +12666,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
 
-undefined    case WM_AURORA_SETTINGS_PAGE_READY:
+    case WM_AURORA_SETTINGS_PAGE_READY:
         if (!state)
             return 0;
         if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
