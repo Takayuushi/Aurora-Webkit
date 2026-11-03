@@ -12605,8 +12605,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state->tabOverviewVisible || state->tabOverviewAnimating
             || state->tabOverviewClosing || state->addressEditing || state->findBarVisible
             || IsIconic(window)) {
-            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=ui_state"
-                L" overview_visible=" + (state->tabOverviewVisible ? L"1" : L"0")
+            logDiagnostic(std::wstring(L"NO_PREVIEW_HANDOFF_SKIPPED reason=ui_state")
+                + L" overview_visible=" + (state->tabOverviewVisible ? L"1" : L"0")
                 + L" overview_animating=" + (state->tabOverviewAnimating ? L"1" : L"0")
                 + L" overview_closing=" + (state->tabOverviewClosing ? L"1" : L"0")
                 + L" address_editing=" + (state->addressEditing ? L"1" : L"0")
