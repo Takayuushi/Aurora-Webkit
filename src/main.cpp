@@ -5556,7 +5556,7 @@ search.addEventListener('keydown',e=>{
             invalidateTabBarBackground();
     }
 
-    void scheduleActivePageTint(TabState* tab, UINT delayMilliseconds = 1000)
+    void scheduleActivePageTint(TabState* tab, UINT delayMilliseconds = 1400)
     {
         if (!window)
             return;
@@ -5565,7 +5565,7 @@ search.addEventListener('keydown',e=>{
             return;
         // Allow the new page to present and settle before querying computed styles.
         SetTimer(window, kDeferredPageTintTimerId,
-            std::max<UINT>(250, delayMilliseconds), nullptr);
+            std::max<UINT>(500, delayMilliseconds), nullptr);
     }
 
     void requestActivePageTint(TabState* tab)
@@ -5637,15 +5637,15 @@ search.addEventListener('keydown',e=>{
     // A small, fixed sample budget keeps tint detection inexpensive even on
     // pages with large React/DOM trees and complex navigation surfaces.
     if (document.elementsFromPoint) {
-        for (const x of [width * 0.03, width * 0.25, width * 0.5, width * 0.75, width * 0.97]) {
-            for (const y of [8, 24, 48, 72, 104]) {
+        for (const x of [width * 0.04, width * 0.5, width * 0.96]) {
+            for (const y of [10, 36, 72, 112]) {
                 const stack = document.elementsFromPoint(x, y);
-                for (let h = 0; h < Math.min(stack.length, 3); ++h) {
+                for (let h = 0; h < Math.min(stack.length, 2); ++h) {
                     let element = stack[h];
-                    for (let depth = 0; element && depth < 4; ++depth, element = element.parentElement) {
+                    for (let depth = 0; element && depth < 3; ++depth, element = element.parentElement) {
                         if (seen.has(element)) continue;
                         seen.add(element);
-                        if (++inspected > 96) break;
+                        if (++inspected > 32) break;
                         const style = getComputedStyle(element);
                         const rect = element.getBoundingClientRect();
                         const semanticHeader = element.tagName === 'HEADER'
@@ -5669,11 +5669,11 @@ search.addEventListener('keydown',e=>{
                             bestColor = color;
                         }
                     }
-                    if (inspected > 96) break;
+                    if (inspected > 32) break;
                 }
-                if (inspected > 96) break;
+                if (inspected > 32) break;
             }
-            if (inspected > 96) break;
+            if (inspected > 32) break;
         }
     }
 
