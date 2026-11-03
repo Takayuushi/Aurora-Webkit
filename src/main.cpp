@@ -238,6 +238,7 @@ constexpr UINT kSettingsRememberWindowState = 7117;
 constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
+constexpr UINT WM_AURORA_NO_PREVIEW_TAB_READY = WM_APP + 23;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -6280,8 +6281,13 @@ search.addEventListener('keydown',e=>{
                 WKViewGetPage(tab->view.get()), tab,
                 L"selected_index=" + std::to_wstring(index)
                     + L" preview_url=" + safeDiagnosticUrl(tab->previewURL));
-            SetTimer(window, kDeferredActivePageRepaintTimerId, 100, nullptr);
-            SetTimer(window, kDeferredWebViewFocusTimerId, 140, nullptr);
+            if (!PostMessageW(window, WM_AURORA_NO_PREVIEW_TAB_READY,
+                static_cast<WPARAM>(tabActivationGeneration), 0)) {
+                logTabDiagnostic(L"NO_PREVIEW_HANDOFF_POST_FAILED",
+                    WKViewGetPage(tab->view.get()), tab,
+                    L"error=" + std::to_wstring(GetLastError())
+                        + L" selected_index=" + std::to_wstring(index));
+            }
         }
         // activateTab raises the selected WKView last; restore overlay z-order after
         // that so an open sidebar remains above it without touching the renderer.
@@ -12587,6 +12593,60 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_AURORA_WEBSITE_DATA_CLEARED:
         if (state)
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
+        return 0;
+
+    case WM_AURORA_NO_PREVIEW_TAB_READY:
+        if (!state)
+            return 0;
+        if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
+            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=stale_generation");
+            return 0;
+        }
+        if (state->tabOverviewVisible || state->tabOverviewAnimating
+            || state->tabOverviewClosing || state->addressEditing || state->findBarVisible
+            || IsIconic(window)) {
+            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=ui_state"
+                L" overview_visible=" + (state->tabOverviewVisible ? L"1" : L"0")
+                + L" overview_animating=" + (state->tabOverviewAnimating ? L"1" : L"0")
+                + L" overview_closing=" + (state->tabOverviewClosing ? L"1" : L"0")
+                + L" address_editing=" + (state->addressEditing ? L"1" : L"0")
+                + L" find_bar=" + (state->findBarVisible ? L"1" : L"0"));
+            return 0;
+        }
+        if (auto* selected = state->active()) {
+            HWND viewWindow = WKViewGetWindow(selected->view.get());
+            const HWND oldFocus = GetFocus();
+            const HWND previousSibling = viewWindow ? GetWindow(viewWindow, GW_HWNDPREV) : nullptr;
+            const bool foreground = GetForegroundWindow() == window;
+            std::wstring details = L"active_index=" + std::to_wstring(state->activeTab)
+                + L" view=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(viewWindow)))
+                + L" old_focus=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(oldFocus)))
+                + L" previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(previousSibling)))
+                + L" foreground=" + (foreground ? L"1" : L"0")
+                + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0")
+                + L" page_progress=" + std::to_wstring(WKPageGetEstimatedProgress(WKViewGetPage(selected->view.get())));
+            logTabDiagnostic(L"NO_PREVIEW_TAB_PRESENT_BEGIN", WKViewGetPage(selected->view.get()),
+                selected, details);
+
+            if (viewWindow && IsWindow(viewWindow) && IsWindowVisible(viewWindow)) {
+                // Only move keyboard focus when Aurora is still the foreground
+                // window. Regardless of foreground state, request a new page frame.
+                if (foreground)
+                    SetFocus(viewWindow);
+                state->requestActivePageRepaint(false, false, true);
+                const HWND newFocus = GetFocus();
+                logTabDiagnostic(L"NO_PREVIEW_TAB_PRESENT_REQUESTED", WKViewGetPage(selected->view.get()),
+                    selected,
+                    L"focus_after=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(newFocus)))
+                        + L" focus_target=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(viewWindow)))
+                        + L" focus_matches=" + (newFocus == viewWindow ? L"1" : L"0"));
+            } else {
+                logTabDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED", WKViewGetPage(selected->view.get()),
+                    selected, L"reason=invalid_or_hidden_view");
+            }
+        } else {
+            logDiagnostic(L"NO_PREVIEW_HANDOFF_SKIPPED reason=no_active_tab");
+        }
         return 0;
 
     case WM_AURORA_TRANSITION_REPAINT_READY:
