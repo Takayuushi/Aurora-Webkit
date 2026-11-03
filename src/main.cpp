@@ -1270,7 +1270,7 @@ struct ThumbnailCaptureLifetime {
 };
 
 struct ThumbnailCaptureResult {
-    uintptr_t tabIdentity { 0 };
+    ULONG_PTR tabIdentity { 0 };
     unsigned long long activationGeneration { 0 };
     std::wstring url;
     HBITMAP bitmap { nullptr };
@@ -3104,7 +3104,7 @@ struct BrowserState {
             return false;
 
         const HWND ownerWindow = window;
-        const uintptr_t tabIdentity = reinterpret_cast<uintptr_t>(&tab);
+        const ULONG_PTR tabIdentity = reinterpret_cast<ULONG_PTR>(&tab);
         const unsigned long long activationGeneration = tabActivationGeneration;
         const std::wstring capturedURL = tab.activeUrl;
         const auto lifetime = thumbnailCaptureLifetime;
@@ -5770,6 +5770,7 @@ search.addEventListener('keydown',e=>{
         // Clear hover left behind by the overview popup. The next real pointer
         // movement will establish any legitimate hover state again.
         updateToolbarHover(POINT { -1, -1 });
+        ++tabActivationGeneration;
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         // Preserve the current animation position if a tab is selected while the
@@ -5820,8 +5821,6 @@ search.addEventListener('keydown',e=>{
         }
         if (addressEditing)
             endAddressEditing();
-        if (!switchingFromOverview && previouslyActive != index && previouslyActive < tabs.size())
-            captureTabThumbnail(*tabs[previouslyActive], true);
         if (!switchingFromOverview) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
@@ -11993,6 +11992,50 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_AURORA_THUMBNAIL_READY:
+        if (state && lParam) {
+            std::unique_ptr<ThumbnailCaptureResult> result(
+                reinterpret_cast<ThumbnailCaptureResult*>(lParam));
+            TabState* capturedTab = nullptr;
+            for (const auto& candidate : state->tabs) {
+                if (reinterpret_cast<ULONG_PTR>(candidate.get()) == result->tabIdentity) {
+                    capturedTab = candidate.get();
+                    break;
+                }
+            }
+            if (capturedTab) {
+                capturedTab->thumbnailCaptureInFlight = false;
+                const bool stillCurrent = state->active() == capturedTab
+                    && result->activationGeneration == state->tabActivationGeneration
+                    && result->url == capturedTab->activeUrl;
+                if (stillCurrent && result->bitmap) {
+                    if (capturedTab->previewBitmap)
+                        DeleteObject(capturedTab->previewBitmap);
+                    capturedTab->previewBitmap = result->bitmap;
+                    result->bitmap = nullptr;
+                    capturedTab->previewWidth = result->width;
+                    capturedTab->previewHeight = result->height;
+                    capturedTab->previewURL = result->url;
+                    capturedTab->thumbnailCaptureNeeded = false;
+                    capturedTab->thumbnailCaptureFailures = 0;
+                    state->invalidateTabChrome(capturedTab);
+                    if (state->tabOverviewVisible && state->tabOverviewWindow) {
+                        state->tabOverviewAnimationFrameReady = false;
+                        InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
+                    }
+                } else {
+                    capturedTab->thumbnailCaptureNeeded = true;
+                    if (state->active() == capturedTab) {
+                        if (capturedTab->thumbnailCaptureFailures < 3) {
+                            ++capturedTab->thumbnailCaptureFailures;
+                            state->scheduleTabThumbnailCapture(capturedTab, 240);
+                        }
+                    }
+                }
+            }
+        }
+        return 0;
+
     case WM_AURORA_FAVICON_READY:
         if (state && lParam) {
             std::unique_ptr<FaviconResult> result(reinterpret_cast<FaviconResult*>(lParam));
@@ -12176,6 +12219,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             KillTimer(window, kSidebarZOrderTimerId);
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             KillTimer(window, kDeferredPageTintTimerId);
+            {
+                std::lock_guard<std::mutex> lock(state->thumbnailCaptureLifetime->mutex);
+                state->thumbnailCaptureLifetime->alive = false;
+            }
+            MSG pendingThumbnailMessage { };
+            while (PeekMessageW(&pendingThumbnailMessage, window,
+                WM_AURORA_THUMBNAIL_READY, WM_AURORA_THUMBNAIL_READY, PM_REMOVE)) {
+                std::unique_ptr<ThumbnailCaptureResult> pendingResult(
+                    reinterpret_cast<ThumbnailCaptureResult*>(pendingThumbnailMessage.lParam));
+            }
             state->windowSurfaceRecoveryActive = false;
             state->sidebarZOrderTimerActive = false;
             state->pendingThumbnailCaptureTab = nullptr;
