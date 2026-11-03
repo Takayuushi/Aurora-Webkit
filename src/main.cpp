@@ -272,6 +272,7 @@ void didFailNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const 
 void webProcessDidCrash(WKPageRef, const void*);
 void webProcessDidTerminate(WKPageRef, WKProcessTerminationReason, const void*);
 void logTabDiagnostic(const wchar_t*, WKPageRef, const TabState*, const std::wstring& details = std::wstring());
+std::wstring safeDiagnosticUrl(std::wstring url);
 void decidePolicyForNavigationResponse(WKPageRef, WKNavigationResponseRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
