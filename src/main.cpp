@@ -12463,7 +12463,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (previousHovered >= 0 || previousLeft >= 0 || previousNavigation >= 0
                 || previousLight >= 0) {
-                RECT toolbarRect { 0, state->titleBarHeight(), state->getClientWidth(window),
+                RECT toolbarRect { 0, state->titleBarHeight(), state->GetClientWidth(window),
                     state->titleBarHeight() + state->toolbarHeight() };
                 if (toolbarRect.right > toolbarRect.left && toolbarRect.bottom > toolbarRect.top)
                     InvalidateRect(window, &toolbarRect, FALSE);
