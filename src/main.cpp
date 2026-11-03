@@ -170,6 +170,7 @@ constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
 constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
 constexpr UINT_PTR kSidebarZOrderTimerId = 0xA11A;
+constexpr UINT_PTR kDeferredPageTintTimerId = 0xA11B;
 constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
@@ -2917,18 +2918,19 @@ struct BrowserState {
                     if (tabOverviewWindow && IsWindow(tabOverviewWindow))
                         ShowWindow(tabOverviewWindow, SW_HIDE);
                     positionOverlayWindows(true);
-                    // A tab-bar click normally raises, focuses and invalidates the
-                    // selected WKView. Overview selection must perform the same wake
-                    // after its popup is removed; repainting only underneath the
-                    // animation snapshot can leave some accelerated pages black/stale.
+                    // Queue a non-erasing paint only after the overview popup has
+                    // disappeared. Never force a renderer repaint or synchronously
+                    // transfer focus into a busy page from the animation timer.
                     if (auto* selected = active()) {
                         if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             if (!IsWindowVisible(viewWindow))
                                 ShowWindow(viewWindow, SW_SHOWNA);
-                            SetFocus(viewWindow);
+                            RedrawWindow(viewWindow, nullptr, nullptr,
+                                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                         }
                     }
-                    requestActivePageRepaint(false, false, true);
+                    SetFocus(window);
+                    updateToolbarHover(POINT { -1, -1 });
                 }
             }
         }
@@ -5543,6 +5545,8 @@ search.addEventListener('keydown',e=>{
 
     void clearActivePageTint()
     {
+        if (window)
+            KillTimer(window, kDeferredPageTintTimerId);
         const bool wasVisible = activePageTintValid;
         if (!activePageTintRequestURL.empty() || wasVisible)
             ++activePageTintGeneration;
@@ -5550,6 +5554,18 @@ search.addEventListener('keydown',e=>{
         activePageTintValid = false;
         if (wasVisible)
             invalidateTabBarBackground();
+    }
+
+    void scheduleActivePageTint(TabState* tab, UINT delayMilliseconds = 1000)
+    {
+        if (!window)
+            return;
+        KillTimer(window, kDeferredPageTintTimerId);
+        if (!showPageColorInTabBar || !tab || tab != active())
+            return;
+        // Allow the new page to present and settle before querying computed styles.
+        SetTimer(window, kDeferredPageTintTimerId,
+            std::max<UINT>(250, delayMilliseconds), nullptr);
     }
 
     void requestActivePageTint(TabState* tab)
@@ -5712,6 +5728,9 @@ search.addEventListener('keydown',e=>{
         if (index >= tabs.size())
             return;
 
+        // Clear hover left behind by the overview popup. The next real pointer
+        // movement will establish any legitimate hover state again.
+        updateToolbarHover(POINT { -1, -1 });
         const size_t previouslyActive = activeTab;
         const bool switchingFromOverview = tabOverviewVisible;
         // Preserve the current animation position if a tab is selected while the
@@ -5736,7 +5755,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            tabOverviewClosingWaitingForRepaint = true;
+            // Do not wait on a renderer callback while the overview popup is
+            // covering the selected page. The transition uses its cached snapshot.
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
 
@@ -5744,10 +5765,8 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
-            // Wake the live page while the overview snapshot is still zooming.
-            // WebKit can render behind the overlay instead of waiting until the
-            // zoom reaches full size.
-            requestActivePageRepaint(false, true, true);
+            // Leave the renderer untouched during the native overview zoom.
+            // The selected view will receive a queued paint after the popup closes.
             invalidateTabStrip();
 
             if (auto* selected = active()) {
@@ -5780,7 +5799,7 @@ search.addEventListener('keydown',e=>{
         hoveredOverviewNewTab = false;
         activeTab = index;
         clearActivePageTint();
-        requestActivePageTint(active());
+        scheduleActivePageTint(active(), switchingFromOverview ? 1400 : 1000);
         previousActiveTab = previouslyActive;
         tabSwitchAnimationStart = GetTickCount64();
         tabSwitchAnimating = previouslyActive != index && tabsBarHeight() > 0;
@@ -5847,7 +5866,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewZoomTo = 1.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
-            tabOverviewClosingWaitingForRepaint = true;
+            // Do not wait on a renderer callback while the overview popup is
+            // covering the selected page. The transition uses its cached snapshot.
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewAnimating = false;
@@ -5855,8 +5876,6 @@ search.addEventListener('keydown',e=>{
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            // Start repainting underneath the zoom snapshot rather than after it.
-            requestActivePageRepaint(false, true, true);
             // Refresh this page's snapshot after the overlay has finished closing.
             // This replaces stale skeleton previews after a tab was selected mid-load.
             scheduleTabThumbnailCapture(tab, 420);
@@ -9804,7 +9823,7 @@ void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef navigation
     browser->applyEnginePreferences();
     browser->applyTheme();
     browser->clearActivePageTint();
-    browser->requestActivePageTint(browser->active());
+    browser->scheduleActivePageTint(browser->active(), 700);
     if (auto* current = browser->active(); current && current->internalPage == L"settings")
         browser->loadSettingsPage(*current);
 }
@@ -11464,7 +11483,7 @@ void didChangeIsLoading(const void* clientInfo)
     // here can stall/flicker the active WebKit surface at navigation completion.
     tab->browser->invalidateTabChrome(tab);
     if (tab == tab->browser->active())
-        tab->browser->requestActivePageTint(tab);
+        tab->browser->scheduleActivePageTint(tab, 1100);
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
@@ -11525,7 +11544,7 @@ void didChangeActiveURL(const void* clientInfo)
     }
     tab->activeUrl = url;
     if (tab == tab->browser->active())
-        tab->browser->requestActivePageTint(tab);
+        tab->browser->scheduleActivePageTint(tab, 1100);
     if (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) {
         tab->internalPage.clear();
         tab->hasInternalThemeSnapshot = false;
@@ -11572,7 +11591,7 @@ void didChangeEstimatedProgress(const void* clientInfo)
     const bool loading = page && WKPageGetEstimatedProgress(page) < 1.0;
     BrowserState* browser = tab->browser;
     if (!loading)
-        browser->requestActivePageTint(tab);
+        browser->scheduleActivePageTint(tab, 1100);
     // The reload/stop glyph is binary. Repainting Smart Search for every fractional
     // progress notification caused the address pill to visibly flicker.
     if (browser->lastReloadButtonLoading == loading)
@@ -11659,6 +11678,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state && wParam == kDeferredThumbnailCaptureTimerId) {
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             state->servicePendingTabThumbnailCapture();
+            return 0;
+        }
+        if (state && wParam == kDeferredPageTintTimerId) {
+            KillTimer(window, kDeferredPageTintTimerId);
+            state->requestActivePageTint(state->active());
             return 0;
         }
         if (state && wParam == kWindowTransitionTimerId) {
@@ -12112,6 +12136,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             KillTimer(window, kSidebarZOrderTimerId);
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
+            KillTimer(window, kDeferredPageTintTimerId);
             state->windowSurfaceRecoveryActive = false;
             state->sidebarZOrderTimerActive = false;
             state->pendingThumbnailCaptureTab = nullptr;
