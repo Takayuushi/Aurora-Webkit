@@ -659,23 +659,69 @@ std::wstring applicationDataDirectory()
     return directory;
 }
 
-// Diagnostics are written by a dedicated worker so WebKit callbacks never wait
-// for disk I/O. A failed logger thread or file write is deliberately non-fatal.
+// Diagnostics are initialized at application startup and written by a dedicated
+// worker. Startup creates the file synchronously so a missing writer cannot fail
+// silently; normal WebKit callbacks only enqueue messages and never wait for disk I/O.
 class DiagnosticLogger {
 public:
     DiagnosticLogger()
     {
+        wchar_t localAppData[32768] { };
+        DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
+            static_cast<DWORD>(std::size(localAppData)));
+        if (!length || length >= std::size(localAppData)) {
+            PWSTR knownFolder = nullptr;
+            if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &knownFolder))
+                && knownFolder) {
+                rootPath_ = knownFolder;
+                CoTaskMemFree(knownFolder);
+            }
+        } else {
+            rootPath_.assign(localAppData, length);
+        }
+
+        if (rootPath_.empty()) {
+            OutputDebugStringW(L"Aurora diagnostics: Local AppData path is unavailable.\n");
+            return;
+        }
+
+        rootPath_ += L"\\Aurora";
+        if (!CreateDirectoryW(rootPath_.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+            const DWORD error = GetLastError();
+            OutputDebugStringW((L"Aurora diagnostics: cannot create data directory. error="
+                + std::to_wstring(error) + L"\n").c_str());
+            return;
+        }
+
+        const DWORD attributes = GetFileAttributesW(rootPath_.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            OutputDebugStringW(L"Aurora diagnostics: data path is not a directory.\n");
+            return;
+        }
+
+        path_ = rootPath_ + L"\\diagnostics.log";
+        appendDirect(L"LOGGER_SESSION_START path=" + path_);
+
         worker_ = CreateThread(nullptr, 0, workerEntry, this, 0, nullptr);
+        if (!worker_) {
+            const DWORD error = GetLastError();
+            appendDirect(L"LOGGER_WORKER_START_FAILED error=" + std::to_wstring(error));
+            OutputDebugStringW((L"Aurora diagnostics: worker thread could not start. error="
+                + std::to_wstring(error) + L"\n").c_str());
+            return;
+        }
+
+        enqueue(L"LOGGER_INITIALIZED");
     }
 
     ~DiagnosticLogger()
     {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        wake_.notify_one();
         if (worker_) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                stopping_ = true;
+            }
+            wake_.notify_one();
             WaitForSingleObject(worker_, INFINITE);
             CloseHandle(worker_);
             worker_ = nullptr;
@@ -684,34 +730,77 @@ public:
 
     void enqueue(std::wstring message)
     {
-        SYSTEMTIME now { };
-        GetLocalTime(&now);
-        const auto pad = [](unsigned value, size_t width) {
-            std::wstring result = std::to_wstring(value);
-            while (result.size() < width)
-                result.insert(result.begin(), L'0');
-            return result;
-        };
-
-        std::wstring line = pad(now.wYear, 4) + L"-" + pad(now.wMonth, 2)
-            + L"-" + pad(now.wDay, 2) + L"T" + pad(now.wHour, 2)
-            + L":" + pad(now.wMinute, 2) + L":" + pad(now.wSecond, 2)
-            + L"." + pad(now.wMilliseconds, 3)
-            + L" [pid=" + std::to_wstring(GetCurrentProcessId())
-            + L" tid=" + std::to_wstring(GetCurrentThreadId()) + L"] " + message;
+        if (!worker_)
+            return;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!worker_ || stopping_)
+            if (stopping_)
                 return;
             if (queue_.size() >= 512)
                 queue_.pop_front();
-            queue_.push_back(std::move(line));
+            queue_.push_back(makeLine(message));
         }
         wake_.notify_one();
     }
 
 private:
+    static std::wstring makeLine(const std::wstring& message)
+    {
+        SYSTEMTIME now { };
+        GetLocalTime(&now);
+        wchar_t prefix[128] { };
+        swprintf_s(prefix, std::size(prefix),
+            L"%04u-%02u-%02uT%02u:%02u:%02u.%03u [pid=%lu tid=%lu] ",
+            static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
+            static_cast<unsigned>(now.wDay), static_cast<unsigned>(now.wHour),
+            static_cast<unsigned>(now.wMinute), static_cast<unsigned>(now.wSecond),
+            static_cast<unsigned>(now.wMilliseconds),
+            static_cast<unsigned long>(GetCurrentProcessId()),
+            static_cast<unsigned long>(GetCurrentThreadId()));
+        return std::wstring(prefix) + message + L"\r\n";
+    }
+
+    static bool writeLine(HANDLE file, const std::wstring& line)
+    {
+        if (file == INVALID_HANDLE_VALUE || line.empty())
+            return false;
+
+        const int required = WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+            static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
+        if (required <= 0)
+            return false;
+
+        std::string utf8(static_cast<size_t>(required), '\0');
+        if (WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+            static_cast<int>(line.size()), utf8.data(), required, nullptr, nullptr) != required)
+            return false;
+
+        DWORD written = 0;
+        return WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr)
+            != FALSE && written == utf8.size();
+    }
+
+    void appendDirect(const std::wstring& message)
+    {
+        if (path_.empty())
+            return;
+        HANDLE file = CreateFileW(path_.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            OutputDebugStringW((L"Aurora diagnostics: cannot open log file. error="
+                + std::to_wstring(error) + L"\n").c_str());
+            return;
+        }
+        const bool written = writeLine(file, makeLine(message));
+        FlushFileBuffers(file);
+        CloseHandle(file);
+        if (!written)
+            OutputDebugStringW(L"Aurora diagnostics: startup log write failed.\n");
+    }
+
     static DWORD WINAPI workerEntry(LPVOID context)
     {
         static_cast<DiagnosticLogger*>(context)->run();
@@ -720,8 +809,18 @@ private:
 
     void run()
     {
-        const std::wstring path = applicationDataDirectory() + L"\\diagnostics.log";
-        const std::wstring backupPath = path + L".1";
+        HANDLE file = CreateFileW(path_.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            OutputDebugStringW((L"Aurora diagnostics: background writer cannot open log. error="
+                + std::to_wstring(error) + L"\n").c_str());
+            return;
+        }
+
+        writeLine(file, makeLine(L"LOGGER_WORKER_STARTED"));
+        FlushFileBuffers(file);
         constexpr LONGLONG maxLogBytes = 2 * 1024 * 1024;
 
         for (;;) {
@@ -730,49 +829,38 @@ private:
                 std::unique_lock<std::mutex> lock(mutex_);
                 wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
                 if (queue_.empty() && stopping_)
-                    return;
+                    break;
                 line = std::move(queue_.front());
                 queue_.pop_front();
             }
 
-            HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (file == INVALID_HANDLE_VALUE)
-                continue;
+            if (!writeLine(file, line))
+                OutputDebugStringW(L"Aurora diagnostics: background log write failed.\n");
+            FlushFileBuffers(file);
 
-            LARGE_INTEGER fileSize { };
-            if (GetFileSizeEx(file, &fileSize) && fileSize.QuadPart >= maxLogBytes) {
+            LARGE_INTEGER size { };
+            if (GetFileSizeEx(file, &size) && size.QuadPart >= maxLogBytes) {
                 CloseHandle(file);
-                MoveFileExW(path.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING);
-                file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                file = INVALID_HANDLE_VALUE;
+                const std::wstring backupPath = path_ + L".1";
+                if (!MoveFileExW(path_.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+                    OutputDebugStringW(L"Aurora diagnostics: log rotation failed.\n");
+                file = CreateFileW(path_.c_str(), FILE_APPEND_DATA,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (file == INVALID_HANDLE_VALUE)
-                    continue;
-            }
-
-            LARGE_INTEGER endOfFile { };
-            if (!SetFilePointerEx(file, endOfFile, nullptr, FILE_END)) {
-                CloseHandle(file);
-                continue;
-            }
-
-            line += L"\r\n";
-            const int required = WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
-                static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
-            if (required > 0) {
-                std::string utf8(static_cast<size_t>(required), '\0');
-                if (WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
-                    static_cast<int>(line.size()), &utf8[0], required, nullptr, nullptr) == required) {
-                    DWORD written = 0;
-                    WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (file == INVALID_HANDLE_VALUE) {
+                    OutputDebugStringW(L"Aurora diagnostics: log reopen after rotation failed.\n");
+                    return;
                 }
             }
-            CloseHandle(file);
         }
+
+        FlushFileBuffers(file);
+        CloseHandle(file);
     }
 
+    std::wstring rootPath_;
+    std::wstring path_;
     std::mutex mutex_;
     std::condition_variable wake_;
     std::deque<std::wstring> queue_;
@@ -1087,6 +1175,30 @@ void drawReload(HDC dc, const RECT& rect, bool loading, bool dark = false)
     // Two short, clean strokes meet at the arc's endpoint to form the arrowhead.
     graphics.DrawLine(&pen, tipX - 3.5f * scale, tipY - 0.25f * scale, tipX, tipY);
     graphics.DrawLine(&pen, tipX, tipY, tipX - 0.25f * scale, tipY + 3.5f * scale);
+}
+
+void drawPageLoadProgress(HDC dc, const RECT& pill, double progress, int dpi, bool dark)
+{
+    const float scale = std::max(0.75f, static_cast<float>(dpi) / 96.0f);
+    const float startX = static_cast<float>(pill.left + MulDiv(32, dpi, 96));
+    const float endX = static_cast<float>(pill.right - MulDiv(32, dpi, 96));
+    const float available = endX - startX;
+    if (available <= 4.0f)
+        return;
+
+    const float fraction = static_cast<float>(std::clamp(progress, 0.0, 0.995));
+    const float minimumWidth = std::min(available, 5.0f * scale);
+    const float width = std::clamp(available * fraction, minimumWidth, available);
+    const float y = static_cast<float>(pill.bottom) - 3.2f * scale;
+    const COLORREF accent = dark ? RGB(10, 132, 255) : RGB(0, 122, 255);
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    Gdiplus::Pen pen(iconGdiColor(accent), std::max(1.5f, 1.8f * scale));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    graphics.DrawLine(&pen, startX, y, startX + width, y);
 }
 
 void drawSidebar(HDC dc, const RECT& rect, bool dark = false)
@@ -8562,6 +8674,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             dark ? RGB(61, 61, 66) : RGB(249, 250, 252),
             dark ? RGB(78, 78, 83) : RGB(235, 237, 240),
             static_cast<float>(pill.bottom - pill.top) / 2.0f);
+        TabState* progressTab = active();
+        WKPageRef progressPage = progressTab ? WKViewGetPage(progressTab->view.get()) : nullptr;
+        const double pageProgress = progressPage ? WKPageGetEstimatedProgress(progressPage) : 1.0;
+        const bool loading = progressPage && pageProgress < 1.0;
+        if (loading)
+            drawPageLoadProgress(dc, pill, pageProgress, dpi, dark);
         if (!addressEditing) {
             std::wstring addressText = addressDisplayText();
             const bool emptyAddress = addressText.empty();
@@ -8591,7 +8709,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 static_cast<float>(hoverRect.bottom - hoverRect.top) / 2.0f);
         }
         drawWebsiteSettings(dc, siteSettingsGlyph, dark);
-        const bool loading = active() && WKPageGetEstimatedProgress(WKViewGetPage(active()->view.get())) < 1.0;
         RECT reloadRect { pill.right - MulDiv(30, dpi, 96), pill.top, pill.right, pill.bottom };
         drawReload(dc, reloadRect, loading, dark);
 
@@ -11930,14 +12047,22 @@ void didChangeEstimatedProgress(const void* clientInfo)
         browser->scheduleActivePageTint(tab, 1100);
     // The reload/stop glyph is binary. Repainting Smart Search for every fractional
     // progress notification caused the address pill to visibly flicker.
-    if (browser->lastReloadButtonLoading == loading)
-        return;
-    browser->lastReloadButtonLoading = loading;
-
     const RECT pill = browser->addressPillRect();
-    RECT reloadRect { pill.right - scaleForDpi(browser->window, 30), pill.top, pill.right, pill.bottom };
-    if (reloadRect.right > reloadRect.left && reloadRect.bottom > reloadRect.top)
-        InvalidateRect(browser->window, &reloadRect, FALSE);
+    if (browser->lastReloadButtonLoading != loading) {
+        browser->lastReloadButtonLoading = loading;
+        RECT reloadRect { pill.right - scaleForDpi(browser->window, 30), pill.top, pill.right, pill.bottom };
+        if (reloadRect.right > reloadRect.left && reloadRect.bottom > reloadRect.top)
+            InvalidateRect(browser->window, &reloadRect, FALSE);
+    }
+
+    RECT progressRect {
+        pill.left + scaleForDpi(browser->window, 30),
+        pill.bottom - scaleForDpi(browser->window, 8),
+        pill.right - scaleForDpi(browser->window, 30),
+        pill.bottom
+    };
+    if (progressRect.right > progressRect.left && progressRect.bottom > progressRect.top)
+        InvalidateRect(browser->window, &progressRect, FALSE);
 }
 
 void didChangeCanGoBack(const void* clientInfo)
@@ -12882,6 +13007,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    logDiagnostic(L"APPLICATION_START");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
