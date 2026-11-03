@@ -7078,6 +7078,13 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         hoveredToolbarButton = -1;
         for (float& opacity : toolbarHoverOpacity)
             opacity = 0.0f;
+        // The overview button can remain under the pointer after it opens.
+        // Stop the cursor-sync timer here so it cannot immediately reapply the
+        // pressed/hover tint that this transition intentionally clears.
+        if (chromeHoverSyncTimerActive) {
+            KillTimer(window, kChromeHoverSyncTimerId);
+            chromeHoverSyncTimerActive = false;
+        }
 
         if (tabOverviewClosing) {
             const float currentZoom = tabOverviewZoomProgress();
