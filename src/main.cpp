@@ -1644,8 +1644,8 @@ struct BrowserState {
     bool mouseTrackingForChrome { false };
     bool chromeHoverSyncTimerActive { false };
     unsigned long long chromeHoverChangeGeneration { 0 };
-    unsigned long long mainChromePaintGeneration { 0 };
-    unsigned long long tabBarChromePaintGeneration { 0 };
+    unsigned long long mainChromePaintSerial { 0 };
+    unsigned long long tabBarChromePaintSerial { 0 };
     bool chromeAnimationTimerActive { false };
     bool tabSwitchAnimating { false };
     size_t previousActiveTab { 0 };
@@ -2878,6 +2878,15 @@ struct BrowserState {
         InvalidateRect(window, &buttonRect, FALSE);
     }
 
+    void invalidateTopChrome()
+    {
+        if (!window)
+            return;
+        RECT chrome { 0, 0, GetClientWidth(window), titleBarHeight() + toolbarHeight() };
+        if (chrome.right > chrome.left && chrome.bottom > chrome.top)
+            InvalidateRect(window, &chrome, FALSE);
+    }
+
     void updateToolbarHover(POINT point)
     {
         const int previousToolbarHover = hoveredToolbarButton;
@@ -3078,6 +3087,7 @@ struct BrowserState {
                 + L" traffic_light=" + std::to_wstring(hoveredTrafficLight)
                 + L" active_index=" + std::to_wstring(activeTab);
             logDiagnostic(std::move(details));
+            invalidateTopChrome();
         }
 
         // Keep tracking only while a parent-painted control has a hover state.
@@ -12352,6 +12362,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 logDiagnostic(L"CHROME_HOVER_CLEAR sequence="
                     + std::to_wstring(state->chromeHoverChangeGeneration)
                     + L" source=browser_window");
+                state->invalidateTopChrome();
             }
             if (previousHoveredTab >= 0 && state->tabBarOverlayWindow
                 && IsWindowVisible(state->tabBarOverlayWindow))
@@ -12420,11 +12431,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
         }
         EndPaint(window, &paint);
-        if (state && state->mainChromePaintGeneration < state->chromeHoverChangeGeneration) {
-            state->mainChromePaintGeneration = state->chromeHoverChangeGeneration;
+        if (state && paint.rcPaint.top < state->titleBarHeight() + state->toolbarHeight()) {
+            ++state->mainChromePaintSerial;
             const RECT& dirty = paint.rcPaint;
-            logDiagnostic(L"CHROME_PAINT_MAIN sequence="
-                + std::to_wstring(state->mainChromePaintGeneration)
+            logDiagnostic(L"CHROME_PAINT_MAIN serial="
+                + std::to_wstring(state->mainChromePaintSerial)
+                + L" hover_generation=" + std::to_wstring(state->chromeHoverChangeGeneration)
                 + L" dirty=" + std::to_wstring(dirty.left) + L"," + std::to_wstring(dirty.top)
                 + L"-" + std::to_wstring(dirty.right) + L"," + std::to_wstring(dirty.bottom)
                 + L" chrome_dark=" + (state->chromeDarkTheme() ? L"1" : L"0")
@@ -12969,20 +12981,19 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                 }
             }
             EndPaint(overlay, &paint);
-            if (state->tabBarChromePaintGeneration < state->chromeHoverChangeGeneration) {
-                state->tabBarChromePaintGeneration = state->chromeHoverChangeGeneration;
-                const RECT& dirty = paint.rcPaint;
-                logDiagnostic(L"CHROME_PAINT_TAB_STRIP sequence="
-                    + std::to_wstring(state->tabBarChromePaintGeneration)
-                    + L" dirty=" + std::to_wstring(dirty.left) + L"," + std::to_wstring(dirty.top)
-                    + L"-" + std::to_wstring(dirty.right) + L"," + std::to_wstring(dirty.bottom)
-                    + L" chrome_dark=" + (state->chromeDarkTheme() ? L"1" : L"0")
-                    + L" region_valid=" + (state->tabBarOverlayRegionValid ? L"1" : L"0")
-                    + L" region_size=" + std::to_wstring(state->tabBarOverlayRegionWidth)
-                    + L"x" + std::to_wstring(state->tabBarOverlayRegionHeight)
-                    + L" region_tabs=" + std::to_wstring(state->tabBarOverlayRegionTabCount)
-                    + L" hovered_tab=" + std::to_wstring(state->hoveredTabBarIndex));
-            }
+            ++state->tabBarChromePaintSerial;
+            const RECT& dirty = paint.rcPaint;
+            logDiagnostic(L"CHROME_PAINT_TAB_STRIP serial="
+                + std::to_wstring(state->tabBarChromePaintSerial)
+                + L" hover_generation=" + std::to_wstring(state->chromeHoverChangeGeneration)
+                + L" dirty=" + std::to_wstring(dirty.left) + L"," + std::to_wstring(dirty.top)
+                + L"-" + std::to_wstring(dirty.right) + L"," + std::to_wstring(dirty.bottom)
+                + L" chrome_dark=" + (state->chromeDarkTheme() ? L"1" : L"0")
+                + L" region_valid=" + (state->tabBarOverlayRegionValid ? L"1" : L"0")
+                + L" region_size=" + std::to_wstring(state->tabBarOverlayRegionWidth)
+                + L"x" + std::to_wstring(state->tabBarOverlayRegionHeight)
+                + L" region_tabs=" + std::to_wstring(state->tabBarOverlayRegionTabCount)
+                + L" hovered_tab=" + std::to_wstring(state->hoveredTabBarIndex));
             return 0;
         }
         RECT client { };
