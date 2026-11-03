@@ -176,6 +176,7 @@ constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
 constexpr UINT_PTR kSidebarZOrderTimerId = 0xA11A;
 constexpr UINT_PTR kDeferredPageTintTimerId = 0xA11B;
 constexpr UINT_PTR kChromeHoverSyncTimerId = 0xA11C;
+constexpr UINT_PTR kDeferredActivePageRepaintTimerId = 0xA11D;
 constexpr ULONGLONG kWindowTransitionDurationMs = 260;
 constexpr UINT_PTR kSharePopoverTimerId = 0xA114;
 constexpr UINT_PTR kDownloadsPopoverTimerId = 0xA115;
@@ -3268,6 +3269,10 @@ struct BrowserState {
                                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                         }
                     }
+                    // The page was deliberately kept covered during the zoom.
+                    // Ask WebKit for a fresh accelerated frame only after the
+                    // overview has gone away.
+                    SetTimer(window, kDeferredActivePageRepaintTimerId, 80, nullptr);
                     SetFocus(window);
                     updateToolbarHover(POINT { -1, -1 });
                 }
@@ -6276,6 +6281,12 @@ search.addEventListener('keydown',e=>{
             appliedDetails += L" view_size=" + std::to_wstring(appliedViewRect.right - appliedViewRect.left)
                 + L"x" + std::to_wstring(appliedViewRect.bottom - appliedViewRect.top);
         logTabDiagnostic(L"TAB_ACTIVATE_APPLIED", WKViewGetPage(tab->view.get()), tab, appliedDetails);
+
+        // RedrawWindow on the wrapper HWND does not guarantee a fresh accelerated
+        // WebKit frame. Request that frame after the tab switch has settled, without
+        // changing focus, view geometry, or the native overlay z-order.
+        if (!switchingFromOverview && window)
+            SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
 
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -12001,6 +12012,9 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
+            if (tab->browser->window && !tab->browser->tabOverviewVisible)
+                SetTimer(tab->browser->window, kDeferredActivePageRepaintTimerId, 120, nullptr);
+
             // Wait for the Start Page's eager favicon images to finish decoding
             // before saving its overview snapshot. Other pages keep the short delay.
             tab->browser->scheduleTabThumbnailCapture(tab,
@@ -12272,6 +12286,24 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->updateToolbarHover(cursor);
             else
                 state->updateToolbarHover(POINT { -1, -1 });
+            return 0;
+        }
+        if (state && wParam == kDeferredActivePageRepaintTimerId) {
+            KillTimer(window, kDeferredActivePageRepaintTimerId);
+            if (state->tabOverviewVisible)
+                return 0;
+            if (state->tabOverviewAnimating || state->tabOverviewClosing) {
+                SetTimer(window, kDeferredActivePageRepaintTimerId, 80, nullptr);
+                return 0;
+            }
+            if (auto* selected = state->active()) {
+                std::wstring details = L"preserve_overlay_stack=1 sidebar_open="
+                    + std::wstring(state->sidebarOpen ? L"1" : L"0")
+                    + L" sidebar_animating=" + (state->sidebarAnimating ? L"1" : L"0");
+                logTabDiagnostic(L"DEFERRED_ACTIVE_PAGE_REPAINT", WKViewGetPage(selected->view.get()),
+                    selected, details);
+                state->requestActivePageRepaint(false, false, true);
+            }
             return 0;
         }
         break;
@@ -13113,6 +13145,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v2");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
