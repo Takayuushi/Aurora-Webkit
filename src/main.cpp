@@ -12226,8 +12226,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MSG pendingThumbnailMessage { };
             while (PeekMessageW(&pendingThumbnailMessage, window,
                 WM_AURORA_THUMBNAIL_READY, WM_AURORA_THUMBNAIL_READY, PM_REMOVE)) {
-                std::unique_ptr<ThumbnailCaptureResult> pendingResult(
-                    reinterpret_cast<ThumbnailCaptureResult*>(pendingThumbnailMessage.lParam));
+                delete reinterpret_cast<ThumbnailCaptureResult*>(pendingThumbnailMessage.lParam);
             }
             state->windowSurfaceRecoveryActive = false;
             state->sidebarZOrderTimerActive = false;
