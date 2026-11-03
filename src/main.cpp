@@ -6214,6 +6214,30 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
+
+        // Each tab owns a native WKView HWND. Leaving inactive WKViews visible
+        // underneath the active one does not reliably deliver WebKit's page
+        // visibility transition and can preserve a stale accelerated surface.
+        // On a real tab change (including a same-tab overview close), hide every
+        // view first and then reveal only the selected view.
+        size_t hiddenInactiveViews = 0;
+        const bool selectedViewWasVisible = selectedView && IsWindow(selectedView)
+            && IsWindowVisible(selectedView);
+        if (previouslyActive != index || switchingFromOverview) {
+            for (size_t viewIndex = 0; viewIndex < tabs.size(); ++viewIndex) {
+                HWND candidateView = WKViewGetWindow(tabs[viewIndex]->view.get());
+                if (!candidateView || !IsWindow(candidateView))
+                    continue;
+                if (IsWindowVisible(candidateView)) {
+                    ShowWindow(candidateView, SW_HIDE);
+                    if (candidateView != selectedView)
+                        ++hiddenInactiveViews;
+                }
+            }
+            if (selectedView && IsWindow(selectedView))
+                ShowWindow(selectedView, SW_SHOWNA);
+        }
+
         RECT selectedViewRect { };
         const bool hasSelectedViewRect = selectedView && GetClientRect(selectedView, &selectedViewRect);
         std::wstring activationDetails = L"from_index=" + std::to_wstring(previouslyActive)
@@ -6224,6 +6248,11 @@ search.addEventListener('keydown',e=>{
         if (hasSelectedViewRect)
             activationDetails += L" view_size=" + std::to_wstring(selectedViewRect.right - selectedViewRect.left)
                 + L"x" + std::to_wstring(selectedViewRect.bottom - selectedViewRect.top);
+        activationDetails += L" selected_was_visible="
+            + std::wstring(selectedViewWasVisible ? L"1" : L"0")
+            + L" inactive_views_hidden=" + std::to_wstring(hiddenInactiveViews)
+            + L" selected_visible_after="
+            + std::wstring(selectedView && IsWindowVisible(selectedView) ? L"1" : L"0");
         logTabDiagnostic(L"TAB_ACTIVATE", WKViewGetPage(tab->view.get()), tab, activationDetails);
         // Switching tabs does not change toolbar geometry. Keep WebKit view
         // geometry stable and reorder only the selected surface once.
@@ -6322,7 +6351,7 @@ search.addEventListener('keydown',e=>{
         // RedrawWindow on the wrapper HWND does not guarantee a fresh accelerated
         // WebKit frame. Request that frame after the tab switch has settled, without
         // changing focus, view geometry, or the native overlay z-order.
-        if (!switchingFromOverview && window)
+        if (window)
             SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
 
         invalidateTabChrome(tab);
@@ -10419,19 +10448,25 @@ void didFinishNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void*
     if (!tab || !tab->browser)
         return;
 
-    logTabDiagnostic(L"NAV_FINISH", page, tab);
+    BrowserState* browser = tab->browser;
+    const bool isActiveTab = tab == browser->active();
+    logTabDiagnostic(L"NAV_FINISH", page, tab,
+        L"internal_page=" + tab->internalPage
+            + L" active_tab=" + std::wstring(isActiveTab ? L"1" : L"0")
+            + L" activation_generation=" + std::to_wstring(browser->tabActivationGeneration));
 
     // The Settings document can finish after the activation-time repaint has
     // already run. Queue surface recovery from the browser window thread so the
     // completed DOM gets a fresh accelerated frame without relying on mouse input.
-    BrowserState* browser = tab->browser;
-    if (tab == browser->active() && tab->internalPage == L"settings"
+    if (isActiveTab && tab->internalPage == L"settings"
         && browser->window && IsWindow(browser->window)) {
-        if (!PostMessageW(browser->window, WM_AURORA_SETTINGS_PAGE_READY,
-            static_cast<WPARAM>(browser->tabActivationGeneration), 0)) {
-            logTabDiagnostic(L"SETTINGS_PAGE_PRESENT_POST_FAILED", page, tab,
-                L"error=" + std::to_wstring(GetLastError()));
-        }
+        const bool posted = PostMessageW(browser->window, WM_AURORA_SETTINGS_PAGE_READY,
+            static_cast<WPARAM>(browser->tabActivationGeneration), 0) != FALSE;
+        logTabDiagnostic(posted ? L"SETTINGS_PAGE_READY_POSTED"
+                                : L"SETTINGS_PAGE_PRESENT_POST_FAILED",
+            page, tab, posted
+                ? L"activation_generation=" + std::to_wstring(browser->tabActivationGeneration)
+                : L"error=" + std::to_wstring(GetLastError()));
     }
 }
 
@@ -12408,6 +12443,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_MOUSELEAVE:
         if (state) {
             state->mouseTrackingForChrome = false;
+
+            // WM_MOUSELEAVE also fires when the pointer transfers from the
+            // browser parent HWND into its address-bar or owned overlay HWNDs.
+            // That is not a leave from Aurora's chrome. Recompute from the
+            // screen cursor before clearing hover, otherwise child-window
+            // boundaries repeatedly flash parent-painted toolbar controls.
+            POINT cursor { -1, -1 };
+            RECT client { };
+            if (GetCursorPos(&cursor) && ScreenToClient(window, &cursor)
+                && GetClientRect(window, &client) && PtInRect(&client, cursor)) {
+                state->updateToolbarHover(cursor);
+                return 0;
+            }
+
             const int previousHoveredTab = state->hoveredTabBarIndex;
             const int previousHovered = state->hoveredToolbarButton;
             const int previousLeft = state->hoveredLeftControl;
