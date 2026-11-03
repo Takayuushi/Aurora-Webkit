@@ -3110,9 +3110,8 @@ struct BrowserState {
         const auto lifetime = thumbnailCaptureLifetime;
         tab.thumbnailCaptureInFlight = true;
 
-        try {
-            std::thread([ownerWindow, tabIdentity, activationGeneration, capturedURL,
-                lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
+        std::thread([ownerWindow, tabIdentity, activationGeneration, capturedURL,
+            lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
                 auto result = std::make_unique<ThumbnailCaptureResult>();
                 result->tabIdentity = tabIdentity;
                 result->activationGeneration = activationGeneration;
@@ -3208,11 +3207,7 @@ struct BrowserState {
                 if (!PostMessageW(ownerWindow, WM_AURORA_THUMBNAIL_READY, 0,
                         reinterpret_cast<LPARAM>(rawResult)))
                     delete rawResult;
-            }).detach();
-        } catch (...) {
-            tab.thumbnailCaptureInFlight = false;
-            return false;
-        }
+        }).detach();
         return true;
     }
 
