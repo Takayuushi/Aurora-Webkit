@@ -12633,7 +12633,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 // window. Regardless of foreground state, request a new page frame.
                 if (foreground)
                     SetFocus(viewWindow);
-                state->requestActivePageRepaint(false, false, true);
+                // The no-preview route closes the overview immediately, so a single
+                // forced repaint can leave WebKit's accelerated surface showing the
+                // previously active tab. Run the bounded recovery cycle without
+                // changing the page viewport or promoting it over native overlays.
+                state->beginWindowSurfaceRecovery(false, true, false, true);
                 const HWND newFocus = GetFocus();
                 logTabDiagnostic(L"NO_PREVIEW_TAB_PRESENT_REQUESTED", WKViewGetPage(selected->view.get()),
                     selected,
