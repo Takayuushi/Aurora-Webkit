@@ -6205,28 +6205,12 @@ search.addEventListener('keydown',e=>{
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
 
-        // Each tab owns a native WKView HWND. Leaving inactive WKViews visible
-        // underneath the active one does not reliably deliver WebKit's page
-        // visibility transition and can preserve a stale accelerated surface.
-        // On a real tab change (including a same-tab overview close), hide every
-        // view first and then reveal only the selected view.
-        size_t hiddenInactiveViews = 0;
-        const bool selectedViewWasVisible = selectedView && IsWindow(selectedView)
-            && IsWindowVisible(selectedView);
-        if (previouslyActive != index || switchingFromOverview) {
-            for (size_t viewIndex = 0; viewIndex < tabs.size(); ++viewIndex) {
-                HWND candidateView = WKViewGetWindow(tabs[viewIndex]->view.get());
-                if (!candidateView || !IsWindow(candidateView))
-                    continue;
-                if (IsWindowVisible(candidateView)) {
-                    ShowWindow(candidateView, SW_HIDE);
-                    if (candidateView != selectedView)
-                        ++hiddenInactiveViews;
-                }
-            }
-            if (selectedView && IsWindow(selectedView))
-                ShowWindow(selectedView, SW_SHOWNA);
-        }
+        // Keep inactive WKViews visible but below the selected HWND. WinCairo
+        // uses WM_SHOWWINDOW to update WebKit page visibility; hiding background
+        // views can release video renderers which do not reliably recover on return.
+        // Activation must change only sibling z-order, never page visibility.
+        const HWND selectedPreviousSibling = selectedView
+            ? GetWindow(selectedView, GW_HWNDPREV) : nullptr;
 
         RECT selectedViewRect { };
         const bool hasSelectedViewRect = selectedView && GetClientRect(selectedView, &selectedViewRect);
@@ -6238,11 +6222,9 @@ search.addEventListener('keydown',e=>{
         if (hasSelectedViewRect)
             activationDetails += L" view_size=" + std::to_wstring(selectedViewRect.right - selectedViewRect.left)
                 + L"x" + std::to_wstring(selectedViewRect.bottom - selectedViewRect.top);
-        activationDetails += L" selected_was_visible="
-            + std::wstring(selectedViewWasVisible ? L"1" : L"0")
-            + L" inactive_views_hidden=" + std::to_wstring(hiddenInactiveViews)
-            + L" selected_visible_after="
-            + std::wstring(selectedView && IsWindowVisible(selectedView) ? L"1" : L"0");
+        activationDetails += L" selected_previous_sibling="
+            + std::to_wstring(static_cast<unsigned long long>(
+                reinterpret_cast<ULONG_PTR>(selectedPreviousSibling)));
         logTabDiagnostic(L"TAB_ACTIVATE", WKViewGetPage(tab->view.get()), tab, activationDetails);
         // Switching tabs does not change toolbar geometry. Keep WebKit view
         // geometry stable and reorder only the selected surface once.
@@ -6341,7 +6323,7 @@ search.addEventListener('keydown',e=>{
         // RedrawWindow on the wrapper HWND does not guarantee a fresh accelerated
         // WebKit frame. Request that frame after the tab switch has settled, without
         // changing focus, view geometry, or the native overlay z-order.
-        if (window)
+        if (!switchingFromOverview && window)
             SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
 
         invalidateTabChrome(tab);
