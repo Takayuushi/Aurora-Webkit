@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cwchar>
 #include <cwctype>
@@ -56,6 +57,7 @@
 #include <memory>
 #include <mutex>
 #include <cstring>
+#include <deque>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -260,7 +262,15 @@ void didChangeActiveURL(const void*);
 void didChangeEstimatedProgress(const void*);
 void didChangeCanGoBack(const void*);
 void didChangeCanGoForward(const void*);
+void didStartProvisionalNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
+void didReceiveServerRedirectForProvisionalNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
+void didCommitNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
+void didFinishNavigation(WKPageRef, WKNavigationRef, WKTypeRef, const void*);
 void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void*);
+void didFailNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void*);
+void webProcessDidCrash(WKPageRef, const void*);
+void webProcessDidTerminate(WKPageRef, WKProcessTerminationReason, const void*);
+void logTabDiagnostic(const wchar_t*, WKPageRef, const TabState*, const std::wstring& details = std::wstring());
 void decidePolicyForNavigationResponse(WKPageRef, WKNavigationResponseRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void decidePolicyForNavigationAction(WKPageRef, WKNavigationActionRef, WKFramePolicyListenerRef, WKTypeRef, const void*);
 void navigationActionDidBecomeDownload(WKPageRef, WKNavigationActionRef, WKDownloadRef, const void*);
@@ -647,6 +657,133 @@ std::wstring applicationDataDirectory()
 
     CreateDirectoryW(directory.c_str(), nullptr);
     return directory;
+}
+
+// Diagnostics are written by a dedicated worker so WebKit callbacks never wait
+// for disk I/O. A failed logger thread or file write is deliberately non-fatal.
+class DiagnosticLogger {
+public:
+    DiagnosticLogger()
+    {
+        worker_ = CreateThread(nullptr, 0, workerEntry, this, 0, nullptr);
+    }
+
+    ~DiagnosticLogger()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_one();
+        if (worker_) {
+            WaitForSingleObject(worker_, INFINITE);
+            CloseHandle(worker_);
+            worker_ = nullptr;
+        }
+    }
+
+    void enqueue(std::wstring message)
+    {
+        SYSTEMTIME now { };
+        GetLocalTime(&now);
+        const auto pad = [](unsigned value, size_t width) {
+            std::wstring result = std::to_wstring(value);
+            while (result.size() < width)
+                result.insert(result.begin(), L'0');
+            return result;
+        };
+
+        std::wstring line = pad(now.wYear, 4) + L"-" + pad(now.wMonth, 2)
+            + L"-" + pad(now.wDay, 2) + L"T" + pad(now.wHour, 2)
+            + L":" + pad(now.wMinute, 2) + L":" + pad(now.wSecond, 2)
+            + L"." + pad(now.wMilliseconds, 3)
+            + L" [pid=" + std::to_wstring(GetCurrentProcessId())
+            + L" tid=" + std::to_wstring(GetCurrentThreadId()) + L"] " + message;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!worker_ || stopping_)
+                return;
+            if (queue_.size() >= 512)
+                queue_.pop_front();
+            queue_.push_back(std::move(line));
+        }
+        wake_.notify_one();
+    }
+
+private:
+    static DWORD WINAPI workerEntry(LPVOID context)
+    {
+        static_cast<DiagnosticLogger*>(context)->run();
+        return 0;
+    }
+
+    void run()
+    {
+        const std::wstring path = applicationDataDirectory() + L"\\diagnostics.log";
+        const std::wstring backupPath = path + L".1";
+        constexpr LONGLONG maxLogBytes = 2 * 1024 * 1024;
+
+        for (;;) {
+            std::wstring line;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+                if (queue_.empty() && stopping_)
+                    return;
+                line = std::move(queue_.front());
+                queue_.pop_front();
+            }
+
+            HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE)
+                continue;
+
+            LARGE_INTEGER fileSize { };
+            if (GetFileSizeEx(file, &fileSize) && fileSize.QuadPart >= maxLogBytes) {
+                CloseHandle(file);
+                MoveFileExW(path.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+                file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (file == INVALID_HANDLE_VALUE)
+                    continue;
+            }
+
+            LARGE_INTEGER endOfFile { };
+            if (!SetFilePointerEx(file, endOfFile, nullptr, FILE_END)) {
+                CloseHandle(file);
+                continue;
+            }
+
+            line += L"\r\n";
+            const int required = WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+                static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
+            if (required > 0) {
+                std::string utf8(static_cast<size_t>(required), '\0');
+                if (WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+                    static_cast<int>(line.size()), &utf8[0], required, nullptr, nullptr) == required) {
+                    DWORD written = 0;
+                    WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+                }
+            }
+            CloseHandle(file);
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::wstring> queue_;
+    HANDLE worker_ { nullptr };
+    bool stopping_ { false };
+};
+
+void logDiagnostic(std::wstring message)
+{
+    static DiagnosticLogger logger;
+    logger.enqueue(std::move(message));
 }
 
 std::wstring historyPath()
@@ -1247,6 +1384,7 @@ struct TabState {
     HICON favicon { nullptr };
     std::wstring faviconRequestURL;
     unsigned faviconAttempts { 0 };
+    int diagnosticProgressBucket { -1 };
     HBITMAP previewBitmap { nullptr };
     int previewWidth { 0 };
     int previewHeight { 0 };
@@ -5451,7 +5589,14 @@ search.addEventListener('keydown',e=>{
         navigationClient.base.clientInfo = tab.get();
         navigationClient.decidePolicyForNavigationAction = decidePolicyForNavigationAction;
         navigationClient.decidePolicyForNavigationResponse = decidePolicyForNavigationResponse;
+        navigationClient.didStartProvisionalNavigation = didStartProvisionalNavigation;
+        navigationClient.didReceiveServerRedirectForProvisionalNavigation = didReceiveServerRedirectForProvisionalNavigation;
+        navigationClient.didCommitNavigation = didCommitNavigation;
+        navigationClient.didFinishNavigation = didFinishNavigation;
         navigationClient.didFailProvisionalNavigation = didFailProvisionalNavigation;
+        navigationClient.didFailNavigation = didFailNavigation;
+        navigationClient.webProcessDidCrash = webProcessDidCrash;
+        navigationClient.webProcessDidTerminate = webProcessDidTerminate;
         navigationClient.navigationActionDidBecomeDownload = navigationActionDidBecomeDownload;
         navigationClient.navigationResponseDidBecomeDownload = navigationResponseDidBecomeDownload;
         navigationClient.contextMenuDidCreateDownload = contextMenuDidCreateDownload;
@@ -5857,6 +6002,17 @@ search.addEventListener('keydown',e=>{
             SetWindowTextW(addressBar, tab->activeUrl.c_str());
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
+        RECT selectedViewRect { };
+        const bool hasSelectedViewRect = selectedView && GetClientRect(selectedView, &selectedViewRect);
+        std::wstring activationDetails = L"from_index=" + std::to_wstring(previouslyActive)
+            + L" to_index=" + std::to_wstring(index)
+            + L" overview_transition=" + (switchingFromOverview ? L"1" : L"0")
+            + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+            + L" view_visible=" + (selectedView && IsWindowVisible(selectedView) ? L"1" : L"0");
+        if (hasSelectedViewRect)
+            activationDetails += L" view_size=" + std::to_wstring(selectedViewRect.right - selectedViewRect.left)
+                + L"x" + std::to_wstring(selectedViewRect.bottom - selectedViewRect.top);
+        logTabDiagnostic(L"TAB_ACTIVATE", WKViewGetPage(tab->view.get()), tab, activationDetails);
         // Switching tabs does not change toolbar geometry. Keep WebKit view
         // geometry stable and reorder only the selected surface once.
         resize(false);
@@ -9916,10 +10072,138 @@ void decidePolicyForNavigationResponse(WKPageRef, WKNavigationResponseRef naviga
 }
 
 
-void didFailProvisionalNavigation(WKPageRef, WKNavigationRef, WKErrorRef, WKTypeRef, const void* clientInfo)
+std::wstring safeDiagnosticUrl(std::wstring url)
+{
+    // Log only the origin. Paths, query strings, fragments, and credentials may
+    // contain account identifiers or other private data.
+    const size_t schemeEnd = url.find(L"://");
+    if (schemeEnd == std::wstring::npos)
+        return url.substr(0, url.find_first_of(L"?#"));
+    const size_t authorityStart = schemeEnd + 3;
+    const size_t authorityEnd = url.find_first_of(L"/?#", authorityStart);
+    const size_t at = url.find(L'@', authorityStart);
+    if (at != std::wstring::npos && (authorityEnd == std::wstring::npos || at < authorityEnd))
+        url.erase(authorityStart, at - authorityStart + 1);
+    const size_t end = url.find_first_of(L"/?#", authorityStart);
+    if (end != std::wstring::npos)
+        url.resize(end);
+    return url;
+}
+
+void logTabDiagnostic(const wchar_t* event, WKPageRef page, const TabState* tab, const std::wstring& details)
+{
+    if (!tab) {
+        logDiagnostic(event ? event : L"PAGE_EVENT");
+        return;
+    }
+
+    std::wstring url = tab->activeUrl;
+    if (page) {
+        const std::wstring pageUrl = createString(adoptWK(WKPageCopyActiveURL(page)).get());
+        if (!pageUrl.empty())
+            url = pageUrl;
+    }
+
+    std::wstring message = event ? event : L"PAGE_EVENT";
+    message += L" tab=" + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(tab)));
+    message += L" active=" + std::wstring(tab->browser && tab->browser->active() == tab ? L"1" : L"0");
+    message += L" url=" + safeDiagnosticUrl(url);
+    if (page)
+        message += L" progress=" + std::to_wstring(WKPageGetEstimatedProgress(page));
+    if (!details.empty())
+        message += L" " + details;
+    logDiagnostic(std::move(message));
+}
+
+void logNavigationFailure(const wchar_t* event, WKPageRef page, WKErrorRef error, const TabState* tab)
+{
+    std::wstring details = L"error_domain=";
+    if (error) {
+        details += createString(adoptWK(WKErrorCopyDomain(error)).get());
+        details += L" error_code=" + std::to_wstring(WKErrorGetErrorCode(error));
+        WKRetainPtr<WKURLRef> failingUrl = adoptWK(WKErrorCopyFailingURL(error));
+        if (failingUrl) {
+            const std::wstring rawFailingUrl = createString(adoptWK(WKURLCopyString(failingUrl.get())).get());
+            details += L" failing_origin=" + safeDiagnosticUrl(rawFailingUrl);
+        }
+    } else {
+        details += L"unknown error_code=0";
+    }
+    logTabDiagnostic(event, page, tab, details);
+}
+
+void didStartProvisionalNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (!tab || !tab->browser || tab->fallbackURL.empty())
+    if (!tab || !tab->browser)
+        return;
+    tab->diagnosticProgressBucket = -1;
+    logTabDiagnostic(L"NAV_START", page, tab);
+}
+
+void didReceiveServerRedirectForProvisionalNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser)
+        logTabDiagnostic(L"NAV_REDIRECT", page, tab);
+}
+
+void didCommitNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser)
+        logTabDiagnostic(L"NAV_COMMIT", page, tab);
+}
+
+void didFinishNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser)
+        logTabDiagnostic(L"NAV_FINISH", page, tab);
+}
+
+void didFailNavigation(WKPageRef page, WKNavigationRef, WKErrorRef error, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser)
+        logNavigationFailure(L"NAV_FAIL", page, error, tab);
+}
+
+void webProcessDidCrash(WKPageRef page, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser)
+        logTabDiagnostic(L"WEB_PROCESS_CRASH", page, tab);
+}
+
+const wchar_t* processTerminationReasonName(WKProcessTerminationReason reason)
+{
+    switch (reason) {
+    case kWKProcessTerminationReasonExceededMemoryLimit: return L"memory_limit";
+    case kWKProcessTerminationReasonExceededCPULimit: return L"cpu_limit";
+    case kWKProcessTerminationReasonRequestedByClient: return L"requested_by_client";
+    case kWKProcessTerminationReasonCrash: return L"crash";
+    default: return L"unknown";
+    }
+}
+
+void webProcessDidTerminate(WKPageRef page, WKProcessTerminationReason reason, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (tab && tab->browser) {
+        const std::wstring details = L"termination_reason=" + std::wstring(processTerminationReasonName(reason));
+        logTabDiagnostic(L"WEB_PROCESS_TERMINATED", page, tab, details);
+    }
+}
+
+void didFailProvisionalNavigation(WKPageRef page, WKNavigationRef, WKErrorRef error, WKTypeRef, const void* clientInfo)
+{
+    auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
+    if (!tab || !tab->browser)
+        return;
+
+    logNavigationFailure(L"NAV_FAIL_PROVISIONAL", page, error, tab);
+    if (tab->fallbackURL.empty())
         return;
 
     auto fallback = tab->fallbackURL;
@@ -11476,6 +11760,9 @@ void didChangeIsLoading(const void* clientInfo)
         return;
 
     auto page = WKViewGetPage(tab->view.get());
+    const double pageProgress = page ? WKPageGetEstimatedProgress(page) : 0.0;
+    logTabDiagnostic(L"LOADING_STATE", page, tab,
+        std::wstring(L"loading=") + (page && pageProgress < 1.0 ? L"1" : L"0"));
     if (page && WKPageGetEstimatedProgress(page) < 1.0) {
         tab->lastExtensionsUrl.clear();
         if (tab == tab->browser->active())
@@ -11623,11 +11910,21 @@ void didChangeActiveURL(const void* clientInfo)
 void didChangeEstimatedProgress(const void* clientInfo)
 {
     auto* tab = const_cast<TabState*>(static_cast<const TabState*>(clientInfo));
-    if (!tab || !tab->browser || tab != tab->browser->active())
+    if (!tab || !tab->browser)
         return;
 
     auto page = WKViewGetPage(tab->view.get());
-    const bool loading = page && WKPageGetEstimatedProgress(page) < 1.0;
+    const double pageProgress = page ? WKPageGetEstimatedProgress(page) : 1.0;
+    const int progressBucket = static_cast<int>(pageProgress * 10.0);
+    if (progressBucket != tab->diagnosticProgressBucket) {
+        tab->diagnosticProgressBucket = progressBucket;
+        logTabDiagnostic(L"LOAD_PROGRESS", page, tab,
+            L"progress_bucket=" + std::to_wstring(progressBucket));
+    }
+    if (tab != tab->browser->active())
+        return;
+
+    const bool loading = page && pageProgress < 1.0;
     BrowserState* browser = tab->browser;
     if (!loading)
         browser->scheduleActivePageTint(tab, 1100);
