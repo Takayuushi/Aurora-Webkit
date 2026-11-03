@@ -5359,8 +5359,12 @@ search.addEventListener('keydown',e=>{
         RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
     }
 
-    void loadURL(TabState& tab, const std::wstring& value)
+    void loadURL(TabState& tab, const std::wstring& value,
+        const std::wstring& fallbackURL = {})
     {
+        // A fallback belongs only to the URL entered in the address bar. Clear
+        // any previous fallback whenever another navigation is started.
+        tab.fallbackURL = fallbackURL;
         tab.initialPageLoadPending = false;
         tab.internalPage.clear();
         tab.hasInternalThemeSnapshot = false;
@@ -5408,8 +5412,7 @@ search.addEventListener('keydown',e=>{
             if (cleaned.rfind(L"www.", 0) == 0) {
                 loadURL(*tab, L"https://" + cleaned);
             } else {
-                tab->fallbackURL = L"https://" + cleaned;
-                loadURL(*tab, L"https://www." + cleaned);
+                loadURL(*tab, L"https://www." + cleaned, L"https://" + cleaned);
             }
         }
         else
@@ -11479,6 +11482,9 @@ void didChangeIsLoading(const void* clientInfo)
             tab->browser->clearActivePageTint();
     }
     if (page && WKPageGetEstimatedProgress(page) >= 1.0) {
+        // The www-first request succeeded; don't let this tab's old fallback
+        // hijack a later navigation initiated by a link or redirect.
+        tab->fallbackURL.clear();
         tab->thumbnailCaptureNeeded = true;
         const std::wstring completedURL = createString(adoptWK(WKPageCopyActiveURL(page)).get());
         if (!completedURL.empty())
