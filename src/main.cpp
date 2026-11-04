@@ -6260,17 +6260,13 @@ search.addEventListener('keydown',e=>{
                         RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                 }
             }
-            // Keep the overview in control of focus until its zoom reaches the page.
-            // The live WebKit view is raised underneath the overlay and focused only
-            // after the final frame, avoiding a focus-induced frame stall.
-            if (!animateOverviewClose) {
-                // Keep focus on Aurora during the immediate no-preview fallback.
-                // A deferred handoff below gives WebKit focus after the overlay is gone.
-                if (switchingFromOverview || tab->initialPageLoadPending)
-                    SetFocus(window);
-                else
-                    SetFocus(selectedView);
-            }
+            // Keep focus on Aurora until the selected WebKit child has been
+            // restored and its first asynchronous repaint has been requested.
+            // Focusing the child here makes the deferred focus handler treat the
+            // handoff as already complete, so it never performs the post-switch
+            // WebKit focus/recovery step on cached website tabs.
+            if (!animateOverviewClose)
+                SetFocus(window);
         }
 
         if (animateOverviewClose) {
@@ -6361,6 +6357,18 @@ search.addEventListener('keydown',e=>{
                 L"waiting_for_webkit_callback=1 overlay_preserved=1");
         } else if (!switchingFromOverview && window) {
             SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
+            if (!tab->initialPageLoadPending) {
+                if (SetTimer(window, kDeferredWebViewFocusTimerId, 180, nullptr)) {
+                    logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUED",
+                        WKViewGetPage(tab->view.get()), tab,
+                        L"activation_generation=" + std::to_wstring(tabActivationGeneration)
+                            + L" delay_ms=180");
+                } else {
+                    logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUE_FAILED",
+                        WKViewGetPage(tab->view.get()), tab,
+                        L"error=" + std::to_wstring(GetLastError()));
+                }
+            }
         }
 
         invalidateTabChrome(tab);
@@ -12433,7 +12441,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 logTabDiagnostic(L"WEBVIEW_FOCUS_HANDOFF", WKViewGetPage(selected->view.get()),
                     selected, details);
                 SetFocus(viewWindow);
-                state->requestActivePageRepaint(false, false, true);
+                // A single repaint request was not sufficient for cached pages
+                // restored after an internal Settings surface. Use the same bounded
+                // frame-recovery cycle used by Settings, now against the selected
+                // website after it owns focus.
+                state->beginWindowSurfaceRecovery(false, true, false, true);
+                logTabDiagnostic(L"WEBVIEW_SURFACE_RECOVERY_STARTED",
+                    WKViewGetPage(selected->view.get()), selected,
+                    L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                        + L" preserve_overlay_stack=1 layout_refresh=0");
+            } else if (viewWindow && IsWindow(viewWindow) && IsWindowVisible(viewWindow)) {
+                logTabDiagnostic(L"WEBVIEW_FOCUS_HANDOFF_SKIPPED",
+                    WKViewGetPage(selected->view.get()), selected,
+                    L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
+                        reinterpret_cast<ULONG_PTR>(currentFocus))));
             }
             return 0;
         }
