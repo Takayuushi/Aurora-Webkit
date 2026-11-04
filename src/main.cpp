@@ -3316,19 +3316,27 @@ struct BrowserState {
                 // active page, not just the internal Settings document.
                 if (auto* selected = active(); selected
                     && !tabOverviewVisible && !tabOverviewAnimating && !tabOverviewClosing) {
+                    WKPageRef selectedPage = WKViewGetPage(selected->view.get());
+                    const double pageProgress = selectedPage ? WKPageGetEstimatedProgress(selectedPage) : 0.0;
                     HWND viewWindow = WKViewGetWindow(selected->view.get());
-                    if (viewWindow && IsWindow(viewWindow)) {
-                        if (!IsWindowVisible(viewWindow))
-                            ShowWindow(viewWindow, SW_SHOWNA);
-                        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                    if (pageProgress >= 1.0) {
+                        if (viewWindow && IsWindow(viewWindow)) {
+                            if (!IsWindowVisible(viewWindow))
+                                ShowWindow(viewWindow, SW_SHOWNA);
+                            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                                    | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                        }
+                        requestActivePageRepaint(false, false, true);
+                        logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_REQUESTED",
+                            selectedPage, selected,
+                            L"sidebar_open=" + std::wstring(sidebarOpen ? L"1" : L"0")
+                                + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0"));
+                    } else {
+                        logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_DEFERRED",
+                            selectedPage, selected,
+                            L"reason=page_not_finished progress=" + std::to_wstring(pageProgress));
                     }
-                    requestActivePageRepaint(false, false, true);
-                    logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_REQUESTED",
-                        WKViewGetPage(selected->view.get()), selected,
-                        L"sidebar_open=" + std::wstring(sidebarOpen ? L"1" : L"0")
-                            + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0"));
                 }
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
@@ -12798,12 +12806,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         WKPageRef selectedPage = WKViewGetPage(selected->view.get());
         const double selectedProgress = selectedPage ? WKPageGetEstimatedProgress(selectedPage) : 0.0;
-        if (selectedProgress < 1.0) {
-            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_DEFERRED",
-                selectedPage, selected,
-                L"reason=page_not_finished progress=" + std::to_wstring(selectedProgress));
-            return 0;
-        }
 
         HWND viewWindow = WKViewGetWindow(selected->view.get());
         if (!viewWindow || !IsWindow(viewWindow)) {
@@ -12818,14 +12820,20 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // Reassert the active WebKit child after the page has finished. A normal
         // z-order update (without SWP_NOREDRAW) lets Windows expose its current
         // accelerated surface; the owned sidebar/overview popups remain above it.
-        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDERED",
-            selectedPage, selected,
-            L"previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(
-                reinterpret_cast<ULONG_PTR>(GetWindow(viewWindow, GW_HWNDPREV))))
-                + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+        if (selectedProgress >= 1.0) {
+            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                    | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDERED",
+                selectedPage, selected,
+                L"previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(
+                    reinterpret_cast<ULONG_PTR>(GetWindow(viewWindow, GW_HWNDPREV))))
+                    + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+        } else {
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDER_DEFERRED",
+                selectedPage, selected,
+                L"reason=page_not_finished progress=" + std::to_wstring(selectedProgress));
+        }
 
         // Page presentation must not depend on keyboard focus or foreground
         // activation. A background browser can still refresh its selected page;
