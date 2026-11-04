@@ -367,7 +367,8 @@ void CALLBACK deferredInitialTabLoadTimerFired(
         const ULONGLONG remaining = deadline - now;
         LARGE_INTEGER relativeDue { };
         relativeDue.QuadPart = -static_cast<LONGLONG>(remaining) * 10000;
-        FILETIME dueTime { relativeDue.LowPart, relativeDue.HighPart };
+        FILETIME dueTime { static_cast<DWORD>(relativeDue.LowPart),
+            static_cast<DWORD>(relativeDue.HighPart) };
         SetThreadpoolTimer(timer, &dueTime, 0, 0);
         return;
     }
@@ -7474,7 +7475,8 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (request.timer) {
             LARGE_INTEGER relativeDue { };
             relativeDue.QuadPart = -static_cast<LONGLONG>(initialTabLoadDebounceMs) * 10000;
-            FILETIME dueTime { relativeDue.LowPart, relativeDue.HighPart };
+            FILETIME dueTime { static_cast<DWORD>(relativeDue.LowPart),
+            static_cast<DWORD>(relativeDue.HighPart) };
             SetThreadpoolTimer(request.timer, &dueTime, 0, 0);
             scheduled = true;
         } else {
