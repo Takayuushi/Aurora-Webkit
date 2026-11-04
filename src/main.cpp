@@ -239,6 +239,7 @@ constexpr UINT kSettingsNavBase = 7120;
 constexpr int kSettingsPageCount = 6;
 constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 
+constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 
 constexpr int kTitleBarHeight = 0;
@@ -3284,10 +3285,9 @@ struct BrowserState {
                         }
                     }
                     // The page was deliberately kept covered during the zoom.
-                    // The deferred focus handler issues the single WebKit repaint
-                    // after the overview has gone away.
+                    // Present it as soon as the native overview popup is gone.
                     SetFocus(window);
-                    SetTimer(window, kDeferredWebViewFocusTimerId, 120, nullptr);
+                    queueActivePagePresentation(active(), L"overview-animation-finished");
                     updateToolbarHover(POINT { -1, -1 });
                 }
             }
@@ -6344,23 +6344,9 @@ search.addEventListener('keydown',e=>{
                     : L"error=" + std::to_wstring(GetLastError()));
         }
 
-        if (window && !animateOverviewClose && !tab->initialPageLoadPending) {
-            // Both preview-backed and no-preview tab switches use the same single
-            // deferred focus/repaint handoff after the overview is out of the way.
-            const UINT handoffDelay = switchingFromOverview ? 120 : 180;
-            if (SetTimer(window, kDeferredWebViewFocusTimerId, handoffDelay, nullptr)) {
-                logTabDiagnostic(switchingFromOverview
-                        ? L"OVERVIEW_NO_PREVIEW_FOCUS_HANDOFF_QUEUED"
-                        : L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUED",
-                    WKViewGetPage(tab->view.get()), tab,
-                    L"activation_generation=" + std::to_wstring(tabActivationGeneration)
-                        + L" delay_ms=" + std::to_wstring(handoffDelay));
-            } else {
-                logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUE_FAILED",
-                    WKViewGetPage(tab->view.get()), tab,
-                    L"error=" + std::to_wstring(GetLastError()));
-            }
-        }
+        if (window && !animateOverviewClose && !tab->initialPageLoadPending)
+            queueActivePagePresentation(tab, switchingFromOverview
+                ? L"overview-no-preview-selection" : L"tab-activation");
 
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -7381,6 +7367,24 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             forcedPageRepaintFinished);
         if (!preserveOverlayStack)
             positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
+    }
+
+    bool queueActivePagePresentation(TabState* tab, const wchar_t* reason)
+    {
+        if (!window || !tab || tab != active())
+            return false;
+
+        const bool posted = PostMessageW(window, WM_AURORA_ACTIVE_PAGE_PRESENT,
+            static_cast<WPARAM>(tabActivationGeneration),
+            reinterpret_cast<LPARAM>(tab)) != FALSE;
+        const std::wstring details = L"reason="
+            + std::wstring(reason ? reason : L"unspecified")
+            + L" activation_generation=" + std::to_wstring(tabActivationGeneration)
+            + L" posted=" + (posted ? L"1" : L"0");
+        logTabDiagnostic(posted ? L"ACTIVE_PAGE_PRESENT_QUEUED"
+                                : L"ACTIVE_PAGE_PRESENT_POST_FAILED",
+            WKViewGetPage(tab->view.get()), tab, details);
+        return posted;
     }
 
     void redrawActiveWebView(bool immediate = false)
@@ -12111,11 +12115,9 @@ void didChangeIsLoading(const void* clientInfo)
             tab->lastRecordedUrl = url;
         }
         if (tab == tab->browser->active()) {
-            if (tab->browser->window && !tab->browser->tabOverviewVisible)
-                SetTimer(tab->browser->window, kDeferredActivePageRepaintTimerId, 120, nullptr);
             if (tab->browser->window && !tab->browser->tabOverviewVisible
-                && !tab->browser->tabOverviewClosing && !tab->browser->addressEditing)
-                SetTimer(tab->browser->window, kDeferredWebViewFocusTimerId, 140, nullptr);
+                && !tab->browser->tabOverviewClosing)
+                tab->browser->queueActivePagePresentation(tab, L"navigation-finished");
 
             // Wait for the Start Page's eager favicon images to finish decoding
             // before saving its overview snapshot. Other pages keep the short delay.
@@ -12710,6 +12712,76 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (state)
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
+
+    case WM_AURORA_ACTIVE_PAGE_PRESENT: {
+        if (!state)
+            return 0;
+
+        if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration) {
+            logDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED reason=stale_activation");
+            return 0;
+        }
+
+        auto* selected = state->active();
+        if (!selected || reinterpret_cast<LPARAM>(selected) != lParam) {
+            logDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED reason=stale_tab");
+            return 0;
+        }
+        if (state->tabOverviewVisible || state->tabOverviewAnimating || state->tabOverviewClosing) {
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"reason=overview_overlay_active");
+            return 0;
+        }
+        if (IsIconic(window)) {
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"reason=window_minimized");
+            return 0;
+        }
+
+        HWND viewWindow = WKViewGetWindow(selected->view.get());
+        if (!viewWindow || !IsWindow(viewWindow)) {
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"reason=invalid_webview_window");
+            return 0;
+        }
+        if (!IsWindowVisible(viewWindow))
+            ShowWindow(viewWindow, SW_SHOWNA);
+
+        // Page presentation must not depend on keyboard focus or foreground
+        // activation. A background browser can still refresh its selected page;
+        // focus is transferred only when Aurora is the foreground application.
+        const HWND foreground = GetForegroundWindow();
+        const HWND currentFocus = GetFocus();
+        if (foreground == window && !state->addressEditing && !state->findBarVisible
+            && (currentFocus == window || currentFocus == state->addressBar || !currentFocus)) {
+            SetFocus(viewWindow);
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_HANDOFF",
+                WKViewGetPage(selected->view.get()), selected,
+                L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
+                    reinterpret_cast<ULONG_PTR>(currentFocus))));
+        } else {
+            const wchar_t* reason = foreground != window ? L"not_foreground"
+                : state->addressEditing ? L"address_editing"
+                : state->findBarVisible ? L"find_bar"
+                : L"focus_owned_elsewhere";
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_SKIPPED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"reason=" + std::wstring(reason)
+                    + L" focus_before=" + std::to_wstring(static_cast<unsigned long long>(
+                        reinterpret_cast<ULONG_PTR>(currentFocus))));
+        }
+
+        state->requestActivePageRepaint(false, false, true);
+        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_REPAINT_REQUESTED",
+            WKViewGetPage(selected->view.get()), selected,
+            L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                + L" foreground=" + (foreground == window ? L"1" : L"0")
+                + L" preserve_overlay_stack=1");
+        return 0;
+    }
 
     case WM_AURORA_SETTINGS_PAGE_READY:
         if (!state)
@@ -13393,7 +13465,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v2");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v3");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
