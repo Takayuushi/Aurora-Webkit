@@ -353,6 +353,9 @@ void CALLBACK deferredInitialTabLoadTimerFired(
     if (!request || !timer)
         return;
 
+    // The generation is published after its matching deadline. Reading it first
+    // means an observed new generation also observes the new debounce deadline.
+    const auto generation = request->generation.load(std::memory_order_acquire);
     const ULONGLONG deadline = request->deadlineTick.load(std::memory_order_acquire);
     if (!deadline)
         return;
@@ -369,7 +372,6 @@ void CALLBACK deferredInitialTabLoadTimerFired(
         return;
     }
 
-    const auto generation = request->generation.load(std::memory_order_acquire);
     HWND window = request->window;
     if (window && IsWindow(window))
         PostMessageW(window, WM_AURORA_INITIAL_TAB_LOAD_READY,
@@ -7427,12 +7429,14 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
                         | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_SHOWWINDOW);
             }
-            // preserveOverlayStack only suppresses the WebKit HWND z-order change.
-            // The view still needs a queued, non-erasing paint request after the
-            // sidebar transition; otherwise the accelerated page can remain black.
-            InvalidateRect(viewWindow, nullptr, FALSE);
-            RedrawWindow(viewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            // For activation repaints, keep the existing surface intact until
+            // WebKit confirms that the replacement frame is ready. Other recovery
+            // callers still receive an ordinary non-erasing invalidation.
+            if (!signalActivePageReady) {
+                InvalidateRect(viewWindow, nullptr, FALSE);
+                RedrawWindow(viewWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            }
         }
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
@@ -7461,9 +7465,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         // on the thread pool, then post a normal WM_APP message to the UI thread.
         static constexpr ULONGLONG initialTabLoadDebounceMs = 240;
         auto& request = initialTabLoadContext;
-        const auto generation = request.generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+        const auto generation = request.generation.load(std::memory_order_relaxed) + 1;
         const ULONGLONG deadline = GetTickCount64() + initialTabLoadDebounceMs;
         request.deadlineTick.store(deadline, std::memory_order_release);
+        request.generation.store(generation, std::memory_order_release);
 
         bool scheduled = false;
         if (request.timer) {
