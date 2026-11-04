@@ -241,7 +241,6 @@ constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 
 constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
-constexpr UINT WM_AURORA_LOAD_PENDING_INITIAL_TAB = WM_APP + 27;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -3310,34 +3309,9 @@ struct BrowserState {
                     resize(false);
                 }
                 positionOverlayWindows(true);
-                // A settled sidebar transition is also a reliable presentation
-                // boundary for cached WebKit pages. Reassert the selected child's
-                // sibling order and request one non-erasing WebKit frame for every
-                // active page, not just the internal Settings document.
-                if (auto* selected = active(); selected
-                    && !tabOverviewVisible && !tabOverviewAnimating && !tabOverviewClosing) {
-                    WKPageRef selectedPage = WKViewGetPage(selected->view.get());
-                    const double pageProgress = selectedPage ? WKPageGetEstimatedProgress(selectedPage) : 0.0;
-                    HWND viewWindow = WKViewGetWindow(selected->view.get());
-                    if (pageProgress >= 1.0) {
-                        if (viewWindow && IsWindow(viewWindow)) {
-                            if (!IsWindowVisible(viewWindow))
-                                ShowWindow(viewWindow, SW_SHOWNA);
-                            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                                    | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-                        }
-                        requestActivePageRepaint(false, false, true);
-                        logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_REQUESTED",
-                            selectedPage, selected,
-                            L"sidebar_open=" + std::wstring(sidebarOpen ? L"1" : L"0")
-                                + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0"));
-                    } else {
-                        logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_DEFERRED",
-                            selectedPage, selected,
-                            L"reason=page_not_finished progress=" + std::to_wstring(pageProgress));
-                    }
-                }
+                // The drawer is an owned overlay and does not resize the WebKit
+                // viewport. Do not reorder or force-repaint the accelerated page here:
+                // doing so on every close/open can discard live video compositor frames.
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
             }
@@ -5880,8 +5854,6 @@ search.addEventListener('keydown',e=>{
         else
             resize();
 
-        if (loadInitialStartPage && !select)
-            queuePendingInitialTabLoad(tabs[index].get(), L"background-tab-created");
         return true;
     }
 
@@ -5890,18 +5862,12 @@ search.addEventListener('keydown',e=>{
         if (tabs.empty())
             return;
 
-        // Initialize one page per UI tick instead of loading every queued start page
-        // in a single timer callback. Prefer the visible tab so it becomes responsive first.
-        size_t index = std::min(activeTab, tabs.size() - 1);
-        if (!tabs[index]->initialPageLoadPending) {
-            const auto pending = std::find_if(tabs.begin(), tabs.end(),
-                [](const std::unique_ptr<TabState>& candidate) {
-                    return candidate->initialPageLoadPending;
-                });
-            if (pending == tabs.end())
-                return;
-            index = static_cast<size_t>(std::distance(tabs.begin(), pending));
-        }
+        // Only initialize the currently selected tab. A burst of newly created
+        // tabs must not fan out dozens of hidden Start Page documents and WebKit
+        // navigation callbacks onto the UI/rendering pipeline.
+        const size_t index = std::min(activeTab, tabs.size() - 1);
+        if (!tabs[index]->initialPageLoadPending)
+            return;
 
         TabState& tab = *tabs[index];
         const bool useHomepage = tab.initialPageShouldLoadHomepage;
@@ -7414,16 +7380,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!window || !tab || !tab->initialPageLoadPending)
             return false;
 
-        const bool posted = PostMessageW(window, WM_AURORA_LOAD_PENDING_INITIAL_TAB, 0, 0) != FALSE;
-        logTabDiagnostic(posted ? L"INITIAL_TAB_LOAD_MESSAGE_QUEUED"
-                                : L"INITIAL_TAB_LOAD_MESSAGE_POST_FAILED",
+        // Coalesce bursts of new-tab creation. Every activation restarts this
+        // short delay, so only the tab that remains selected is initialized.
+        // Tabs left in the background stay pending until the user selects them.
+        static constexpr UINT initialTabLoadDebounceMs = 240;
+        const bool scheduled = SetTimer(window, kDeferredTabLoadTimerId,
+            initialTabLoadDebounceMs, nullptr) != 0;
+        logTabDiagnostic(scheduled ? L"INITIAL_TAB_LOAD_DEBOUNCED"
+                                   : L"INITIAL_TAB_LOAD_DEBOUNCE_FAILED",
             WKViewGetPage(tab->view.get()), tab,
             L"reason=" + std::wstring(reason ? reason : L"unspecified")
+                + L" delay_ms=" + std::to_wstring(initialTabLoadDebounceMs)
                 + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
-                + L" posted=" + (posted ? L"1" : L"0"));
-        if (!posted)
-            SetTimer(window, kDeferredTabLoadTimerId, 16, nullptr);
-        return posted;
+                + L" scheduled=" + (scheduled ? L"1" : L"0"));
+        return scheduled;
     }
 
     bool queueActivePagePresentation(TabState* tab, const wchar_t* reason)
@@ -12770,13 +12740,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
 
-    case WM_AURORA_LOAD_PENDING_INITIAL_TAB:
-        if (state) {
-            state->loadPendingInitialTabPages();
-            return 0;
-        }
-        return 0;
-
     case WM_AURORA_ACTIVE_PAGE_PRESENT: {
         if (!state)
             return 0;
@@ -13550,7 +13513,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v4");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-tab-load-debounce-v5");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
