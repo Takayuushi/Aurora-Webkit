@@ -5872,11 +5872,8 @@ search.addEventListener('keydown',e=>{
         else
             resize();
 
-        if (loadInitialStartPage) {
-            // Let the tab chrome paint before building/loading all Start Page content.
-            if (!window || !SetTimer(window, kDeferredTabLoadTimerId, 16, nullptr))
-                loadPendingInitialTabPages();
-        }
+        if (loadInitialStartPage && !select)
+            queuePendingInitialTabLoad(tabs[index].get(), L"background-tab-created");
         return true;
     }
 
