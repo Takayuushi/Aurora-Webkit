@@ -241,6 +241,7 @@ constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 
 constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
+constexpr UINT WM_AURORA_ACTIVE_PAGE_REPAINT_READY = WM_APP + 28;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -256,6 +257,12 @@ constexpr int kResizeBorder = 4;
 
 struct BrowserState;
 struct TabState;
+
+struct ActivePageRepaintContext {
+    HWND window { nullptr };
+    TabState* tab { nullptr };
+    unsigned long long activationGeneration { 0 };
+};
 std::wstring applicationDataDirectory();
 void requestFavicon(BrowserState*, const std::wstring&, bool forStartPage = false);
 
@@ -306,13 +313,29 @@ void customContextMenuItemSelected(WKPageRef, WKContextMenuItemRef, const void*)
 
 void forcedPageRepaintFinished(WKErrorRef, void* context)
 {
-    // Only transition handoff requests pass a context. Report completion to the
-    // browser window; never synchronously draw from WebKit's completion callback.
+    // Window-transition handoffs use the browser HWND as their callback context.
     if (!context)
         return;
     HWND window = static_cast<HWND>(context);
     if (IsWindow(window))
         PostMessageW(window, WM_AURORA_TRANSITION_REPAINT_READY, 0, 0);
+}
+
+void activePageRepaintFinished(WKErrorRef, void* context)
+{
+    // WKPageForceRepaint completes asynchronously. Carry the tab identity and
+    // activation generation back to the UI thread so stale callbacks are ignored.
+    auto* request = static_cast<ActivePageRepaintContext*>(context);
+    if (!request)
+        return;
+    if (!IsWindow(request->window)) {
+        delete request;
+        return;
+    }
+    if (!PostMessageW(request->window, WM_AURORA_ACTIVE_PAGE_REPAINT_READY,
+            static_cast<WPARAM>(request->activationGeneration),
+            reinterpret_cast<LPARAM>(request)))
+        delete request;
 }
 
 struct FaviconResult {
@@ -7330,7 +7353,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
     }
 
     void requestActivePageRepaint(bool refreshBackingScale = false, bool signalTransitionReady = false,
-        bool preserveOverlayStack = false)
+        bool preserveOverlayStack = false, bool signalActivePageReady = false)
     {
         if (!window || IsIconic(window) || tabOverviewVisible)
             return;
@@ -7368,9 +7391,17 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         // RedrawWindow alone can invalidate the wrapper HWND without making WebKit's
-        // accelerated page generate a fresh frame. WKPageForceRepaint requests that frame.
-        WKPageForceRepaint(page, signalTransitionReady ? static_cast<void*>(window) : nullptr,
-            forcedPageRepaintFinished);
+        // accelerated page generate a fresh frame. For tab activation, wait for
+        // WebKit's completion callback before the final surface reorder/redraw.
+        if (signalActivePageReady) {
+            auto* completion = new ActivePageRepaintContext {
+                window, selected, tabActivationGeneration
+            };
+            WKPageForceRepaint(page, completion, activePageRepaintFinished);
+        } else {
+            WKPageForceRepaint(page, signalTransitionReady ? static_cast<void*>(window) : nullptr,
+                forcedPageRepaintFinished);
+        }
         if (!preserveOverlayStack)
             positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
     }
@@ -12822,12 +12853,60 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         reinterpret_cast<ULONG_PTR>(currentFocus))));
         }
 
-        state->requestActivePageRepaint(false, false, true);
+        state->requestActivePageRepaint(false, false, true, true);
         logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_REPAINT_REQUESTED",
             WKViewGetPage(selected->view.get()), selected,
             L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
                 + L" foreground=" + (foreground == window ? L"1" : L"0")
-                + L" preserve_overlay_stack=1");
+                + L" preserve_overlay_stack=1 completion_callback=1");
+        return 0;
+    }
+
+    case WM_AURORA_ACTIVE_PAGE_REPAINT_READY: {
+        std::unique_ptr<ActivePageRepaintContext> request(
+            reinterpret_cast<ActivePageRepaintContext*>(lParam));
+        if (!request)
+            return 0;
+        if (!state || request->window != window)
+            return 0;
+
+        auto* selected = state->active();
+        if (static_cast<unsigned long long>(wParam) != state->tabActivationGeneration
+            || request->activationGeneration != state->tabActivationGeneration
+            || !selected || selected != request->tab) {
+            logDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED reason=stale_activation");
+            return 0;
+        }
+        if (state->tabOverviewVisible || state->tabOverviewAnimating || state->tabOverviewClosing) {
+            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"reason=overview_overlay_active");
+            return 0;
+        }
+
+        WKPageRef page = WKViewGetPage(selected->view.get());
+        const double progress = page ? WKPageGetEstimatedProgress(page) : 0.0;
+        HWND viewWindow = WKViewGetWindow(selected->view.get());
+        if (!viewWindow || !IsWindow(viewWindow) || progress < 1.0) {
+            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
+                page, selected,
+                L"reason=" + std::wstring(!viewWindow || !IsWindow(viewWindow)
+                    ? L"invalid_view" : L"page_not_finished")
+                    + L" progress=" + std::to_wstring(progress));
+            return 0;
+        }
+
+        if (!IsWindowVisible(viewWindow))
+            ShowWindow(viewWindow, SW_SHOWNA);
+        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        RedrawWindow(viewWindow, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FRAME_READY",
+            page, selected,
+            L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
         return 0;
     }
 
@@ -13513,7 +13592,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-tab-load-debounce-v5");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-repaint-completion-v6");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
