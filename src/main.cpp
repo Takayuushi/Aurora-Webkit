@@ -12796,15 +12796,36 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         }
 
+        WKPageRef selectedPage = WKViewGetPage(selected->view.get());
+        const double selectedProgress = selectedPage ? WKPageGetEstimatedProgress(selectedPage) : 0.0;
+        if (selectedProgress < 1.0) {
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_DEFERRED",
+                selectedPage, selected,
+                L"reason=page_not_finished progress=" + std::to_wstring(selectedProgress));
+            return 0;
+        }
+
         HWND viewWindow = WKViewGetWindow(selected->view.get());
         if (!viewWindow || !IsWindow(viewWindow)) {
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_SKIPPED",
-                WKViewGetPage(selected->view.get()), selected,
+                selectedPage, selected,
                 L"reason=invalid_webview_window");
             return 0;
         }
         if (!IsWindowVisible(viewWindow))
             ShowWindow(viewWindow, SW_SHOWNA);
+
+        // Reassert the active WebKit child after the page has finished. A normal
+        // z-order update (without SWP_NOREDRAW) lets Windows expose its current
+        // accelerated surface; the owned sidebar/overview popups remain above it.
+        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDERED",
+            selectedPage, selected,
+            L"previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(
+                reinterpret_cast<ULONG_PTR>(GetWindow(viewWindow, GW_HWNDPREV))))
+                + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
 
         // Page presentation must not depend on keyboard focus or foreground
         // activation. A background browser can still refresh its selected page;
