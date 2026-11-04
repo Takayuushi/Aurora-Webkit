@@ -44,6 +44,7 @@
 #include <WebKit/WKWebsiteDataStoreRef.h>
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
@@ -169,7 +170,6 @@ constexpr UINT WM_AURORA_PAGE_TINT_READY = WM_APP + 23;
 constexpr UINT WM_AURORA_THUMBNAIL_READY = WM_APP + 24;
 constexpr UINT_PTR kDownloadsAnimationTimerId = 0xA112;
 constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
-constexpr UINT_PTR kDeferredTabLoadTimerId = 0xA116;
 constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
 constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
@@ -242,6 +242,7 @@ constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 constexpr UINT WM_AURORA_ACTIVE_PAGE_REPAINT_READY = WM_APP + 28;
+constexpr UINT WM_AURORA_INITIAL_TAB_LOAD_READY = WM_APP + 29;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -262,6 +263,13 @@ struct ActivePageRepaintContext {
     HWND window { nullptr };
     TabState* tab { nullptr };
     unsigned long long activationGeneration { 0 };
+};
+
+struct DeferredInitialTabLoadContext {
+    HWND window { nullptr };
+    PTP_TIMER timer { nullptr };
+    std::atomic<unsigned long long> generation { 0 };
+    std::atomic<ULONGLONG> deadlineTick { 0 };
 };
 std::wstring applicationDataDirectory();
 void requestFavicon(BrowserState*, const std::wstring&, bool forStartPage = false);
@@ -336,6 +344,36 @@ void activePageRepaintFinished(WKErrorRef, void* context)
             static_cast<WPARAM>(request->activationGeneration),
             reinterpret_cast<LPARAM>(request)))
         delete request;
+}
+
+void CALLBACK deferredInitialTabLoadTimerFired(
+    PTP_CALLBACK_INSTANCE, void* context, PTP_TIMER timer)
+{
+    auto* request = static_cast<DeferredInitialTabLoadContext*>(context);
+    if (!request || !timer)
+        return;
+
+    const ULONGLONG deadline = request->deadlineTick.load(std::memory_order_acquire);
+    if (!deadline)
+        return;
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < deadline) {
+        // A newer activation extended the debounce while the previous callback
+        // was already queued. Re-arm to the latest absolute deadline.
+        const ULONGLONG remaining = deadline - now;
+        LARGE_INTEGER relativeDue { };
+        relativeDue.QuadPart = -static_cast<LONGLONG>(remaining) * 10000;
+        FILETIME dueTime { relativeDue.LowPart, relativeDue.HighPart };
+        SetThreadpoolTimer(timer, &dueTime, 0, 0);
+        return;
+    }
+
+    const auto generation = request->generation.load(std::memory_order_acquire);
+    HWND window = request->window;
+    if (window && IsWindow(window))
+        PostMessageW(window, WM_AURORA_INITIAL_TAB_LOAD_READY,
+            static_cast<WPARAM>(generation), 0);
 }
 
 struct FaviconResult {
@@ -1678,6 +1716,7 @@ struct BrowserState {
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
     bool sidebarOpen { false };
+    DeferredInitialTabLoadContext initialTabLoadContext;
     bool sidebarAnimating { false };
     // Logical inset is used only to position the native tab-overview surface.
     // The live WKView remains full-width beneath the independently composited drawer.
@@ -2894,13 +2933,15 @@ struct BrowserState {
         if (sidebarAnimating)
             startChromeAnimationTimer();
 
-        // The drawer is a native overlay. Keep the accelerated WKView untouched;
-        // changing its viewport on a sidebar toggle caused black frames on Settings
-        // and other internal pages.
-        if (!sidebarOpen && sidebarContentInsetActive) {
+        // The drawer is a native overlay. A sidebar toggle changes only overlay
+        // geometry; do not route it through resize(), which can raise or invalidate
+        // the accelerated WKView and expose an intermediate compositor frame.
+        if (!sidebarOpen)
             sidebarContentInsetActive = false;
-            resize(false);
-        }
+        logDiagnostic(L"SIDEBAR_TOGGLE requested_open="
+            + std::wstring(sidebarOpen ? L"1" : L"0")
+            + L" animating=" + (sidebarAnimating ? L"1" : L"0")
+            + L" progress=" + std::to_wstring(sidebarProgress()));
         positionOverlayWindows();
         updateSidebarZOrderTimer();
         const RECT buttonRect = sidebarButtonRect();
@@ -3325,16 +3366,14 @@ struct BrowserState {
                 continueAnimation = true;
             } else {
                 sidebarAnimating = false;
-                if (sidebarContentInsetActive != sidebarOpen) {
+                if (sidebarContentInsetActive != sidebarOpen)
                     sidebarContentInsetActive = sidebarOpen;
-                    // Reposition only the native overlays. The WebKit viewport stays
-                    // full-width, so showing/hiding the drawer cannot recreate its GPU surface.
-                    resize(false);
-                }
+                // Reposition only the native overlays. Avoid resize() here: even
+                // with unchanged page dimensions it can alter active WKView z-order.
                 positionOverlayWindows(true);
-                // The drawer is an owned overlay and does not resize the WebKit
-                // viewport. Do not reorder or force-repaint the accelerated page here:
-                // doing so on every close/open can discard live video compositor frames.
+                logDiagnostic(L"SIDEBAR_ANIMATION_COMPLETE open="
+                    + std::wstring(sidebarOpen ? L"1" : L"0")
+                    + L" inset=" + (sidebarContentInsetActive ? L"1" : L"0"));
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
             }
@@ -4875,6 +4914,9 @@ struct BrowserState {
     bool initialize(HWND parentWindow)
     {
         window = parentWindow;
+        initialTabLoadContext.window = window;
+        initialTabLoadContext.timer = CreateThreadpoolTimer(
+            deferredInitialTabLoadTimerFired, &initialTabLoadContext, nullptr);
 
         if (privateBrowsing) {
             websiteDataStore = adoptWK(WKWebsiteDataStoreCreateNonPersistentDataStore());
@@ -4932,6 +4974,12 @@ struct BrowserState {
 
     ~BrowserState()
     {
+        if (initialTabLoadContext.timer) {
+            SetThreadpoolTimer(initialTabLoadContext.timer, nullptr, 0, 0);
+            WaitForThreadpoolTimerCallbacks(initialTabLoadContext.timer, TRUE);
+            CloseThreadpoolTimer(initialTabLoadContext.timer);
+            initialTabLoadContext.timer = nullptr;
+        }
         if (addressSuggestionWindow && IsWindow(addressSuggestionWindow))
             DestroyWindow(addressSuggestionWindow);
         if (addressBar && addressBarOriginalProcedure)
@@ -5922,12 +5970,6 @@ search.addEventListener('keydown',e=>{
             invalidateTabChrome(selected);
         }
 
-        const bool morePending = std::any_of(tabs.begin(), tabs.end(),
-            [](const std::unique_ptr<TabState>& candidate) {
-                return candidate->initialPageLoadPending;
-            });
-        if (morePending && window)
-            SetTimer(window, kDeferredTabLoadTimerId, 48, nullptr);
     }
 
     void invalidateTabBarBackground()
@@ -6123,6 +6165,13 @@ search.addEventListener('keydown',e=>{
     {
         if (index >= tabs.size())
             return;
+        if (index == activeTab && !tabOverviewVisible
+            && !tabs[index]->initialPageLoadPending && !addressEditing) {
+            updateToolbarHover(POINT { -1, -1 });
+            invalidateTabChrome(tabs[index].get());
+            invalidateTabStrip();
+            return;
+        }
 
         // Clear hover left behind by the overview popup. The next real pointer
         // movement will establish any legitimate hover state again.
@@ -6285,12 +6334,8 @@ search.addEventListener('keydown',e=>{
             if (!animateOverviewClose) {
                 SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-                // Request a normal asynchronous repaint for an already-open page.
-                // Avoid RDW_UPDATENOW here so tab switching never blocks on WebKit.
-                if (!tab->initialPageLoadPending) {
-                    RedrawWindow(selectedView, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-                }
+                // The shared active-page presentation path redraws after WebKit
+                // confirms that the selected page's fresh frame is ready.
             }
             // Keep focus on Aurora until the selected WebKit child has been
             // restored and its first asynchronous repaint has been requested.
@@ -7411,19 +7456,36 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         if (!window || !tab || !tab->initialPageLoadPending)
             return false;
 
-        // Coalesce bursts of new-tab creation. Every activation restarts this
-        // short delay, so only the tab that remains selected is initialized.
-        // Tabs left in the background stay pending until the user selects them.
-        static constexpr UINT initialTabLoadDebounceMs = 240;
-        const bool scheduled = SetTimer(window, kDeferredTabLoadTimerId,
-            initialTabLoadDebounceMs, nullptr) != 0;
+        // WM_TIMER is a low-priority UI-queue message. Under sustained WebKit and
+        // overlay painting it can be starved, leaving selected tabs pending. Debounce
+        // on the thread pool, then post a normal WM_APP message to the UI thread.
+        static constexpr ULONGLONG initialTabLoadDebounceMs = 240;
+        auto& request = initialTabLoadContext;
+        const auto generation = request.generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+        const ULONGLONG deadline = GetTickCount64() + initialTabLoadDebounceMs;
+        request.deadlineTick.store(deadline, std::memory_order_release);
+
+        bool scheduled = false;
+        if (request.timer) {
+            LARGE_INTEGER relativeDue { };
+            relativeDue.QuadPart = -static_cast<LONGLONG>(initialTabLoadDebounceMs) * 10000;
+            FILETIME dueTime { relativeDue.LowPart, relativeDue.HighPart };
+            SetThreadpoolTimer(request.timer, &dueTime, 0, 0);
+            scheduled = true;
+        } else {
+            // Preserve usability if Windows cannot allocate a thread-pool timer.
+            scheduled = PostMessageW(window, WM_AURORA_INITIAL_TAB_LOAD_READY,
+                static_cast<WPARAM>(generation), 0) != FALSE;
+        }
+
         logTabDiagnostic(scheduled ? L"INITIAL_TAB_LOAD_DEBOUNCED"
                                    : L"INITIAL_TAB_LOAD_DEBOUNCE_FAILED",
             WKViewGetPage(tab->view.get()), tab,
             L"reason=" + std::wstring(reason ? reason : L"unspecified")
                 + L" delay_ms=" + std::to_wstring(initialTabLoadDebounceMs)
                 + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
-                + L" scheduled=" + (scheduled ? L"1" : L"0"));
+                + L" generation=" + std::to_wstring(generation)
+                + L" timer=threadpool scheduled=" + (scheduled ? L"1" : L"0"));
         return scheduled;
     }
 
@@ -12404,11 +12466,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_TIMER:
-        if (state && wParam == kDeferredTabLoadTimerId) {
-            KillTimer(window, kDeferredTabLoadTimerId);
-            state->loadPendingInitialTabPages();
-            return 0;
-        }
         if (state && wParam == kDeferredThumbnailCaptureTimerId) {
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             state->servicePendingTabThumbnailCapture();
@@ -12771,6 +12828,24 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
 
+    case WM_AURORA_INITIAL_TAB_LOAD_READY:
+        if (!state)
+            return 0;
+        if (static_cast<unsigned long long>(wParam)
+            != state->initialTabLoadContext.generation.load(std::memory_order_acquire)) {
+            logDiagnostic(L"INITIAL_TAB_LOAD_TIMER_SKIPPED reason=stale_generation");
+            return 0;
+        }
+        state->initialTabLoadContext.deadlineTick.store(0, std::memory_order_release);
+        if (auto* selected = state->active()) {
+            logTabDiagnostic(L"INITIAL_TAB_LOAD_TIMER_FIRED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"generation=" + std::to_wstring(static_cast<unsigned long long>(wParam))
+                    + L" sidebar_open=" + (state->sidebarOpen ? L"1" : L"0"));
+        }
+        state->loadPendingInitialTabPages();
+        return 0;
+
     case WM_AURORA_ACTIVE_PAGE_PRESENT: {
         if (!state)
             return 0;
@@ -12811,20 +12886,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (!IsWindowVisible(viewWindow))
             ShowWindow(viewWindow, SW_SHOWNA);
 
-        // Reassert the active WebKit child after the page has finished. A normal
-        // z-order update (without SWP_NOREDRAW) lets Windows expose its current
-        // accelerated surface; the owned sidebar/overview popups remain above it.
+        // Tab activation has already raised this selected WebView once. Reordering
+        // it again here exposes an intermediate accelerated surface.
         if (selectedProgress >= 1.0) {
-            SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                    | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDERED",
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_READY",
                 selectedPage, selected,
-                L"previous_sibling=" + std::to_wstring(static_cast<unsigned long long>(
-                    reinterpret_cast<ULONG_PTR>(GetWindow(viewWindow, GW_HWNDPREV))))
-                    + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+                L"view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
         } else {
-            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_REORDER_DEFERRED",
+            logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_WAITING",
                 selectedPage, selected,
                 L"reason=page_not_finished progress=" + std::to_wstring(selectedProgress));
         }
@@ -12898,9 +12967,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (!IsWindowVisible(viewWindow))
             ShowWindow(viewWindow, SW_SHOWNA);
-        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        // The activation path already performed the only z-order change for this
+        // switch. The completion callback should only reveal the fresh frame.
         RedrawWindow(viewWindow, nullptr, nullptr,
             RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
         logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FRAME_READY",
@@ -12923,10 +12991,9 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 L"active_index=" + std::to_wstring(state->activeTab)
                     + L" progress=" + std::to_wstring(
                         WKPageGetEstimatedProgress(WKViewGetPage(selected->view.get()))));
-            state->requestActivePageRepaint(false, false, true);
-            logTabDiagnostic(L"SETTINGS_PAGE_REPAINT_REQUESTED",
+            logTabDiagnostic(L"SETTINGS_PAGE_PRESENT_DELEGATED",
                 WKViewGetPage(selected->view.get()), selected,
-                L"preserve_overlay_stack=1 repeated_recovery=0");
+                L"reason=shared_active_page_presentation");
         } else {
             logDiagnostic(L"SETTINGS_PAGE_PRESENT_SKIPPED reason=not_active_settings");
         }
@@ -13592,7 +13659,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-repaint-completion-v6");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-stable-surface-debounce-v7");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
