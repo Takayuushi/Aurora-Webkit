@@ -2835,8 +2835,9 @@ struct BrowserState {
             }
         }
 
-        RedrawWindow(window, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_NOERASE);
+        // Keep recovery scoped to the selected WebKit child and owned overlays.
+        // Invalidating the parent here repaints the complete toolbar on every
+        // 48 ms recovery tick and causes unrelated chrome colour/hover flashes.
 
         // Bounded asynchronous retries allow the compositor to publish its new
         // backing surface without monopolising the UI thread for several seconds.
@@ -3283,9 +3284,8 @@ struct BrowserState {
                         }
                     }
                     // The page was deliberately kept covered during the zoom.
-                    // Ask WebKit for a fresh accelerated frame only after the
-                    // overview has gone away.
-                    SetTimer(window, kDeferredActivePageRepaintTimerId, 80, nullptr);
+                    // The deferred focus handler issues the single WebKit repaint
+                    // after the overview has gone away.
                     SetFocus(window);
                     SetTimer(window, kDeferredWebViewFocusTimerId, 120, nullptr);
                     updateToolbarHover(POINT { -1, -1 });
@@ -6174,8 +6174,11 @@ search.addEventListener('keydown',e=>{
         if (!animateOverviewClose) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
-            tabOverviewClosing = switchingFromOverview;
-            tabOverviewNoPreviewHandoff = switchingFromOverview;
+            // A no-preview page cannot produce a fresh frame while the overview
+            // popup covers its accelerated surface. Close the popup directly,
+            // then repaint the selected WebKit child in the unobscured window.
+            tabOverviewClosing = false;
+            tabOverviewNoPreviewHandoff = false;
             tabOverviewClosingTab = -1;
             tabOverviewClosingSettling = false;
             tabOverviewClosingSettleFramesRendered = 0;
@@ -6183,7 +6186,7 @@ search.addEventListener('keydown',e=>{
             tabOverviewTransitionDuration = 0;
             tabOverviewZoomFrom = 0.0f;
             tabOverviewZoomTo = 0.0f;
-            tabOverviewClosingWaitingForRepaint = switchingFromOverview;
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewClosingFramesRendered = 0;
@@ -6302,15 +6305,13 @@ search.addEventListener('keydown',e=>{
             startChromeAnimationTimer();
             positionOverlayWindows(true);
         } else if (switchingFromOverview) {
-            // No trustworthy preview exists for this tab. Keep the overview
-            // visible as a static cover while WebKit produces a confirmed fresh
-            // frame; do not expose the old tab's accelerated surface in between.
-            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_WAIT_BEGIN",
+            // No cached preview exists. Do not keep the native popup over WebKit
+            // waiting for a renderer callback that may never arrive.
+            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_DIRECT_CLOSE",
                 WKViewGetPage(tab->view.get()), tab,
                 L"selected_index=" + std::to_wstring(index)
                     + L" preview_url=" + safeDiagnosticUrl(tab->previewURL)
-                    + L" repaint_wait=1 timeout_ms=1200");
-            startChromeAnimationTimer();
+                    + L" overview_hidden=1 repaint_after_focus=1");
         }
         // activateTab raises the selected WKView last; restore overlay z-order after
         // that so an open sidebar remains above it without touching the renderer.
@@ -6343,31 +6344,21 @@ search.addEventListener('keydown',e=>{
                     : L"error=" + std::to_wstring(GetLastError()));
         }
 
-        if (switchingFromOverview && !animateOverviewClose) {
-            // The overview popup is still visible above the selected WKView.
-            // WKPageForceRepaint completion is the handoff signal that permits
-            // the no-preview path to uncover the real page.
-            requestActivePageRepaint(false, true, true);
-            // A ForceRepaint callback confirms request completion, not that the
-            // accelerated HWND has presented the new surface. Keep requesting
-            // real frames while the overview covers the page and during settling.
-            beginWindowSurfaceRecovery(false, true, false, true);
-            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_REPAINT_REQUESTED",
-                WKViewGetPage(tab->view.get()), tab,
-                L"waiting_for_webkit_callback=1 overlay_preserved=1");
-        } else if (!switchingFromOverview && window) {
-            SetTimer(window, kDeferredActivePageRepaintTimerId, 120, nullptr);
-            if (!tab->initialPageLoadPending) {
-                if (SetTimer(window, kDeferredWebViewFocusTimerId, 180, nullptr)) {
-                    logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUED",
-                        WKViewGetPage(tab->view.get()), tab,
-                        L"activation_generation=" + std::to_wstring(tabActivationGeneration)
-                            + L" delay_ms=180");
-                } else {
-                    logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUE_FAILED",
-                        WKViewGetPage(tab->view.get()), tab,
-                        L"error=" + std::to_wstring(GetLastError()));
-                }
+        if (window && !animateOverviewClose && !tab->initialPageLoadPending) {
+            // Both preview-backed and no-preview tab switches use the same single
+            // deferred focus/repaint handoff after the overview is out of the way.
+            const UINT handoffDelay = switchingFromOverview ? 120 : 180;
+            if (SetTimer(window, kDeferredWebViewFocusTimerId, handoffDelay, nullptr)) {
+                logTabDiagnostic(switchingFromOverview
+                        ? L"OVERVIEW_NO_PREVIEW_FOCUS_HANDOFF_QUEUED"
+                        : L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUED",
+                    WKViewGetPage(tab->view.get()), tab,
+                    L"activation_generation=" + std::to_wstring(tabActivationGeneration)
+                        + L" delay_ms=" + std::to_wstring(handoffDelay));
+            } else {
+                logTabDiagnostic(L"TAB_ACTIVATION_FOCUS_HANDOFF_QUEUE_FAILED",
+                    WKViewGetPage(tab->view.get()), tab,
+                    L"error=" + std::to_wstring(GetLastError()));
             }
         }
 
@@ -8784,10 +8775,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             DeleteObject(tabBandBrush);
         }
 
-        const COLORREF toolbarBase = dark ? RGB(44, 44, 48) : RGB(247, 248, 251);
-        const COLORREF toolbarColor = pageTintVisible
-            ? blendColor(toolbarBase, activePageTintColor, dark ? 0.40f : 0.42f)
-            : toolbarBase;
+        // Page tint belongs to the tab band. Do not tint the main toolbar:
+        // white/light page backgrounds otherwise wash the dark chrome lighter
+        // a moment after every navigation or tab activation.
+        const COLORREF toolbarColor = dark ? RGB(44, 44, 48) : RGB(247, 248, 251);
         HBRUSH toolbarBrush = CreateSolidBrush(toolbarColor);
         RECT toolbarRect { 0, 0, client.right, toolbarH };
         FillRect(dc, &toolbarRect, toolbarBrush);
@@ -12441,21 +12432,26 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 logTabDiagnostic(L"WEBVIEW_FOCUS_HANDOFF", WKViewGetPage(selected->view.get()),
                     selected, details);
                 SetFocus(viewWindow);
-                // A single repaint request was not sufficient for cached pages
-                // restored after an internal Settings surface. Use the same bounded
-                // frame-recovery cycle used by Settings, now against the selected
-                // website after it owns focus.
-                state->beginWindowSurfaceRecovery(false, true, false, true);
-                logTabDiagnostic(L"WEBVIEW_SURFACE_RECOVERY_STARTED",
+                logTabDiagnostic(L"WEBVIEW_FOCUS_HANDOFF",
                     WKViewGetPage(selected->view.get()), selected,
-                    L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
-                        + L" preserve_overlay_stack=1 layout_refresh=0");
+                    L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
+                        reinterpret_cast<ULONG_PTR>(currentFocus)))
+                        + L" focus_target=" + std::to_wstring(
+                            static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(viewWindow))));
             } else if (viewWindow && IsWindow(viewWindow) && IsWindowVisible(viewWindow)) {
                 logTabDiagnostic(L"WEBVIEW_FOCUS_HANDOFF_SKIPPED",
                     WKViewGetPage(selected->view.get()), selected,
                     L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
                         reinterpret_cast<ULONG_PTR>(currentFocus))));
             }
+            // One targeted repaint after the selected page is active. The old
+            // 18-tick recovery loop invalidated overlays and parent chrome
+            // repeatedly, causing the observed tab-switch flicker.
+            state->requestActivePageRepaint(false, false, true);
+            logTabDiagnostic(L"WEBVIEW_PAGE_REPAINT_REQUESTED",
+                WKViewGetPage(selected->view.get()), selected,
+                L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                    + L" targeted=1 preserve_overlay_stack=1");
             return 0;
         }
         break;
@@ -12568,7 +12564,17 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 if (state->chromePaintBitmap) {
                     HGDIOBJ oldBitmap = SelectObject(bufferDC, state->chromePaintBitmap);
                     state->paint(bufferDC);
-                    BitBlt(dc, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY);
+                    // Keep the off-screen bitmap fully rendered, but only present
+                    // the actual invalid region. Copying the whole client on every
+                    // tiny hover invalidation caused the toolbar/address surface to
+                    // flash even when only one button changed.
+                    const RECT& dirty = paint.rcPaint;
+                    const int dirtyWidth = std::max(0L, dirty.right - dirty.left);
+                    const int dirtyHeight = std::max(0L, dirty.bottom - dirty.top);
+                    if (dirtyWidth > 0 && dirtyHeight > 0) {
+                        BitBlt(dc, dirty.left, dirty.top, dirtyWidth, dirtyHeight,
+                            bufferDC, dirty.left, dirty.top, SRCCOPY);
+                    }
                     SelectObject(bufferDC, oldBitmap);
                     DeleteDC(bufferDC);
                 } else {
@@ -12718,10 +12724,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 L"active_index=" + std::to_wstring(state->activeTab)
                     + L" progress=" + std::to_wstring(
                         WKPageGetEstimatedProgress(WKViewGetPage(selected->view.get()))));
-            state->beginWindowSurfaceRecovery(false, true, false, true);
-            logTabDiagnostic(L"SETTINGS_PAGE_SURFACE_RECOVERY_STARTED",
+            state->requestActivePageRepaint(false, false, true);
+            logTabDiagnostic(L"SETTINGS_PAGE_REPAINT_REQUESTED",
                 WKViewGetPage(selected->view.get()), selected,
-                L"preserve_overlay_stack=1 layout_refresh=0");
+                L"preserve_overlay_stack=1 repeated_recovery=0");
         } else {
             logDiagnostic(L"SETTINGS_PAGE_PRESENT_SKIPPED reason=not_active_settings");
         }
