@@ -12898,7 +12898,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (selectedProgress >= 1.0) {
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_READY",
                 selectedPage, selected,
-                L"view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+                std::wstring(L"view_visible=") + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
         } else {
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_VIEW_WAITING",
                 selectedPage, selected,
