@@ -241,6 +241,7 @@ constexpr UINT WM_AURORA_WEBSITE_DATA_CLEARED = WM_APP + 22;
 
 constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
+constexpr UINT WM_AURORA_LOAD_PENDING_INITIAL_TAB = WM_APP + 27;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -3309,11 +3310,26 @@ struct BrowserState {
                     resize(false);
                 }
                 positionOverlayWindows(true);
-                // Internal Settings pages can leave an accelerated backing surface
-                // stale after the native drawer has moved over it. Queue a repaint
-                // without raising/reordering the WKView, preserving overlay z-order.
-                if (auto* selected = active(); selected && selected->internalPage == L"settings")
+                // A settled sidebar transition is also a reliable presentation
+                // boundary for cached WebKit pages. Reassert the selected child's
+                // sibling order and request one non-erasing WebKit frame for every
+                // active page, not just the internal Settings document.
+                if (auto* selected = active(); selected
+                    && !tabOverviewVisible && !tabOverviewAnimating && !tabOverviewClosing) {
+                    HWND viewWindow = WKViewGetWindow(selected->view.get());
+                    if (viewWindow && IsWindow(viewWindow)) {
+                        if (!IsWindowVisible(viewWindow))
+                            ShowWindow(viewWindow, SW_SHOWNA);
+                        SetWindowPos(viewWindow, HWND_TOP, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                                | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                    }
                     requestActivePageRepaint(false, false, true);
+                    logTabDiagnostic(L"SIDEBAR_SETTLED_PAGE_REPAINT_REQUESTED",
+                        WKViewGetPage(selected->view.get()), selected,
+                        L"sidebar_open=" + std::wstring(sidebarOpen ? L"1" : L"0")
+                            + L" view_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0"));
+                }
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
             }
@@ -5884,11 +5900,23 @@ search.addEventListener('keydown',e=>{
 
         TabState& tab = *tabs[index];
         const bool useHomepage = tab.initialPageShouldLoadHomepage;
+        const bool isSelected = index == activeTab;
+        logTabDiagnostic(L"INITIAL_TAB_LOAD_BEGIN", WKViewGetPage(tab.view.get()), &tab,
+            L"selected=" + std::wstring(isSelected ? L"1" : L"0")
+                + L" use_homepage=" + (useHomepage ? L"1" : L"0")
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+                + L" pending_count=" + std::to_wstring(std::count_if(tabs.begin(), tabs.end(),
+                    [](const std::unique_ptr<TabState>& candidate) {
+                        return candidate->initialPageLoadPending;
+                    })));
         tab.initialPageLoadPending = false;
         if (useHomepage)
             loadURL(tab, homePage);
         else
             loadStartPage(tab);
+        logTabDiagnostic(L"INITIAL_TAB_LOAD_DISPATCHED", WKViewGetPage(tab.view.get()), &tab,
+            L"selected=" + std::wstring(index == activeTab ? L"1" : L"0")
+                + L" internal_page=" + tab.internalPage);
 
         if (auto* selected = active()) {
             const wchar_t* address = selected->activeUrl.empty() || selected->activeUrl == L"about:blank"
@@ -6218,6 +6246,13 @@ search.addEventListener('keydown',e=>{
         auto* tab = active();
         if (!tab)
             return;
+
+        // Start the selected tab's initial document through a posted UI message.
+        // WM_TIMER is low priority and can remain pending while native overlays
+        // and WebKit child windows are continuously repainting.
+        if (tab->initialPageLoadPending)
+            queuePendingInitialTabLoad(tab, switchingFromOverview
+                ? L"overview-selected-pending-tab" : L"tab-selected-pending-load");
 
         if (tab->activeUrl.empty() || tab->activeUrl == L"about:blank")
             SetWindowTextW(addressBar, L"");
@@ -7367,6 +7402,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             forcedPageRepaintFinished);
         if (!preserveOverlayStack)
             positionOverlayWindows(!sidebarAnimating && !tabOverviewAnimating && !tabOverviewClosing);
+    }
+
+    bool queuePendingInitialTabLoad(TabState* tab, const wchar_t* reason)
+    {
+        if (!window || !tab || !tab->initialPageLoadPending)
+            return false;
+
+        const bool posted = PostMessageW(window, WM_AURORA_LOAD_PENDING_INITIAL_TAB, 0, 0) != FALSE;
+        logTabDiagnostic(posted ? L"INITIAL_TAB_LOAD_MESSAGE_QUEUED"
+                                : L"INITIAL_TAB_LOAD_MESSAGE_POST_FAILED",
+            WKViewGetPage(tab->view.get()), tab,
+            L"reason=" + std::wstring(reason ? reason : L"unspecified")
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+                + L" posted=" + (posted ? L"1" : L"0"));
+        if (!posted)
+            SetTimer(window, kDeferredTabLoadTimerId, 16, nullptr);
+        return posted;
     }
 
     bool queueActivePagePresentation(TabState* tab, const wchar_t* reason)
@@ -12713,6 +12765,13 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             MessageBoxW(window, L"Website data has been cleared.", L"Privacy", MB_OK | MB_ICONINFORMATION);
         return 0;
 
+    case WM_AURORA_LOAD_PENDING_INITIAL_TAB:
+        if (state) {
+            state->loadPendingInitialTabPages();
+            return 0;
+        }
+        return 0;
+
     case WM_AURORA_ACTIVE_PAGE_PRESENT: {
         if (!state)
             return 0;
@@ -13465,7 +13524,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v3");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-post-activation-repaint-v4");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
