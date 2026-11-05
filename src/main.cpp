@@ -13229,7 +13229,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 const bool stillCurrent = state->active() == capturedTab
                     && result->activationGeneration == state->tabActivationGeneration
                     && result->url == capturedTab->activeUrl;
-                logTabDiagnostic(L"THUMBNAIL_CAPTURE_RESULT", WKPageGetPage(capturedTab->view.get()),
+                logTabDiagnostic(L"THUMBNAIL_CAPTURE_RESULT", WKViewGetPage(capturedTab->view.get()),
                     capturedTab, L"accepted=" + std::wstring(stillCurrent && result->bitmap ? L"1" : L"0")
                         + L" has_bitmap=" + (result->bitmap ? L"1" : L"0")
                         + L" size=" + std::to_wstring(result->width) + L"x" + std::to_wstring(result->height)
