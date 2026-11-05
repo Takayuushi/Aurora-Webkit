@@ -4139,7 +4139,21 @@ struct BrowserState {
     {
         if (!tabOverviewAnimating || tabs.empty() || activeTab >= tabs.size())
             return;
+
         const TabState& tab = *tabs[activeTab];
+        const bool hasCapturedPreview = tab.previewBitmap
+            && tab.previewWidth > 0 && tab.previewHeight > 0
+            && tab.previewURL == tab.activeUrl;
+        const bool hasNativePreview = tab.internalPage == L"start"
+            || tab.internalPage == L"settings";
+        if (!hasCapturedPreview && !hasNativePreview) {
+            // Never zoom a fabricated skeleton into the full browser window. When
+            // a website has no real cached pixels, keep the overview grid visible
+            // while its cards show their small placeholders.
+            ++tabOverviewOpeningFramesRendered;
+            return;
+        }
+
         drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(activeTab));
         ++tabOverviewOpeningFramesRendered;
     }
@@ -13858,7 +13872,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-retained-host-immediate-present-preview-retry-v17");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-retained-host-immediate-present-overview-fallback-v18");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
