@@ -1627,6 +1627,7 @@ struct ThumbnailCaptureResult {
     HBITMAP bitmap { nullptr };
     int width { 0 };
     int height { 0 };
+    std::wstring captureSummary;
 
     ~ThumbnailCaptureResult()
     {
@@ -3510,8 +3511,10 @@ struct BrowserState {
         if (!GetWindowRect(viewWindow, &screenRect))
             return false;
 
+        // The child WebView is already positioned below the browser chrome.
+        // Its screen rectangle starts at the actual page viewport.
         int captureLeft = screenRect.left;
-        const int captureTop = screenRect.top + tabsBarHeight();
+        const int captureTop = screenRect.top;
         int sourceWidth = static_cast<int>(screenRect.right - screenRect.left);
         const int sourceHeight = static_cast<int>(screenRect.bottom - captureTop);
         if (sidebarOpen && sidebarOverlayWindow && IsWindowVisible(sidebarOverlayWindow)) {
@@ -3533,7 +3536,7 @@ struct BrowserState {
         const auto lifetime = thumbnailCaptureLifetime;
         tab.thumbnailCaptureInFlight = true;
 
-        std::thread([ownerWindow, tabIdentity, activationGeneration, capturedURL,
+        std::thread([ownerWindow, viewWindow, tabIdentity, activationGeneration, capturedURL,
             lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
                 auto result = std::make_unique<ThumbnailCaptureResult>();
                 result->tabIdentity = tabIdentity;
@@ -3541,29 +3544,41 @@ struct BrowserState {
                 result->url = capturedURL;
 
                 HDC sourceDC = GetDC(nullptr);
-                if (sourceDC) {
+                if (!sourceDC) {
+                    result->captureSummary = L"source_dc=unavailable";
+                } else {
                     HDC captureDC = CreateCompatibleDC(sourceDC);
                     HBITMAP captureBitmap = CreateCompatibleBitmap(sourceDC, sourceWidth, sourceHeight);
                     if (captureDC && captureBitmap) {
                         HGDIOBJ oldCapture = SelectObject(captureDC, captureBitmap);
                         RECT captureRect { 0, 0, sourceWidth, sourceHeight };
-                        HBRUSH initialCaptureBrush = CreateSolidBrush(RGB(8, 12, 18));
-                        FillRect(captureDC, &captureRect, initialCaptureBrush);
-                        DeleteObject(initialCaptureBrush);
+                        const auto clearCapture = [&] {
+                            HBRUSH brush = CreateSolidBrush(RGB(8, 12, 18));
+                            FillRect(captureDC, &captureRect, brush);
+                            DeleteObject(brush);
+                        };
+                        clearCapture();
 
-                        const BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
+                        BOOL copied = BitBlt(captureDC, 0, 0, sourceWidth, sourceHeight,
                             sourceDC, captureLeft, captureTop, SRCCOPY | CAPTUREBLT);
                         bool looksBlank = false;
-                        if (copied) {
-                            int validSamples = 0;
-                            int nearBlackSamples = 0;
-                            int nearWhiteSamples = 0;
-                            int minLuminance = 255;
-                            int maxLuminance = 0;
-                            for (int sy = 1; sy <= 7; ++sy) {
-                                const int y = (sourceHeight * sy) / 8;
-                                for (int sx = 1; sx <= 9; ++sx) {
-                                    const int x = (sourceWidth * sx) / 10;
+                        int validSamples = 0;
+                        int nearBlackSamples = 0;
+                        int nearWhiteSamples = 0;
+                        int minLuminance = 255;
+                        int maxLuminance = 0;
+                        const auto inspectCapture = [&] {
+                            validSamples = 0;
+                            nearBlackSamples = 0;
+                            nearWhiteSamples = 0;
+                            minLuminance = 255;
+                            maxLuminance = 0;
+                            // More sample points catch sparse page content and avoid
+                            // classifying a mostly-white search page as a blank frame.
+                            for (int sy = 1; sy <= 11; ++sy) {
+                                const int y = (sourceHeight * sy) / 12;
+                                for (int sx = 1; sx <= 17; ++sx) {
+                                    const int x = (sourceWidth * sx) / 18;
                                     const COLORREF pixel = GetPixel(captureDC, x, y);
                                     if (pixel == CLR_INVALID)
                                         continue;
@@ -3578,11 +3593,41 @@ struct BrowserState {
                                         ++nearWhiteSamples;
                                 }
                             }
-                            looksBlank = validSamples >= 20
-                                && maxLuminance - minLuminance <= 9
-                                && (nearBlackSamples * 100 >= validSamples * 94
-                                    || nearWhiteSamples * 100 >= validSamples * 94);
+                            // Reject only genuinely near-uniform black/white output.
+                            looksBlank = validSamples >= 100
+                                && maxLuminance - minLuminance <= 3
+                                && (nearBlackSamples * 100 >= validSamples * 98
+                                    || nearWhiteSamples * 100 >= validSamples * 98);
+                        };
+
+                        if (copied)
+                            inspectCapture();
+
+                        bool usedPrintWindow = false;
+                        // BitBlt can miss accelerated child surfaces. Try the
+                        // WebView's own print path on this worker thread before
+                        // giving up on the tab preview.
+                        if ((!copied || looksBlank) && IsWindow(viewWindow)) {
+                            clearCapture();
+                            if (PrintWindow(viewWindow, captureDC, PW_RENDERFULLCONTENT)) {
+                                copied = TRUE;
+                                usedPrintWindow = true;
+                                inspectCapture();
+                            }
                         }
+
+                        result->captureSummary = L"method="
+                            + std::wstring(usedPrintWindow ? L"print-window" : L"screen-bitblt")
+                            + L" copied=" + (copied ? L"1" : L"0")
+                            + L" blank=" + (looksBlank ? L"1" : L"0")
+                            + L" samples=" + std::to_wstring(validSamples)
+                            + L" luminance=" + std::to_wstring(minLuminance)
+                            + L"-" + std::to_wstring(maxLuminance)
+                            + L" black=" + std::to_wstring(nearBlackSamples)
+                            + L" white=" + std::to_wstring(nearWhiteSamples)
+                            + L" rect=" + std::to_wstring(captureLeft) + L","
+                            + std::to_wstring(captureTop) + L" "
+                            + std::to_wstring(sourceWidth) + L"x" + std::to_wstring(sourceHeight);
 
                         if (copied && !looksBlank) {
                             const double factor = std::min(1.0,
@@ -5888,6 +5933,10 @@ search.addEventListener('keydown',e=>{
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
             return false;
+        // Background tabs start hidden at the WebKit child HWND, not only at
+        // the parent host. This prevents WebKit treating every tab as visible.
+        if (!select)
+            ShowWindow(newViewWindow, SW_HIDE);
         logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE", page, tab.get(),
             L"in_window=1 reason=tab-created");
         logTabDiagnostic(L"TAB_HOST_STATE", page, tab.get(),
@@ -6217,14 +6266,28 @@ search.addEventListener('keydown',e=>{
 
         const LONG_PTR hostStyleBefore = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
         const bool hostStyleVisibleBefore = (hostStyleBefore & WS_VISIBLE) != 0;
+        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
+        const bool viewWindowValid = viewWindow && IsWindow(viewWindow);
+        const LONG_PTR viewStyleBefore = viewWindowValid
+            ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
+
         if (visible) {
+            // Reveal the host first, then explicitly show the WebKit child. WinCairo
+            // observes the child's own SHOW notification; an ancestor-only show
+            // does not reliably update the page's ActivityState::IsVisible.
             SetWindowPos(tab->hostWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-        } else if (hostStyleVisibleBefore) {
-            ShowWindow(tab->hostWindow, SW_HIDE);
+            if (viewWindowValid && !(viewStyleBefore & WS_VISIBLE))
+                ShowWindow(viewWindow, SW_SHOWNA);
+        } else {
+            // Hide the WebKit child first so WinCairo receives its own HIDE
+            // notification, while keeping the view attached to the window.
+            if (viewWindowValid && (viewStyleBefore & WS_VISIBLE))
+                ShowWindow(viewWindow, SW_HIDE);
+            if (hostStyleVisibleBefore)
+                ShowWindow(tab->hostWindow, SW_HIDE);
         }
 
-        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
         const LONG_PTR hostStyleAfter = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
         const LONG_PTR viewStyle = viewWindow && IsWindow(viewWindow)
             ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
@@ -13166,6 +13229,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 const bool stillCurrent = state->active() == capturedTab
                     && result->activationGeneration == state->tabActivationGeneration
                     && result->url == capturedTab->activeUrl;
+                logTabDiagnostic(L"THUMBNAIL_CAPTURE_RESULT", WKPageGetPage(capturedTab->view.get()),
+                    capturedTab, L"accepted=" + std::wstring(stillCurrent && result->bitmap ? L"1" : L"0")
+                        + L" has_bitmap=" + (result->bitmap ? L"1" : L"0")
+                        + L" size=" + std::to_wstring(result->width) + L"x" + std::to_wstring(result->height)
+                        + L" " + result->captureSummary);
                 if (stillCurrent && result->bitmap) {
                     if (capturedTab->previewBitmap)
                         DeleteObject(capturedTab->previewBitmap);
@@ -13184,7 +13252,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 } else {
                     capturedTab->thumbnailCaptureNeeded = true;
                     if (state->active() == capturedTab) {
-                        if (capturedTab->thumbnailCaptureFailures < 3) {
+                        if (capturedTab->thumbnailCaptureFailures < 8) {
                             ++capturedTab->thumbnailCaptureFailures;
                             state->scheduleTabThumbnailCapture(capturedTab, 240);
                         }
