@@ -6009,8 +6009,13 @@ search.addEventListener('keydown',e=>{
         }
         if (select)
             activateTab(index);
-        else
+        else {
+            // Keep background tab hosts in the native child-window stack so their
+            // WebKit surfaces survive tab switches. The selected host remains above
+            // them; WebKit's ActivityState::IsVisible is disabled for this tab.
+            setTabHostVisible(tabs[index].get(), false, L"background-tab-created");
             resize();
+        }
 
         return true;
     }
@@ -6248,7 +6253,8 @@ search.addEventListener('keydown',e=>{
         }
     }
 
-    void setTabHostVisible(TabState* tab, bool visible, const wchar_t* reason)
+    void setTabHostVisible(TabState* tab, bool visible, const wchar_t* reason,
+        bool retainHostSurface = true)
     {
         if (!tab || !tab->hostWindow || !IsWindow(tab->hostWindow))
             return;
@@ -6273,8 +6279,17 @@ search.addEventListener('keydown',e=>{
                 SendMessageW(viewWindow, WM_SHOWWINDOW, FALSE, 0);
                 tab->webViewActivityVisible = false;
             }
-            if (hostStyleVisibleBefore)
+
+            if (retainHostSurface) {
+                // Do not hide the ancestor HWND: some accelerated WebKit surfaces
+                // fail to present again after their host leaves the visible tree.
+                // Keep this host visible at the bottom of the sibling stack instead.
+                SetWindowPos(tab->hostWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                        | SWP_NOREDRAW | SWP_SHOWWINDOW);
+            } else if (hostStyleVisibleBefore) {
                 ShowWindow(tab->hostWindow, SW_HIDE);
+            }
         }
 
         const LONG_PTR hostStyleAfter = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
@@ -6426,9 +6441,13 @@ search.addEventListener('keydown',e=>{
         if (!tab)
             return;
 
-        // Activate the tab's host first, then hide the previous host. The WKView
-        // remains WS_VISIBLE inside its host, so its own WinCairo visibility state
-        // is not toggled when another tab is selected.
+        // Size the selected host before it is moved above the other retained hosts.
+        // This avoids briefly exposing an old-size surface during reactivation.
+        resize(false, false);
+
+        // Activate the selected host above the retained background hosts. The
+        // inactive host is moved behind it rather than being hidden/destroyed from
+        // the visible child-window tree.
         setTabHostVisible(tab, true, switchingFromOverview
             ? L"selected-from-overview" : L"selected-tab");
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -6476,7 +6495,6 @@ search.addEventListener('keydown',e=>{
         // Switching tabs does not change toolbar geometry. Keep WebKit view
         // geometry stable, but defer overlay z-order until the selected page
         // has been raised so the stack is composed only once per activation.
-        resize(false, false);
         if (selectedView) {
             if (!IsWindowVisible(selectedView))
                 ShowWindow(selectedView, SW_SHOWNA);
@@ -6599,7 +6617,7 @@ search.addEventListener('keydown',e=>{
         }
 
         auto closingTab = std::move(tabs[index]);
-        setTabHostVisible(closingTab.get(), false, L"tab-closed");
+        setTabHostVisible(closingTab.get(), false, L"tab-closed", false);
         retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
         invalidateTabStrip();
@@ -13063,23 +13081,35 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // focus is transferred only when Aurora is the foreground application.
         const HWND foreground = GetForegroundWindow();
         const HWND currentFocus = GetFocus();
+        const bool focusIsSelectedWebContent = currentFocus == viewWindow
+            || (currentFocus && IsChild(viewWindow, currentFocus));
+        const HWND focusRootOwner = currentFocus
+            ? GetAncestor(currentFocus, GA_ROOTOWNER) : nullptr;
+        const bool focusBelongsToAuroraChrome = currentFocus == window
+            || currentFocus == state->addressBar
+            || (focusRootOwner == window && !focusIsSelectedWebContent);
         if (foreground == window && !state->addressEditing && !state->findBarVisible
-            && (currentFocus == window || currentFocus == state->addressBar || !currentFocus)) {
+            && (focusBelongsToAuroraChrome || !currentFocus)) {
             SetFocus(viewWindow);
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_HANDOFF",
-                WKViewGetPage(selected->view.get()), selected,
+                WKPageGetPage(selected->view.get()), selected,
                 L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
-                    reinterpret_cast<ULONG_PTR>(currentFocus))));
+                    reinterpret_cast<ULONG_PTR>(currentFocus)))
+                    + L" focus_root_owner=" + std::to_wstring(static_cast<unsigned long long>(
+                        reinterpret_cast<ULONG_PTR>(focusRootOwner))));
         } else {
             const wchar_t* reason = foreground != window ? L"not_foreground"
                 : state->addressEditing ? L"address_editing"
                 : state->findBarVisible ? L"find_bar"
+                : focusIsSelectedWebContent ? L"selected_web_content"
                 : L"focus_owned_elsewhere";
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_SKIPPED",
-                WKViewGetPage(selected->view.get()), selected,
+                WKPageGetPage(selected->view.get()), selected,
                 L"reason=" + std::wstring(reason)
                     + L" focus_before=" + std::to_wstring(static_cast<unsigned long long>(
-                        reinterpret_cast<ULONG_PTR>(currentFocus))));
+                        reinterpret_cast<ULONG_PTR>(currentFocus)))
+                    + L" focus_root_owner=" + std::to_wstring(static_cast<unsigned long long>(
+                        reinterpret_cast<ULONG_PTR>(focusRootOwner))));
         }
 
         state->requestActivePageRepaint(false, false, true, true);
@@ -13129,14 +13159,18 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             ShowWindow(viewWindow, SW_SHOWNA);
         // WKPageForceRepaint completion is a WebKit repaint callback, not proof
         // that DWM has presented visible pixels from this native surface.
+        // Force the native WebView WM_PAINT now, on the UI thread, instead of
+        // leaving only a queued invalid region that may wait for unrelated input.
         RedrawWindow(viewWindow, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
         logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_REPAINT_COMPLETED",
             page, selected,
             L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
-                + L" force_repaint_callback=1 hwnd_redraw_requested=1"
+                + L" force_repaint_callback=1 hwnd_redraw_requested=1 immediate_paint=1"
                 + L" surface_presentation_verified=0"
                 + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+        if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
+            state->scheduleTabThumbnailCapture(selected, 180);
         return 0;
     }
 
@@ -13824,7 +13858,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-background-tabs-nav-capture-hover-v16");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-retained-host-immediate-present-preview-retry-v17");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
