@@ -1739,7 +1739,6 @@ struct BrowserState {
     int hoveredTabBarIndex { -1 };
     bool hoveredSidebarSettings { false };
     int hoveredTrafficLight { -1 };
-    float toolbarHoverOpacity[4] { 0.0f, 0.0f, 0.0f, 0.0f };
     bool mouseTrackingForChrome { false };
     bool chromeHoverSyncTimerActive { false };
     unsigned long long chromeHoverChangeGeneration { 0 };
@@ -2982,6 +2981,24 @@ struct BrowserState {
         InvalidateRect(window, &buttonRect, FALSE);
     }
 
+    void invalidateTabBarItem(size_t index)
+    {
+        if (index >= tabs.size() || !window)
+            return;
+        RECT dirty = tabBarItemRect(index);
+        if (tabBarOverlayWindow && IsWindow(tabBarOverlayWindow)
+            && IsWindowVisible(tabBarOverlayWindow)) {
+            // Map browser-client coordinates into the owned overlay's client space.
+            MapWindowPoints(window, tabBarOverlayWindow,
+                reinterpret_cast<POINT*>(&dirty), 2);
+            InflateRect(&dirty, scaleForDpi(window, 2), scaleForDpi(window, 2));
+            InvalidateRect(tabBarOverlayWindow, &dirty, FALSE);
+        } else {
+            InflateRect(&dirty, scaleForDpi(window, 2), scaleForDpi(window, 2));
+            InvalidateRect(window, &dirty, FALSE);
+        }
+    }
+
     void updateToolbarHover(POINT point)
     {
         const int previousToolbarHover = hoveredToolbarButton;
@@ -3006,9 +3023,12 @@ struct BrowserState {
             }
         }
         if (nextHoveredTab != hoveredTabBarIndex) {
+            const int previous = hoveredTabBarIndex;
             hoveredTabBarIndex = nextHoveredTab;
-            if (tabBarOverlayWindow && IsWindowVisible(tabBarOverlayWindow))
-                InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+            if (previous >= 0)
+                invalidateTabBarItem(static_cast<size_t>(previous));
+            if (nextHoveredTab >= 0)
+                invalidateTabBarItem(static_cast<size_t>(nextHoveredTab));
         }
 
         const int toolbarTop = titleBarHeight();
@@ -3025,8 +3045,6 @@ struct BrowserState {
         if (nextHovered != hoveredToolbarButton) {
             const int previousHovered = hoveredToolbarButton;
             hoveredToolbarButton = nextHovered;
-            for (int i = 0; i < 4; ++i)
-                toolbarHoverOpacity[i] = i == nextHovered ? 1.0f : 0.0f;
 
             if (previousHovered >= 0) {
                 const RECT previousRect = rightToolbarButtonRect(previousHovered);
@@ -3262,22 +3280,6 @@ struct BrowserState {
             return;
 
         bool continueAnimation = false;
-        for (int i = 0; i < 4; ++i) {
-            const RECT button = rightToolbarButtonRect(i);
-            const float target = hoveredToolbarButton == i && button.right > button.left ? 1.0f : 0.0f;
-            const float before = toolbarHoverOpacity[i];
-            const float delta = target - before;
-            if (delta > -0.015f && delta < 0.015f)
-                toolbarHoverOpacity[i] = target;
-            else {
-                toolbarHoverOpacity[i] += delta * 0.28f;
-                continueAnimation = true;
-            }
-            if (std::abs(toolbarHoverOpacity[i] - before) > 0.001f
-                && button.right > button.left && button.bottom > button.top)
-                InvalidateRect(window, &button, FALSE);
-        }
-
         if (tabSwitchAnimating) {
             const bool transitionStillActive = GetTickCount64() - tabSwitchAnimationStart < 180;
             if (tabBarOverlayWindow && IsWindowVisible(tabBarOverlayWindow))
@@ -5933,10 +5935,6 @@ search.addEventListener('keydown',e=>{
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
             return false;
-        // Background tabs start hidden at the WebKit child HWND, not only at
-        // the parent host. This prevents WebKit treating every tab as visible.
-        if (!select)
-            ShowWindow(newViewWindow, SW_HIDE);
         logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE", page, tab.get(),
             L"in_window=1 reason=tab-created");
         logTabDiagnostic(L"TAB_HOST_STATE", page, tab.get(),
@@ -6266,28 +6264,18 @@ search.addEventListener('keydown',e=>{
 
         const LONG_PTR hostStyleBefore = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
         const bool hostStyleVisibleBefore = (hostStyleBefore & WS_VISIBLE) != 0;
-        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
-        const bool viewWindowValid = viewWindow && IsWindow(viewWindow);
-        const LONG_PTR viewStyleBefore = viewWindowValid
-            ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
 
+        // Keep the WebKit child HWND visible for its entire lifetime. Calling
+        // ShowWindow(SW_HIDE/SW_SHOWNA) on a WinCairo view during tab switches
+        // tears down and recreates its accelerated surface; hide only its host.
         if (visible) {
-            // Reveal the host first, then explicitly show the WebKit child. WinCairo
-            // observes the child's own SHOW notification; an ancestor-only show
-            // does not reliably update the page's ActivityState::IsVisible.
             SetWindowPos(tab->hostWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-            if (viewWindowValid && !(viewStyleBefore & WS_VISIBLE))
-                ShowWindow(viewWindow, SW_SHOWNA);
-        } else {
-            // Hide the WebKit child first so WinCairo receives its own HIDE
-            // notification, while keeping the view attached to the window.
-            if (viewWindowValid && (viewStyleBefore & WS_VISIBLE))
-                ShowWindow(viewWindow, SW_HIDE);
-            if (hostStyleVisibleBefore)
-                ShowWindow(tab->hostWindow, SW_HIDE);
+        } else if (hostStyleVisibleBefore) {
+            ShowWindow(tab->hostWindow, SW_HIDE);
         }
 
+        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
         const LONG_PTR hostStyleAfter = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
         const LONG_PTR viewStyle = viewWindow && IsWindow(viewWindow)
             ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
@@ -6307,12 +6295,7 @@ search.addEventListener('keydown',e=>{
         const bool selectedHostAlreadyVisible = tabs[index]->hostWindow
             && IsWindow(tabs[index]->hostWindow)
             && (GetWindowLongPtrW(tabs[index]->hostWindow, GWL_STYLE) & WS_VISIBLE);
-        const HWND selectedViewForFastPath = tabs[index]->view
-            ? WKViewGetWindow(tabs[index]->view.get()) : nullptr;
-        const bool selectedViewAlreadyVisible = selectedViewForFastPath
-            && IsWindow(selectedViewForFastPath)
-            && (GetWindowLongPtrW(selectedViewForFastPath, GWL_STYLE) & WS_VISIBLE);
-        if (index == activeTab && selectedHostAlreadyVisible && selectedViewAlreadyVisible && !tabOverviewVisible
+        if (index == activeTab && selectedHostAlreadyVisible && !tabOverviewVisible
             && !tabs[index]->initialPageLoadPending && !addressEditing) {
             updateToolbarHover(POINT { -1, -1 });
             invalidateTabChrome(tabs[index].get());
@@ -6330,7 +6313,11 @@ search.addEventListener('keydown',e=>{
         const bool hasOverviewPreview = overviewTarget && overviewTarget->previewBitmap
             && overviewTarget->previewWidth > 0 && overviewTarget->previewHeight > 0
             && overviewTarget->previewURL == overviewTarget->activeUrl;
-        const bool animateOverviewClose = switchingFromOverview && hasOverviewPreview;
+        const bool hasNativeInternalSnapshot = overviewTarget
+            && (overviewTarget->internalPage == L"start"
+                || overviewTarget->internalPage == L"settings");
+        const bool animateOverviewClose = switchingFromOverview
+            && (hasOverviewPreview || hasNativeInternalSnapshot);
         if (switchingFromOverview) {
             logDiagnostic(L"OVERVIEW_CLOSE_REQUEST target_index=" + std::to_wstring(index)
                 + L" active_url=" + safeDiagnosticUrl(overviewTarget->activeUrl)
@@ -7380,8 +7367,6 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 InvalidateRect(window, &previous, FALSE);
         }
         hoveredToolbarButton = -1;
-        for (float& opacity : toolbarHoverOpacity)
-            opacity = 0.0f;
         // The overview button can remain under the pointer after it opens.
         // Stop the cursor-sync timer here so it cannot immediately reapply the
         // pressed/hover tint that this transition intentionally clears.
@@ -10761,6 +10746,14 @@ void didFinishNavigation(WKPageRef page, WKNavigationRef, WKTypeRef, const void*
             + L" active_tab=" + std::wstring(isActiveTab ? L"1" : L"0")
             + L" activation_generation=" + std::to_wstring(browser->tabActivationGeneration));
 
+    // Every completed navigation needs a fresh overview image. Previously only
+    // tab activation queued captures, so pages loaded in the already-active tab
+    // could remain skeletons in Tab Overview until they were switched away and back.
+    if (isActiveTab && browser->window && IsWindow(browser->window))
+        browser->scheduleTabThumbnailCapture(tab, 700);
+    else
+        tab->thumbnailCaptureNeeded = true;
+
     // The Settings document can finish after the activation-time repaint has
     // already run. Queue surface recovery from the browser window thread so the
     // completed DOM gets a fresh accelerated frame without relying on mouse input.
@@ -12475,6 +12468,8 @@ void didChangeActiveURL(const void* clientInfo)
         logTabDiagnostic(L"ACTIVE_URL_CHANGE", page, tab, changeDetails);
         if (tab == tab->browser->active())
             tab->browser->clearActivePageTint();
+        tab->thumbnailCaptureNeeded = true;
+        tab->thumbnailCaptureFailures = 0;
         tab->faviconAttempts = 0;
         // Never draw pixels from the previous URL under the new tab title.
         if (tab->previewBitmap) {
@@ -12796,11 +12791,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     + std::to_wstring(state->chromeHoverChangeGeneration)
                     + L" source=browser_window");
             }
-            if (previousHoveredTab >= 0 && state->tabBarOverlayWindow
-                && IsWindowVisible(state->tabBarOverlayWindow))
-                InvalidateRect(state->tabBarOverlayWindow, nullptr, FALSE);
-            for (float& opacity : state->toolbarHoverOpacity)
-                opacity = 0.0f;
+            if (previousHoveredTab >= 0)
+                state->invalidateTabBarItem(static_cast<size_t>(previousHoveredTab));
             if (previousHovered >= 0) {
                 const RECT rect = state->rightToolbarButtonRect(previousHovered);
                 if (rect.right > rect.left && rect.bottom > rect.top)
@@ -13836,7 +13828,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-isolated-page-visibility-thumbnail-capture-v11");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-nav-capture-local-hover-v13");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
