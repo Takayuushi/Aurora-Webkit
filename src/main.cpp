@@ -1551,8 +1551,30 @@ LRESULT CALLBACK addressSuggestionsProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK findEditProcedure(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK overlayWindowProcedure(HWND, UINT, WPARAM, LPARAM);
 
+constexpr wchar_t kAuroraTabHostWindowClass[] = L"AuroraTabHostWindow";
+
+bool registerAuroraTabHostWindowClass()
+{
+    static bool registered = false;
+    if (registered)
+        return true;
+
+    WNDCLASSEXW windowClass { };
+    windowClass.cbSize = sizeof(windowClass);
+    windowClass.lpfnWndProc = DefWindowProcW;
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpszClassName = kAuroraTabHostWindowClass;
+    if (!RegisterClassExW(&windowClass)
+        && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return false;
+
+    registered = true;
+    return true;
+}
+
 struct TabState {
     BrowserState* browser { nullptr };
+    HWND hostWindow { nullptr };
     WKRetainPtr<WKViewRef> view;
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
@@ -1582,6 +1604,10 @@ struct TabState {
     {
         if (previewBitmap)
             DeleteObject(previewBitmap);
+        // Destroy the per-tab host only after its WebKit child has been
+        // detached by the parent-window destruction sequence.
+        if (hostWindow && IsWindow(hostWindow))
+            DestroyWindow(hostWindow);
     }
 };
 
@@ -5828,19 +5854,26 @@ search.addEventListener('keydown',e=>{
         auto tab = std::make_unique<TabState>();
         tab->browser = this;
 
+        if (!registerAuroraTabHostWindowClass())
+            return false;
+
+        // Each tab gets its own host HWND. Hiding the host removes the inactive
+        // surface from the browser's child-window stack, while the WKView itself
+        // remains WS_VISIBLE. WinCairo tracks visibility on the WKView HWND, not
+        // on hidden ancestors, so tab suspension does not send WM_SHOWWINDOW to
+        // WebKit or tear down the page's media/rendering state.
+        tab->hostWindow = CreateWindowExW(0, kAuroraTabHostWindowClass, L"",
+            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            0, 0, 0, 0, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!tab->hostWindow)
+            return false;
+
         RECT initialRect { };
-        tab->view = adoptWK(WKViewCreate(initialRect, pageConfiguration.get(), window));
+        tab->view = adoptWK(WKViewCreate(initialRect, pageConfiguration.get(), tab->hostWindow));
         if (!tab->view)
             return false;
 
-        // WKViewCreate starts with a zero-sized child HWND. Keep inactive views
-        // visible but at the bottom of the sibling z-order instead of hiding them:
-        // Windows sends WM_SHOWWINDOW to WebKit, which marks the page non-visible and
-        // can release a video renderer that is not correctly restored on tab return.
         HWND newViewWindow = WKViewGetWindow(tab->view.get());
-        if (newViewWindow)
-            SetWindowPos(newViewWindow, HWND_BOTTOM, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
 
         // Keep each WKView registered with WinCairo for its entire lifetime.
         // Tab activation must not detach and rebuild the page's compositor tree.
@@ -5851,6 +5884,9 @@ search.addEventListener('keydown',e=>{
             return false;
         logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE", page, tab.get(),
             L"in_window=1 reason=tab-created");
+        logTabDiagnostic(L"TAB_HOST_STATE", page, tab.get(),
+            L"reason=tab-created host_style_visible=0 view_style_visible="
+                + std::wstring((GetWindowLongPtrW(newViewWindow, GWL_STYLE) & WS_VISIBLE) ? L"1" : L"0"));
 
         WKPageNavigationClientV3 navigationClient { };
         navigationClient.base.version = 3;
@@ -6168,6 +6204,33 @@ search.addEventListener('keydown',e=>{
         }
     }
 
+    void setTabHostVisible(TabState* tab, bool visible, const wchar_t* reason)
+    {
+        if (!tab || !tab->hostWindow || !IsWindow(tab->hostWindow))
+            return;
+
+        const LONG_PTR hostStyleBefore = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
+        const bool hostStyleVisibleBefore = (hostStyleBefore & WS_VISIBLE) != 0;
+        if (visible) {
+            SetWindowPos(tab->hostWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+        } else if (hostStyleVisibleBefore) {
+            ShowWindow(tab->hostWindow, SW_HIDE);
+        }
+
+        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
+        const LONG_PTR hostStyleAfter = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
+        const LONG_PTR viewStyle = viewWindow && IsWindow(viewWindow)
+            ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
+        const std::wstring details = L"reason=" + std::wstring(reason ? reason : L"unspecified")
+            + L" host_style_visible=" + ((hostStyleAfter & WS_VISIBLE) ? L"1" : L"0")
+            + L" view_style_visible=" + ((viewStyle & WS_VISIBLE) ? L"1" : L"0")
+            + L" view_tree_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0");
+        logTabDiagnostic(L"TAB_HOST_STATE",
+            viewWindow && IsWindow(viewWindow) ? WKViewGetPage(tab->view.get()) : nullptr,
+            tab, details);
+    }
+
     void activateTab(size_t index)
     {
         if (index >= tabs.size())
@@ -6297,6 +6360,14 @@ search.addEventListener('keydown',e=>{
         if (!tab)
             return;
 
+        // Activate the tab's host first, then hide the previous host. The WKView
+        // remains WS_VISIBLE inside its host, so its own WinCairo visibility state
+        // is not toggled when another tab is selected.
+        setTabHostVisible(tab, true, switchingFromOverview
+            ? L"selected-from-overview" : L"selected-tab");
+        if (previouslyActive < tabs.size() && previouslyActive != index)
+            setTabHostVisible(tabs[previouslyActive].get(), false, L"tab-deactivated");
+
         // Start the selected tab's initial document through a posted UI message.
         // WM_TIMER is low priority and can remain pending while native overlays
         // and WebKit child windows are continuously repainting.
@@ -6316,6 +6387,8 @@ search.addEventListener('keydown',e=>{
         // a compositor surface rebuild when the tab is selected again.
         const HWND selectedPreviousSibling = selectedView
             ? GetWindow(selectedView, GW_HWNDPREV) : nullptr;
+        const HWND selectedHostPreviousSibling = tab->hostWindow
+            ? GetWindow(tab->hostWindow, GW_HWNDPREV) : nullptr;
 
         RECT selectedViewRect { };
         const bool hasSelectedViewRect = selectedView && GetClientRect(selectedView, &selectedViewRect);
@@ -6329,7 +6402,10 @@ search.addEventListener('keydown',e=>{
                 + L"x" + std::to_wstring(selectedViewRect.bottom - selectedViewRect.top);
         activationDetails += L" selected_previous_sibling="
             + std::to_wstring(static_cast<unsigned long long>(
-                reinterpret_cast<ULONG_PTR>(selectedPreviousSibling)));
+                reinterpret_cast<ULONG_PTR>(selectedPreviousSibling)))
+            + L" selected_host_previous_sibling="
+            + std::to_wstring(static_cast<unsigned long long>(
+                reinterpret_cast<ULONG_PTR>(selectedHostPreviousSibling)));
         logTabDiagnostic(L"TAB_ACTIVATE", WKViewGetPage(tab->view.get()), tab, activationDetails);
         // Switching tabs does not change toolbar geometry. Keep WebKit view
         // geometry stable, but defer overlay z-order until the selected page
@@ -6457,8 +6533,7 @@ search.addEventListener('keydown',e=>{
         }
 
         auto closingTab = std::move(tabs[index]);
-        if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
-            ShowWindow(viewWindow, SW_HIDE);
+        setTabHostVisible(closingTab.get(), false, L"tab-closed");
         retiredTabs.push_back(std::move(closingTab));
         tabs.erase(tabs.begin() + static_cast<std::ptrdiff_t>(index));
         invalidateTabStrip();
@@ -6471,6 +6546,7 @@ search.addEventListener('keydown',e=>{
         if (keepOverviewOpen) {
             tabSwitchAnimating = false;
             if (auto* tab = active()) {
+                setTabHostVisible(tab, true, L"overview-active-after-close");
                 const std::wstring text = tab->activeUrl == L"about:blank" ? L"" : tab->activeUrl;
                 SetWindowTextW(addressBar, text.c_str());
             }
@@ -7575,9 +7651,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
             }
         }
 
-        // Keep the accelerated page at a stable full-client width underneath both
-        // floating overlays. The sidebar masks its left edge; it must not shrink the
-        // WKView because changing its viewport repeatedly exposed black GPU surfaces.
+        // Each tab's WebView lives inside its own host HWND. Only the active host
+        // is moved/resized; the nested WebView keeps a stable client-origin geometry.
+        // The host bounds match the viewport, while the WebView fills the host.
         const int viewTop = sidebarContentTop();
         const int viewLeft = 0;
         const int viewWidth = std::max(0, static_cast<int>(client.right));
@@ -7586,39 +7662,45 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         for (const auto& tab : tabs) {
             if (tab.get() != selectedTab)
                 continue;
+            HWND hostWindow = tab->hostWindow;
             HWND viewWindow = WKViewGetWindow(tab->view.get());
-            if (!viewWindow)
+            if (!hostWindow || !IsWindow(hostWindow) || !viewWindow || !IsWindow(viewWindow))
                 continue;
 
-            RECT current { };
-            bool geometryChanged = !GetWindowRect(viewWindow, &current);
-            if (!geometryChanged) {
-                MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&current), 2);
-                geometryChanged = current.left != viewLeft
-                    || current.top != viewTop
-                    || current.right - current.left != viewWidth
-                    || current.bottom - current.top != viewHeight;
+            RECT hostRect { };
+            bool hostGeometryChanged = !GetWindowRect(hostWindow, &hostRect);
+            if (!hostGeometryChanged) {
+                MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&hostRect), 2);
+                hostGeometryChanged = hostRect.left != viewLeft
+                    || hostRect.top != viewTop
+                    || hostRect.right - hostRect.left != viewWidth
+                    || hostRect.bottom - hostRect.top != viewHeight;
             }
 
-            if (geometryChanged) {
-                MoveWindow(viewWindow, viewLeft, viewTop, viewWidth, viewHeight, FALSE);
-                // Only the visible active page needs a repaint after a genuine
-                // viewport change. Repainting every overlapping inactive WKView can
-                // expose its surface during z-order/compositor updates.
-                if (tab.get() == active() && IsWindowVisible(viewWindow))
+            if (hostGeometryChanged) {
+                SetWindowPos(hostWindow, nullptr, viewLeft, viewTop, viewWidth, viewHeight,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+            }
+
+            RECT viewRect { };
+            const bool viewGeometryChanged = !GetClientRect(viewWindow, &viewRect)
+                || viewRect.right - viewRect.left != viewWidth
+                || viewRect.bottom - viewRect.top != viewHeight;
+            if (viewGeometryChanged) {
+                SetWindowPos(viewWindow, nullptr, 0, 0, viewWidth, viewHeight,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
+                if (IsWindowVisible(viewWindow))
                     InvalidateRect(viewWindow, nullptr, FALSE);
             }
         }
 
-        // Keep the active page above inactive WKViews, but do not raise it
-        // over the sidebar or tab-overview child windows. resize() runs for
-        // layout/animation changes; an unconditional HWND_TOP here defeats the
-        // overlay z-order established by positionOverlayWindows().
+        // Raise the active host, not the WKView itself. WebViews no longer overlap
+        // as siblings of one another; each is isolated under its own host window.
         if (selectedTab && !sidebarOpen && !sidebarAnimating
             && !tabOverviewVisible && !tabOverviewClosing) {
-            HWND selectedView = WKViewGetWindow(selectedTab->view.get());
-            if (selectedView && IsWindow(selectedView))
-                SetWindowPos(selectedView, HWND_TOP, 0, 0, 0, 0,
+            HWND selectedHost = selectedTab->hostWindow;
+            if (selectedHost && IsWindow(selectedHost))
+                SetWindowPos(selectedHost, HWND_TOP, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
                         | SWP_NOREDRAW | SWP_SHOWWINDOW);
         }
@@ -13672,7 +13754,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-stable-inwindow-v9");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-isolated-visible-webviews-v10");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
