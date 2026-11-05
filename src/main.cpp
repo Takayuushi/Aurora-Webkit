@@ -6237,12 +6237,11 @@ search.addEventListener('keydown',e=>{
     {
         if (index >= tabs.size())
             return;
-        if (index == activeTab && !tabOverviewVisible
+        const bool selectedHostAlreadyVisible = tabs[index]->hostWindow
+            && IsWindow(tabs[index]->hostWindow)
+            && (GetWindowLongPtrW(tabs[index]->hostWindow, GWL_STYLE) & WS_VISIBLE);
+        if (index == activeTab && selectedHostAlreadyVisible && !tabOverviewVisible
             && !tabs[index]->initialPageLoadPending && !addressEditing) {
-            // The active index can remain numerically unchanged when its tab is
-            // closed and the next tab shifts into that slot. Reassert its host
-            // visibility before taking the fast path.
-            setTabHostVisible(tabs[index].get(), true, L"already-selected-tab");
             updateToolbarHover(POINT { -1, -1 });
             invalidateTabChrome(tabs[index].get());
             invalidateTabStrip();
