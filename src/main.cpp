@@ -5919,6 +5919,13 @@ search.addEventListener('keydown',e=>{
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
             return false;
+        // WebKit creates its native child with WS_VISIBLE, even when the
+        // browser's per-tab host is hidden. Match its internal visibility state
+        // to the background host without changing the child HWND style.
+        if (!select) {
+            SendMessageW(newViewWindow, WM_SHOWWINDOW, FALSE, 0);
+            tab->webViewActivityVisible = false;
+        }
         logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE", page, tab.get(),
             L"in_window=1 reason=tab-created");
         logTabDiagnostic(L"TAB_HOST_STATE", page, tab.get(),
@@ -13817,7 +13824,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-nav-capture-hover-v15");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-background-tabs-nav-capture-hover-v16");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
