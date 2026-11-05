@@ -5874,6 +5874,8 @@ search.addEventListener('keydown',e=>{
             return false;
 
         HWND newViewWindow = WKViewGetWindow(tab->view.get());
+        if (!newViewWindow)
+            return false;
 
         // Keep each WKView registered with WinCairo for its entire lifetime.
         // Tab activation must not detach and rebuild the page's compositor tree.
@@ -6237,6 +6239,10 @@ search.addEventListener('keydown',e=>{
             return;
         if (index == activeTab && !tabOverviewVisible
             && !tabs[index]->initialPageLoadPending && !addressEditing) {
+            // The active index can remain numerically unchanged when its tab is
+            // closed and the next tab shifts into that slot. Reassert its host
+            // visibility before taking the fast path.
+            setTabHostVisible(tabs[index].get(), true, L"already-selected-tab");
             updateToolbarHover(POINT { -1, -1 });
             invalidateTabChrome(tabs[index].get());
             invalidateTabStrip();
