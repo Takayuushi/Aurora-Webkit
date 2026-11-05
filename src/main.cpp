@@ -8,6 +8,10 @@
 #define DWMWA_BORDER_COLOR 34
 #endif
 
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
 #include <WebKit/WKContext.h>
 #include <WebKit/WKDownloadClient.h>
 #include <WebKit/WKDownloadRef.h>
@@ -6240,7 +6244,12 @@ search.addEventListener('keydown',e=>{
         const bool selectedHostAlreadyVisible = tabs[index]->hostWindow
             && IsWindow(tabs[index]->hostWindow)
             && (GetWindowLongPtrW(tabs[index]->hostWindow, GWL_STYLE) & WS_VISIBLE);
-        if (index == activeTab && selectedHostAlreadyVisible && !tabOverviewVisible
+        const HWND selectedViewForFastPath = tabs[index]->view
+            ? WKViewGetWindow(tabs[index]->view.get()) : nullptr;
+        const bool selectedViewAlreadyVisible = selectedViewForFastPath
+            && IsWindow(selectedViewForFastPath)
+            && (GetWindowLongPtrW(selectedViewForFastPath, GWL_STYLE) & WS_VISIBLE);
+        if (index == activeTab && selectedHostAlreadyVisible && selectedViewAlreadyVisible && !tabOverviewVisible
             && !tabs[index]->initialPageLoadPending && !addressEditing) {
             updateToolbarHover(POINT { -1, -1 });
             invalidateTabChrome(tabs[index].get());
@@ -13759,7 +13768,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-isolated-visible-webviews-v10");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-isolated-page-visibility-thumbnail-capture-v11");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
