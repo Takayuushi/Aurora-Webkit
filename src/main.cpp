@@ -1580,6 +1580,9 @@ struct TabState {
     BrowserState* browser { nullptr };
     HWND hostWindow { nullptr };
     WKRetainPtr<WKViewRef> view;
+    // WinCairo initializes m_isVisible from the child's WS_VISIBLE style. Keep
+    // this mirror so activity can be switched without changing that style.
+    bool webViewActivityVisible { true };
     std::wstring title { L"New Tab" };
     std::wstring activeUrl;
     std::wstring internalPage { L"start" };
@@ -6264,25 +6267,36 @@ search.addEventListener('keydown',e=>{
 
         const LONG_PTR hostStyleBefore = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
         const bool hostStyleVisibleBefore = (hostStyleBefore & WS_VISIBLE) != 0;
+        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
+        const bool viewWindowValid = viewWindow && IsWindow(viewWindow);
 
-        // Keep the WebKit child HWND visible for its entire lifetime. Calling
-        // ShowWindow(SW_HIDE/SW_SHOWNA) on a WinCairo view during tab switches
-        // tears down and recreates its accelerated surface; hide only its host.
+        // A WinCairo WebView handles WM_SHOWWINDOW by updating ActivityState::IsVisible.
+        // Send that notification directly: unlike ShowWindow, this does not change
+        // the child's WS_VISIBLE style or recreate its accelerated native surface.
         if (visible) {
             SetWindowPos(tab->hostWindow, HWND_TOP, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-        } else if (hostStyleVisibleBefore) {
-            ShowWindow(tab->hostWindow, SW_HIDE);
+            if (viewWindowValid && !tab->webViewActivityVisible) {
+                SendMessageW(viewWindow, WM_SHOWWINDOW, TRUE, 0);
+                tab->webViewActivityVisible = true;
+            }
+        } else {
+            if (viewWindowValid && tab->webViewActivityVisible) {
+                SendMessageW(viewWindow, WM_SHOWWINDOW, FALSE, 0);
+                tab->webViewActivityVisible = false;
+            }
+            if (hostStyleVisibleBefore)
+                ShowWindow(tab->hostWindow, SW_HIDE);
         }
 
-        HWND viewWindow = tab->view ? WKViewGetWindow(tab->view.get()) : nullptr;
         const LONG_PTR hostStyleAfter = GetWindowLongPtrW(tab->hostWindow, GWL_STYLE);
-        const LONG_PTR viewStyle = viewWindow && IsWindow(viewWindow)
+        const LONG_PTR viewStyle = viewWindowValid
             ? GetWindowLongPtrW(viewWindow, GWL_STYLE) : 0;
         const std::wstring details = L"reason=" + std::wstring(reason ? reason : L"unspecified")
             + L" host_style_visible=" + ((hostStyleAfter & WS_VISIBLE) ? L"1" : L"0")
             + L" view_style_visible=" + ((viewStyle & WS_VISIBLE) ? L"1" : L"0")
-            + L" view_tree_visible=" + (viewWindow && IsWindowVisible(viewWindow) ? L"1" : L"0");
+            + L" view_tree_visible=" + (viewWindowValid && IsWindowVisible(viewWindow) ? L"1" : L"0")
+            + L" activity_visible=" + (tab->webViewActivityVisible ? L"1" : L"0");
         logTabDiagnostic(L"TAB_HOST_STATE",
             viewWindow && IsWindow(viewWindow) ? WKViewGetPage(tab->view.get()) : nullptr,
             tab, details);
@@ -13828,7 +13842,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-nav-capture-local-hover-v13");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-nav-capture-hover-v14");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
