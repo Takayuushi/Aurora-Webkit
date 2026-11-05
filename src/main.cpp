@@ -1574,9 +1574,6 @@ struct TabState {
     std::wstring previewURL;
     bool thumbnailCaptureNeeded { true };
     bool thumbnailCaptureInFlight { false };
-    // The HWND stays visible for video continuity, but only the selected tab
-    // participates in WebKit's native-window compositing tree.
-    bool webKitInWindow { false };
     unsigned thumbnailCaptureFailures { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
@@ -4327,25 +4324,6 @@ struct BrowserState {
         return tabs[activeTab].get();
     }
 
-    void setTabInWindow(TabState* tab, bool inWindow, const wchar_t* reason)
-    {
-        if (!tab || !tab->view || tab->webKitInWindow == inWindow)
-            return;
-
-        // WKViewSetIsInWindow detaches/reattaches the page's compositor tree.
-        // This is deliberately separate from ShowWindow: inactive WebView HWNDs
-        // remain WS_VISIBLE so WebKit does not receive WM_SHOWWINDOW and suspend
-        // media/renderers that have previously failed to recover on tab return.
-        WKViewSetIsInWindow(tab->view.get(), inWindow);
-        tab->webKitInWindow = inWindow;
-
-        const std::wstring details = std::wstring(L"in_window=")
-            + (inWindow ? L"1" : L"0")
-            + L" reason=" + (reason ? reason : L"unspecified");
-        logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE",
-            WKViewGetPage(tab->view.get()), tab, details);
-    }
-
     std::wstring addressDisplayText() const
     {
         if (tabs.empty() || activeTab >= tabs.size())
@@ -5864,11 +5842,15 @@ search.addEventListener('keydown',e=>{
             SetWindowPos(newViewWindow, HWND_BOTTOM, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
 
-        // Inactive tabs remain outside WebKit's window compositor until selected.
+        // Keep each WKView registered with WinCairo for its entire lifetime.
+        // Tab activation must not detach and rebuild the page's compositor tree.
+        WKViewSetIsInWindow(tab->view.get(), true);
 
         auto page = WKViewGetPage(tab->view.get());
         if (!page)
             return false;
+        logTabDiagnostic(L"TAB_COMPOSITOR_WINDOW_STATE", page, tab.get(),
+            L"in_window=1 reason=tab-created");
 
         WKPageNavigationClientV3 navigationClient { };
         navigationClient.base.version = 3;
@@ -6190,7 +6172,7 @@ search.addEventListener('keydown',e=>{
     {
         if (index >= tabs.size())
             return;
-        if (index == activeTab && tabs[index]->webKitInWindow && !tabOverviewVisible
+        if (index == activeTab && !tabOverviewVisible
             && !tabs[index]->initialPageLoadPending && !addressEditing) {
             updateToolbarHover(POINT { -1, -1 });
             invalidateTabChrome(tabs[index].get());
@@ -6315,11 +6297,6 @@ search.addEventListener('keydown',e=>{
         if (!tab)
             return;
 
-        // Attach only the selected page to WebKit's native-window compositor.
-        // The previous tab is detached after the selected HWND has been raised.
-        setTabInWindow(tab, true, switchingFromOverview
-            ? L"selected-from-overview" : L"selected-tab");
-
         // Start the selected tab's initial document through a posted UI message.
         // WM_TIMER is low priority and can remain pending while native overlays
         // and WebKit child windows are continuously repainting.
@@ -6334,10 +6311,9 @@ search.addEventListener('keydown',e=>{
 
         HWND selectedView = WKViewGetWindow(tab->view.get());
 
-        // Keep inactive WKViews visible but outside WebKit's native-window
-        // compositor tree. WM_SHOWWINDOW changes page visibility and has caused
-        // video renderers to fail on return; IsInWindow is a separate compositor
-        // attachment signal, so the selected page can be reattached on activation.
+        // All tab WKViews stay attached to WinCairo's window state. Changing
+        // IsInWindow at tab-switch time can disrupt media eligibility and force
+        // a compositor surface rebuild when the tab is selected again.
         const HWND selectedPreviousSibling = selectedView
             ? GetWindow(selectedView, GW_HWNDPREV) : nullptr;
 
@@ -6417,10 +6393,8 @@ search.addEventListener('keydown',e=>{
                     + L" preview_url=" + safeDiagnosticUrl(tab->previewURL)
                     + L" overview_hidden=1 repaint_after_focus=1");
         }
-        // The selected page is now in front; detach the previous page from the
-        // compositor tree, then restore the single overlay stack for this switch.
-        if (previouslyActive < tabs.size() && previouslyActive != index)
-            setTabInWindow(tabs[previouslyActive].get(), false, L"tab-deactivated");
+        // Restore the single native overlay stack without changing any WebView's
+        // WinCairo in-window state.
         positionOverlayWindows(true);
         if (tab->thumbnailCaptureNeeded || tab->previewURL != tab->activeUrl)
             scheduleTabThumbnailCapture(tab, 420);
@@ -6483,7 +6457,6 @@ search.addEventListener('keydown',e=>{
         }
 
         auto closingTab = std::move(tabs[index]);
-        setTabInWindow(closingTab.get(), false, L"tab-closed");
         if (auto* viewWindow = WKViewGetWindow(closingTab->view.get()))
             ShowWindow(viewWindow, SW_HIDE);
         retiredTabs.push_back(std::move(closingTab));
@@ -13005,13 +12978,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (!IsWindowVisible(viewWindow))
             ShowWindow(viewWindow, SW_SHOWNA);
-        // The activation path already performed the only z-order change for this
-        // switch. The completion callback should only reveal the fresh frame.
+        // WKPageForceRepaint completion is a WebKit repaint callback, not proof
+        // that DWM has presented visible pixels from this native surface.
         RedrawWindow(viewWindow, nullptr, nullptr,
             RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FRAME_READY",
+        logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_REPAINT_COMPLETED",
             page, selected,
             L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                + L" force_repaint_callback=1 hwnd_redraw_requested=1"
+                + L" surface_presentation_verified=0"
                 + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
         return 0;
     }
@@ -13697,7 +13672,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-active-compositor-v8");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-hover-overview-stable-inwindow-v9");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
