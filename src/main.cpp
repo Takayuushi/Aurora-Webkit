@@ -177,7 +177,6 @@ constexpr UINT_PTR kChromeAnimationTimerId = 0xA113;
 constexpr UINT_PTR kDeferredThumbnailCaptureTimerId = 0xA117;
 constexpr UINT_PTR kWindowTransitionTimerId = 0xA118;
 constexpr UINT_PTR kWindowSurfaceRecoveryTimerId = 0xA119;
-constexpr UINT_PTR kSidebarZOrderTimerId = 0xA11A;
 constexpr UINT_PTR kDeferredPageTintTimerId = 0xA11B;
 constexpr UINT_PTR kChromeHoverSyncTimerId = 0xA11C;
 constexpr UINT_PTR kDeferredActivePageRepaintTimerId = 0xA11D;
@@ -1821,7 +1820,6 @@ struct BrowserState {
     TabState* pendingThumbnailCaptureTab { nullptr };
     unsigned pendingThumbnailCaptureAttempts { 0 };
     std::wstring pendingThumbnailCaptureURL;
-    bool sidebarZOrderTimerActive { false };
     bool userSizingWindow { false };
     unsigned long long tabActivationGeneration { 0 };
     std::shared_ptr<ThumbnailCaptureLifetime> thumbnailCaptureLifetime {
@@ -2979,7 +2977,7 @@ struct BrowserState {
             + L" animating=" + (sidebarAnimating ? L"1" : L"0")
             + L" progress=" + std::to_wstring(sidebarProgress()));
         positionOverlayWindows();
-        updateSidebarZOrderTimer();
+        refreshSidebarZOrder();
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
     }
@@ -3763,13 +3761,7 @@ struct BrowserState {
 
     void maintainSidebarZOrder()
     {
-        if (!window || (!sidebarOpen && !sidebarAnimating)) {
-            if (window)
-                KillTimer(window, kSidebarZOrderTimerId);
-            sidebarZOrderTimerActive = false;
-            return;
-        }
-        if (IsIconic(window))
+        if (!window || (!sidebarOpen && !sidebarAnimating) || IsIconic(window))
             return;
 
         if (!sidebarOverlayWindow || !IsWindow(sidebarOverlayWindow)) {
@@ -3778,27 +3770,16 @@ struct BrowserState {
         }
 
         // The sidebar is an owned top-level popup, not a sibling child of the
-        // accelerated WebKit HWND. Windows keeps owned popups above their owner,
-        // so do not repeatedly reorder the WebKit/overview child HWNDs here.
+        // accelerated WebKit HWND. Windows keeps owned popups above their owner;
+        // a one-shot ownership check is enough, with no recurring timer needed.
         if (GetWindow(sidebarOverlayWindow, GW_OWNER) != window)
-            return;
-
-        // Do not force periodic full-surface paints. The popup is already rendered
-        // when shown, and Win32 keeps this owned overlay above its browser owner.
+            positionOverlayWindows(true);
     }
 
-    void updateSidebarZOrderTimer()
+    void refreshSidebarZOrder()
     {
-        if (!window)
-            return;
-        if (sidebarOpen || sidebarAnimating) {
-            if (!sidebarZOrderTimerActive)
-                sidebarZOrderTimerActive = SetTimer(window, kSidebarZOrderTimerId, 72, nullptr) != 0;
+        if (sidebarOpen || sidebarAnimating)
             maintainSidebarZOrder();
-        } else {
-            KillTimer(window, kSidebarZOrderTimerId);
-            sidebarZOrderTimerActive = false;
-        }
     }
 
     Gdiplus::Bitmap* startPageThumbnailBitmap() const
@@ -12438,7 +12419,7 @@ void didChangeIsLoading(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->updateSidebarZOrderTimer();
+        tab->browser->refreshSidebarZOrder();
     }
 }
 
@@ -12516,7 +12497,7 @@ void didChangeActiveURL(const void* clientInfo)
     if (tab == tab->browser->active()
         && (tab->browser->sidebarOpen || tab->browser->sidebarAnimating)) {
         tab->browser->positionOverlayWindows(true);
-        tab->browser->updateSidebarZOrderTimer();
+        tab->browser->refreshSidebarZOrder();
     }
     tab->browser->invalidateTabChrome(tab);
 
@@ -12664,10 +12645,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 state->recoverWindowSurfaceFrame();
             else
                 KillTimer(window, kWindowSurfaceRecoveryTimerId);
-            return 0;
-        }
-        if (state && wParam == kSidebarZOrderTimerId) {
-            state->maintainSidebarZOrder();
             return 0;
         }
         if (state && wParam == kDownloadsAnimationTimerId) {
@@ -13389,7 +13366,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->resize(false);
             state->beginWindowSurfaceRecovery(true);
             if (state->sidebarOpen) {
-                state->updateSidebarZOrderTimer();
+                state->refreshSidebarZOrder();
             }
         }
         return 0;
@@ -13448,7 +13425,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_DESTROY:
         if (state) {
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
-            KillTimer(window, kSidebarZOrderTimerId);
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             KillTimer(window, kDeferredPageTintTimerId);
             {
@@ -13461,7 +13437,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 delete reinterpret_cast<ThumbnailCaptureResult*>(pendingThumbnailMessage.lParam);
             }
             state->windowSurfaceRecoveryActive = false;
-            state->sidebarZOrderTimerActive = false;
             state->pendingThumbnailCaptureTab = nullptr;
             state->saveWindowStateOnExit();
             state->cancelWindowTransition();
@@ -13842,7 +13817,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-nav-capture-hover-v14");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-stable-child-webkit-activity-nav-capture-hover-v15");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
