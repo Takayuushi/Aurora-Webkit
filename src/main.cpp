@@ -13092,7 +13092,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             && (focusBelongsToAuroraChrome || !currentFocus)) {
             SetFocus(viewWindow);
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_HANDOFF",
-                WKPageGetPage(selected->view.get()), selected,
+                WKViewGetPage(selected->view.get()), selected,
                 L"focus_before=" + std::to_wstring(static_cast<unsigned long long>(
                     reinterpret_cast<ULONG_PTR>(currentFocus)))
                     + L" focus_root_owner=" + std::to_wstring(static_cast<unsigned long long>(
@@ -13104,7 +13104,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 : focusIsSelectedWebContent ? L"selected_web_content"
                 : L"focus_owned_elsewhere";
             logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_FOCUS_SKIPPED",
-                WKPageGetPage(selected->view.get()), selected,
+                WKViewGetPage(selected->view.get()), selected,
                 L"reason=" + std::wstring(reason)
                     + L" focus_before=" + std::to_wstring(static_cast<unsigned long long>(
                         reinterpret_cast<ULONG_PTR>(currentFocus)))
