@@ -61,16 +61,12 @@ for ($pass = 1; $pass -le $maxPasses; $pass++) {
     $objects[$object.ToLowerInvariant()] = $object
   }
 
-  $outFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain-$pass.out"
-  $errFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain-$pass.err"
-  Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
-  $explainArgs = '-C "' + $buildDir + '" -f "' + $manifest + '" -d explain -n Aurora'
-  $process = Start-Process -FilePath $ninja -ArgumentList $explainArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-  if ($process.ExitCode -ne 0) { throw "Ninja explain failed with exit code $($process.ExitCode) during pass $pass." }
-
-  $lines = @()
-  if (Test-Path -LiteralPath $outFile) { $lines += @(Get-Content -LiteralPath $outFile) }
-  if (Test-Path -LiteralPath $errFile) { $lines += @(Get-Content -LiteralPath $errFile) }
+  # Capture Ninja diagnostics through PowerShell's native stderr merge. Start-Process
+  # redirected output inconsistently on the hosted Windows runner and left the
+  # reconciliation loop without the dependency explanations needed to proceed.
+  $explainOutput = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
+  if ($LASTEXITCODE -ne 0) { throw "Ninja explain failed with exit code $LASTEXITCODE during pass $pass." }
+  $lines = @($explainOutput | ForEach-Object { $_.ToString() })
 
   $headerTimes = @{}
   $unsafe = @()
