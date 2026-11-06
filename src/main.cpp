@@ -7467,6 +7467,23 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (tabOverviewVisible) {
+            if (sidebarOpen) {
+                // The overview state can outlive its visible surface while the
+                // sidebar popup is being raised. A toolbar click in that state
+                // must restore the overview above the selected WebKit host rather
+                // than taking the normal "close the active overview" path.
+                logDiagnostic(L"OVERVIEW_REPRESENT_REQUEST sidebar_open=1"
+                    + L" window_valid=" + (tabOverviewWindow && IsWindow(tabOverviewWindow) ? L"1" : L"0")
+                    + L" window_visible=" + (tabOverviewWindow && IsWindowVisible(tabOverviewWindow) ? L"1" : L"0"));
+                positionOverlayWindows(true);
+                if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
+                    InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
+                        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
+                }
+                return;
+            }
+            logDiagnostic(L"OVERVIEW_TOGGLE_CLOSE_REQUEST sidebar_open=0");
             activateTab(activeTab);
             return;
         }
@@ -8770,10 +8787,26 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const RECT downloadButton = rightToolbarButtonRect(1);
         const RECT newTabButton = rightToolbarButtonRect(2);
         const RECT overviewButton = rightToolbarButtonRect(3);
-        if (PtInRect(&shareButton, point)) { handleCommand(kCommandShare); return true; }
-        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) { handleCommand(kCommandDownloads); return true; }
-        if (PtInRect(&newTabButton, point)) { handleCommand(kCommandNewTab); return true; }
-        if (PtInRect(&overviewButton, point)) { handleCommand(kCommandTabOverview); return true; }
+        if (PtInRect(&shareButton, point)) {
+            logDiagnostic(L"TOOLBAR_CLICK target=share sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            handleCommand(kCommandShare);
+            return true;
+        }
+        if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) {
+            logDiagnostic(L"TOOLBAR_CLICK target=downloads sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            handleCommand(kCommandDownloads);
+            return true;
+        }
+        if (PtInRect(&newTabButton, point)) {
+            logDiagnostic(L"TOOLBAR_CLICK target=new-tab sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            handleCommand(kCommandNewTab);
+            return true;
+        }
+        if (PtInRect(&overviewButton, point)) {
+            logDiagnostic(L"TOOLBAR_CLICK target=tab-overview sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            handleCommand(kCommandTabOverview);
+            return true;
+        }
         return false;
     }
 
@@ -12130,8 +12163,19 @@ void showSharePopover(BrowserState* browser)
     SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
     browser->sharePopoverWindow = popup;
     ShowWindow(popup, SW_SHOWNOACTIVATE);
-    SetTimer(popup, kSharePopoverTimerId, 15, nullptr);
+    const UINT_PTR animationTimer = SetTimer(popup, kSharePopoverTimerId, 15, nullptr);
+    if (!animationTimer) {
+        // Never leave the Share popup at alpha=0 if Windows refuses its timer.
+        popupState->animating = false;
+        SetLayeredWindowAttributes(popup, 0, 255, LWA_ALPHA);
+    }
+    SetWindowPos(popup, HWND_TOPMOST, left, top - MulDiv(5, dpi, 96),
+        width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(popup, nullptr, FALSE);
+    logDiagnostic(L"SHARE_POPOVER_OPEN hwnd="
+        + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(popup)))
+        + L" timer=" + (animationTimer ? L"1" : L"0")
+        + L" sidebar_open=" + (browser->sidebarOpen ? L"1" : L"0"));
 }
 
 LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -12315,8 +12359,10 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
     }
     case WM_NCDESTROY:
         if (state) {
-            if (state->browser && state->browser->sharePopoverWindow == window)
+            if (state->browser && state->browser->sharePopoverWindow == window) {
+                logDiagnostic(L"SHARE_POPOVER_DESTROY");
                 state->browser->sharePopoverWindow = nullptr;
+            }
             delete state;
         }
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
@@ -13902,7 +13948,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=tab-host-retained-host-immediate-present-overview-fallback-v18");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=sidebar-toolbar-action-routing-v19");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
