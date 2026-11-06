@@ -74,13 +74,23 @@ if ($missing.Count -gt 0 -or $unsafe.Count -gt 0) {
     $obj = $objects[$key]
     $leaf = [System.IO.Path]::GetFileName($obj)
     Write-Host "Unexplained object: $obj"
-    $related = @($lines | Where-Object {
-      $_.ToString().IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0
-    })
-    if ($related.Count -eq 0) {
+    $positions = @()
+    for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
+      if ($lines[$lineIndex].ToString().IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $positions += $lineIndex
+      }
+    }
+    if ($positions.Count -eq 0) {
       Write-Host "No filename-specific Ninja explain record was captured for $leaf."
     } else {
-      $related | ForEach-Object { Write-Host ("Ninja explain detail: " + $_.ToString()) }
+      foreach ($position in $positions) {
+        $contextStart = [Math]::Max(0, $position - 30)
+        $contextEnd = [Math]::Min($lines.Count - 1, $position + 8)
+        Write-Host "Ninja explain context for $leaf (log lines $($contextStart + 1)-$($contextEnd + 1)):"
+        for ($contextIndex = $contextStart; $contextIndex -le $contextEnd; $contextIndex++) {
+          Write-Host ("Ninja trace: " + $lines[$contextIndex].ToString())
+        }
+      }
     }
   }
   $unsafe | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
