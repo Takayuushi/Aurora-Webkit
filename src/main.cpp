@@ -7472,7 +7472,7 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                 // sidebar popup is being raised. A toolbar click in that state
                 // must restore the overview above the selected WebKit host rather
                 // than taking the normal "close the active overview" path.
-                logDiagnostic(L"OVERVIEW_REPRESENT_REQUEST sidebar_open=1"
+                logDiagnostic(std::wstring(L"OVERVIEW_REPRESENT_REQUEST sidebar_open=1")
                     + L" window_valid=" + (tabOverviewWindow && IsWindow(tabOverviewWindow) ? L"1" : L"0")
                     + L" window_visible=" + (tabOverviewWindow && IsWindowVisible(tabOverviewWindow) ? L"1" : L"0"));
                 positionOverlayWindows(true);
@@ -8788,22 +8788,22 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         const RECT newTabButton = rightToolbarButtonRect(2);
         const RECT overviewButton = rightToolbarButtonRect(3);
         if (PtInRect(&shareButton, point)) {
-            logDiagnostic(L"TOOLBAR_CLICK target=share sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            logDiagnostic(std::wstring(L"TOOLBAR_CLICK target=share sidebar_open=") + (sidebarOpen ? L"1" : L"0"));
             handleCommand(kCommandShare);
             return true;
         }
         if (downloadsButtonVisible() && PtInRect(&downloadButton, point)) {
-            logDiagnostic(L"TOOLBAR_CLICK target=downloads sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            logDiagnostic(std::wstring(L"TOOLBAR_CLICK target=downloads sidebar_open=") + (sidebarOpen ? L"1" : L"0"));
             handleCommand(kCommandDownloads);
             return true;
         }
         if (PtInRect(&newTabButton, point)) {
-            logDiagnostic(L"TOOLBAR_CLICK target=new-tab sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            logDiagnostic(std::wstring(L"TOOLBAR_CLICK target=new-tab sidebar_open=") + (sidebarOpen ? L"1" : L"0"));
             handleCommand(kCommandNewTab);
             return true;
         }
         if (PtInRect(&overviewButton, point)) {
-            logDiagnostic(L"TOOLBAR_CLICK target=tab-overview sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
+            logDiagnostic(std::wstring(L"TOOLBAR_CLICK target=tab-overview sidebar_open=") + (sidebarOpen ? L"1" : L"0"));
             handleCommand(kCommandTabOverview);
             return true;
         }
@@ -13948,7 +13948,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=sidebar-toolbar-action-routing-v19");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=sidebar-toolbar-action-routing-v20");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
