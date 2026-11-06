@@ -118,7 +118,7 @@ for ($pass = 1; $pass -le $maxPasses; $pass++) {
     throw "No safe toolchain-header timestamp correction is available."
   }
 
-  Write-Host "Pass $pass: mapped $matched direct object/header cause(s) to $($headerTimes.Count) unique version-pinned header(s)."
+  Write-Host "Pass ${pass}: mapped $matched direct object/header cause(s) to $($headerTimes.Count) unique version-pinned header(s)."
   foreach ($item in $headerTimes.GetEnumerator()) {
     $before = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
     [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value)
