@@ -3629,22 +3629,13 @@ struct BrowserState {
                         if (copied)
                             inspectCapture();
 
-                        bool usedPrintWindow = false;
-                        // BitBlt can miss accelerated child surfaces. Try the
-                        // WebView's own print path on this worker thread before
-                        // giving up on the tab preview.
-                        if ((!copied || looksBlank) && IsWindow(viewWindow)) {
-                            clearCapture();
-                            if (PrintWindow(viewWindow, captureDC, PW_RENDERFULLCONTENT)) {
-                                copied = TRUE;
-                                usedPrintWindow = true;
-                                inspectCapture();
-                            }
-                        }
-
-                        result->captureSummary = L"method="
-                            + std::wstring(usedPrintWindow ? L"print-window" : L"screen-bitblt")
-                            + L" copied=" + (copied ? L"1" : L"0")
+                        // Do not call PrintWindow on an accelerated WebKit child HWND. It is a
+                        // synchronous cross-window rendering request with no timeout;
+                        // some pages can leave the detached capture worker blocked,
+                        // keeping thumbnailCaptureInFlight set forever. A failed or
+                        // blank screen capture is returned to the UI thread and retried.
+                        result->captureSummary = L"method=screen-bitblt"
+                            + std::wstring(L" copied=") + (copied ? L"1" : L"0")
                             + L" blank=" + (looksBlank ? L"1" : L"0")
                             + L" samples=" + std::to_wstring(validSamples)
                             + L" luminance=" + std::to_wstring(minLuminance)
@@ -3745,7 +3736,7 @@ struct BrowserState {
 
         const auto retryCapture = [this]() {
             ++pendingThumbnailCaptureAttempts;
-            if (pendingThumbnailCaptureAttempts >= 12) {
+            if (pendingThumbnailCaptureAttempts >= 24) {
                 clearPendingThumbnailCapture();
                 return;
             }
@@ -7477,9 +7468,9 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
                     + L" window_visible=" + (tabOverviewWindow && IsWindowVisible(tabOverviewWindow) ? L"1" : L"0"));
                 positionOverlayWindows(true);
                 if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
+                    // Queue the repaint; RDW_UPDATENOW forced the full card grid
+                    // to render synchronously on the browser input/animation thread.
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                    RedrawWindow(tabOverviewWindow, nullptr, nullptr,
-                        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
                 }
                 return;
             }
@@ -12146,12 +12137,24 @@ void showSharePopover(BrowserState* browser)
     popupState->openedAt = GetTickCount64();
     popupState->waitingForInitialButtonRelease = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
+    // When another native overlay is visible, make the Share popover its
+    // owned popup. This guarantees the menu is stacked above Tab Overview or
+    // the sidebar rather than being hidden behind an equally-owned overlay.
+    HWND popupOwner = browser->window;
+    if (browser->tabOverviewVisible && browser->tabOverviewWindow
+        && IsWindowVisible(browser->tabOverviewWindow)) {
+        popupOwner = browser->tabOverviewWindow;
+    } else if ((browser->sidebarOpen || browser->sidebarAnimating)
+        && browser->sidebarOverlayWindow && IsWindowVisible(browser->sidebarOverlayWindow)) {
+        popupOwner = browser->sidebarOverlayWindow;
+    }
+
     HWND popup = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
         L"AuroraSharePopover", L"",
         WS_POPUP,
         left, top - MulDiv(5, dpi, 96), width, height,
-        browser->window, nullptr, GetModuleHandleW(nullptr), popupState);
+        popupOwner, nullptr, GetModuleHandleW(nullptr), popupState);
     if (!popup) {
         delete popupState;
         return;
@@ -12160,7 +12163,7 @@ void showSharePopover(BrowserState* browser)
     HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, MulDiv(12, dpi, 96), MulDiv(12, dpi, 96));
     if (region)
         SetWindowRgn(popup, region, TRUE);
-    SetLayeredWindowAttributes(popup, 0, 0, LWA_ALPHA);
+    SetLayeredWindowAttributes(popup, 0, 255, LWA_ALPHA);
     browser->sharePopoverWindow = popup;
     ShowWindow(popup, SW_SHOWNOACTIVATE);
     const UINT_PTR animationTimer = SetTimer(popup, kSharePopoverTimerId, 15, nullptr);
@@ -12172,6 +12175,7 @@ void showSharePopover(BrowserState* browser)
     SetWindowPos(popup, HWND_TOPMOST, left, top - MulDiv(5, dpi, 96),
         width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(popup, nullptr, FALSE);
+    UpdateWindow(popup);
     logDiagnostic(L"SHARE_POPOVER_OPEN hwnd="
         + std::to_wstring(static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(popup)))
         + L" timer=" + (animationTimer ? L"1" : L"0")
@@ -12213,10 +12217,8 @@ LRESULT CALLBACK sharePopoverProcedure(HWND window, UINT message, WPARAM wParam,
                 const ULONGLONG elapsed = GetTickCount64() - state->openedAt;
                 const float t = std::clamp(static_cast<float>(elapsed) / 145.0f, 0.0f, 1.0f);
                 const float eased = t * t * (3.0f - 2.0f * t);
-                const BYTE alpha = static_cast<BYTE>(std::clamp(eased * 255.0f, 0.0f, 255.0f));
                 const int dpi = state->browser ? windowDpi(state->browser->window) : 96;
                 const int lift = static_cast<int>(MulDiv(5, dpi, 96) * (1.0f - eased) + 0.5f);
-                SetLayeredWindowAttributes(window, 0, alpha, LWA_ALPHA);
                 SetWindowPos(window, HWND_TOPMOST,
                     state->targetRect.left, state->targetRect.top - lift,
                     state->targetRect.right - state->targetRect.left,
@@ -13366,7 +13368,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 } else {
                     capturedTab->thumbnailCaptureNeeded = true;
                     if (state->active() == capturedTab) {
-                        if (capturedTab->thumbnailCaptureFailures < 8) {
+                        if (capturedTab->thumbnailCaptureFailures < 16) {
                             ++capturedTab->thumbnailCaptureFailures;
                             state->scheduleTabThumbnailCapture(capturedTab, 240);
                         }
