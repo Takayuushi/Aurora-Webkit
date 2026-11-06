@@ -69,10 +69,20 @@ if ($remaining.Count -gt 0) {
 
   # Capture Ninja's dependency explanations rather than assuming every remaining
   # action is still caused by a version-pinned MSVC/SDK header.
-  $explain = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
-  if ($LASTEXITCODE -ne 0) {
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Ninja writes dependency explanations to stderr. Windows PowerShell 5.1
+    # promotes native stderr to NativeCommandError when ErrorActionPreference=Stop.
+    # Temporarily continue so the diagnostic output is captured without aborting.
+    $ErrorActionPreference = "Continue"
+    $explain = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
+    $explainExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($explainExitCode -ne 0) {
     Write-Host ($explain -join [Environment]::NewLine)
-    throw "Ninja explanation pass failed while diagnosing remaining WebKit compile actions."
+    throw "Ninja explanation pass failed while diagnosing remaining WebKit compile actions (exit $explainExitCode)."
   }
   Write-Host "Ninja dependency explanations for the remaining compile plan:"
   $explain | Where-Object {
