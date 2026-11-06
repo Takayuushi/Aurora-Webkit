@@ -196,7 +196,7 @@ jobs:
             $fingerprint = [System.BitConverter]::ToString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source))).Replace("-", "").ToLowerInvariant().Substring(0,20)
           } finally { $hash.Dispose() }
           Write-Host "WebKit compiler fingerprint: $fingerprint (MSVC $($msvc.Name), clang $clangVersion, SDK $($sdk.Name))"
-          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)msvc_version=$($msvc.Name)$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)sdk_version=$($sdk.Name)$([Environment]::NewLine)cmake_version=$cmakeVersion$([Environment]::NewLine)ninja_version=$ninjaVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)sdk_version=$($sdk.Name)$([Environment]::NewLine)cmake_version=$cmakeVersion$([Environment]::NewLine)ninja_version=$ninjaVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
       # The key changes only when the engine, compiler toolchain, or CMake graph changes.
       # Fallback restore lets the last good engine be migrated without throwing it away.
@@ -535,19 +535,6 @@ jobs:
           } else {
             Write-Host "Cached compiler or CMake graph differs; allowing CMake to regenerate."
           }
-
-      - name: Reconcile version-pinned toolchain headers in saved WebKit cache
-        if: steps.build_mode.outputs.rebuild_webkit != 'true' && steps.cache-webkit-src.outputs.cache-matched-key != ''
-        env:
-          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
-          CURRENT_MSVC_VERSION: ${{ steps.build-fingerprint.outputs.msvc_version }}
-          CURRENT_SDK_VERSION: ${{ steps.build-fingerprint.outputs.sdk_version }}
-        shell: powershell
-        run: |
-          $script = Join-Path $env:GITHUB_WORKSPACE "scripts\repair-webkit-cache-headers.ps1"
-          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw "WebKit cache timestamp helper missing: $script" }
-          & $script
-          if ($LASTEXITCODE -ne 0) { throw "WebKit cache header reconciliation failed with exit code $LASTEXITCODE." }
 
       - name: Guard against implicit WebKit rebuilds
         if: steps.build_mode.outputs.rebuild_webkit != 'true'
