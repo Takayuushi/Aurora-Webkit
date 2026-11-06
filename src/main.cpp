@@ -2978,6 +2978,16 @@ struct BrowserState {
             + L" progress=" + std::to_wstring(sidebarProgress()));
         positionOverlayWindows();
         refreshSidebarZOrder();
+
+        // The sidebar is a separate popup, so the parent may not receive the
+        // first pointer-move after it opens. Seed hover from the real cursor and
+        // keep the sync timer alive while the drawer is visible.
+        POINT cursor { -1, -1 };
+        if (GetCursorPos(&cursor) && ScreenToClient(window, &cursor))
+            updateToolbarHover(cursor);
+        else
+            updateToolbarHover(POINT { -1, -1 });
+
         const RECT buttonRect = sidebarButtonRect();
         InvalidateRect(window, &buttonRect, FALSE);
     }
@@ -2997,6 +3007,20 @@ struct BrowserState {
         } else {
             InflateRect(&dirty, scaleForDpi(window, 2), scaleForDpi(window, 2));
             InvalidateRect(window, &dirty, FALSE);
+        }
+    }
+
+    void invalidateToolbarHoverRect(const RECT& rect)
+    {
+        if (!window || rect.right <= rect.left || rect.bottom <= rect.top)
+            return;
+        InvalidateRect(window, &rect, FALSE);
+        // A normal invalidation can remain queued while the owned sidebar
+        // popup is active. These are tiny chrome-only regions, so present them
+        // immediately instead of waiting for an unrelated window repaint.
+        if (sidebarOpen && !sidebarAnimating) {
+            RedrawWindow(window, &rect, nullptr,
+                RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
         }
     }
 
@@ -3049,13 +3073,11 @@ struct BrowserState {
 
             if (previousHovered >= 0) {
                 const RECT previousRect = rightToolbarButtonRect(previousHovered);
-                if (previousRect.right > previousRect.left && previousRect.bottom > previousRect.top)
-                    InvalidateRect(window, &previousRect, FALSE);
+                invalidateToolbarHoverRect(previousRect);
             }
             if (nextHovered >= 0) {
                 const RECT nextRect = rightToolbarButtonRect(nextHovered);
-                if (nextRect.right > nextRect.left && nextRect.bottom > nextRect.top)
-                    InvalidateRect(window, &nextRect, FALSE);
+                invalidateToolbarHoverRect(nextRect);
             }
         }
 
@@ -3207,7 +3229,8 @@ struct BrowserState {
         // Keep tracking only while a parent-painted control has a hover state.
         // This catches movement into the WebKit child HWND, where the parent no
         // longer receives WM_MOUSEMOVE and therefore cannot clear hover itself.
-        const bool needsHoverSync = hoveredToolbarButton >= 0
+        const bool needsHoverSync = sidebarOpen || sidebarAnimating
+            || hoveredToolbarButton >= 0
             || hoveredLeftControl >= 0
             || hoveredNavigationButton >= 0
             || hoveredSidebarRow >= 0
@@ -6244,6 +6267,13 @@ search.addEventListener('keydown',e=>{
             && IsWindowVisible(tabBarOverlayWindow)) {
             updateTabBarOverlayRegion(GetClientWidth(window), tabsBarHeight());
             InvalidateRect(tabBarOverlayWindow, nullptr, FALSE);
+            // Tab capsules are rendered by a separate owned popup. When the
+            // sidebar is open, do not leave its updated tab count waiting in the
+            // deferred paint queue behind the drawer's animation/composition.
+            if (sidebarOpen && !sidebarAnimating) {
+                RedrawWindow(tabBarOverlayWindow, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
+            }
         } else {
             InvalidateRect(window, nullptr, FALSE);
             positionOverlayWindows(false);
