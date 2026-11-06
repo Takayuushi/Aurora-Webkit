@@ -40,9 +40,9 @@ foreach ($entry in $compile) {
   $objects += (Get-Item -LiteralPath $objectPath).LastWriteTimeUtc
 }
 $oldestObject = ($objects | Sort-Object | Select-Object -First 1)
-$targetTime = $oldestObject.AddSeconds(-2)
+$targetTime = $oldestObject.AddMinutes(-5)
 Write-Host "Ninja currently plans $($compile.Count) WebKit object compile actions."
-Write-Host "Normalizing only the exact fingerprint-matched MSVC/SDK include roots to before the oldest affected cached object: $($targetTime.ToString('o'))"
+Write-Host "Normalizing only the exact fingerprint-matched MSVC/SDK include roots to five minutes before the oldest affected cached object: $($targetTime.ToString('o'))"
 
 $changed = 0
 $scanned = 0
