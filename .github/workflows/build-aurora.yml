@@ -665,38 +665,83 @@ jobs:
               throw "The saved WebKit cache is incomplete. Refusing to rebuild WebKit implicitly."
             }
 
-            # Ninja stores the output timestamp alongside each MSVC dependency
-            # record in .ninja_deps. If an extracted/cached object is newer than
-            # that recorded timestamp, Ninja discards its dependency list and marks
-            # it dirty. Read the exact per-object timestamp from Ninja itself; never
-            # move an object into the future or invent a replacement timestamp.
+            # Ninja rejects an MSVC dependency record when its object output is
+            # newer than the timestamp stored in .ninja_deps. Read the exact time
+            # recorded for each cached object instead of touching outputs blindly.
             $depsByPath = @{}
             $depsBatchSize = 48
             for ($offset = 0; $offset -lt $plannedObjectPaths.Count; $offset += $depsBatchSize) {
               $batch = @($plannedObjectPaths | Select-Object -Skip $offset -First $depsBatchSize)
               $depsReport = @(& $ninja -C $buildDir -f $manifestName -t deps @batch 2>&1)
               if ($LASTEXITCODE -ne 0) {
-                Write-Host ($depsReport -join "`n")
+                Write-Host ($depsReport -join [Environment]::NewLine)
                 throw "Could not read Ninja dependency timestamps for cached WebKit objects. No WebKit compilation was started."
               }
 
               foreach ($reportLine in $depsReport) {
                 $line = $reportLine.ToString().Trim()
-                if ($line -match '^(?<path>.+): #deps (?<count>\d+), deps mtime (?<mtime>\d+) \((?<state>STALE|VALID)\)
+                if ($line -match '^(?<path>.+): #deps (?<count>\d+), deps mtime (?<mtime>\d+) \((?<state>STALE|VALID)\)$') {
+                  $key = $Matches["path"].Replace('/', [char]92).ToLowerInvariant()
+                  $depsByPath[$key] = [pscustomobject]@{
+                    Mtime = [long]$Matches["mtime"]
+                    State = $Matches["state"]
+                  }
+                }
+              }
+            }
+
+            $missingDepsRecords = @($plannedObjectPaths | Where-Object {
+              $key = $_.Replace('/', [char]92).ToLowerInvariant()
+              -not $depsByPath.ContainsKey($key)
+            })
+            if ($missingDepsRecords.Count -gt 0) {
+              Write-Host "Cached objects without a readable Ninja dependency record:"
+              $missingDepsRecords | Select-Object -First 20 | ForEach-Object { Write-Host $_ }
+              throw "Cannot safely reconcile cached WebKit objects without their stored dependency timestamps. No WebKit compilation was started."
+            }
+
+            $repairedObjectCount = 0
+            # Ninja's Windows TimeStamp is FILETIME ticks with this fixed epoch
+            # offset removed. Add the offset back to recover the exact NTFS time.
+            $ninjaFileTimeOffset = [long]126227704000000000
+            foreach ($relativeObjectPath in $plannedObjectPaths) {
+              $key = $relativeObjectPath.Replace('/', [char]92).ToLowerInvariant()
+              $dependencyRecord = $depsByPath[$key]
+              if ($dependencyRecord.State -ne "STALE") {
+                continue
+              }
+
+              $fileTimeTicks = [long]$dependencyRecord.Mtime + $ninjaFileTimeOffset
+              $recordedOutputTime = [DateTime]::FromFileTimeUtc($fileTimeTicks)
+              $objectPath = Join-Path $buildDir $relativeObjectPath
+              [System.IO.File]::SetLastWriteTimeUtc($objectPath, $recordedOutputTime)
+              $repairedObjectCount++
+            }
+            Write-Host "Restored $repairedObjectCount WebKit object timestamps to their exact .ninja_deps records; no object contents were changed."
+
+            # The object timestamps now match the dependency records. Update only
+            # .ninja_log, then prove the WebKit compile plan is empty before building Aurora.
+            $restat = @(& $ninja -C $buildDir -f $manifestName -t restat 2>&1)
             if ($LASTEXITCODE -ne 0) {
-              Write-Host ($plan -join "`n")
-              throw "Could not re-check the incremental build after cache timestamp reconciliation. No WebKit compilation was started."
+              Write-Host ($restat -join [Environment]::NewLine)
+              throw "Could not synchronize Ninja's build log after timestamp repair. No WebKit compilation was started."
+            }
+
+            $plan = @(& $ninja -C $buildDir -f $manifestName -n Aurora 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ($plan -join [Environment]::NewLine)
+              throw "Could not re-check the incremental build after dependency timestamp repair. No WebKit compilation was started."
             }
             $webkitCompileLines = @($plan | Where-Object {
               $_.ToString() -match '^\s*\[\d+/\d+\]\s+Building\s+(?:C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](?:WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
             })
             if ($webkitCompileLines.Count -gt 0) {
-              Write-Host "WebKit compile actions remain after timestamp reconciliation:"
+              Write-Host "WebKit compile actions remain after dependency timestamp repair:"
               $webkitCompileLines | Select-Object -First 12 | ForEach-Object { Write-Host $_.ToString() }
               Write-Host "Ninja's explanation for the remaining stale targets:"
               $explain = @(& $ninja -C $buildDir -f $manifestName -d explain -n Aurora 2>&1)
               $explain | Select-Object -First 40 | ForEach-Object { Write-Host $_.ToString() }
-              throw "The saved WebKit graph requires more than timestamp reconciliation. Refusing an implicit WebKit rebuild."
+              throw "The saved WebKit graph still requires compilation after dependency timestamp repair. Refusing an implicit WebKit rebuild."
             }
           }
 
