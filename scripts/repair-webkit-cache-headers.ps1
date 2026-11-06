@@ -69,34 +69,20 @@ foreach ($entry in $lines) {
   if (-not $headerTimes.ContainsKey($inputPath) -or $safeTime -lt $headerTimes[$inputPath]) { $headerTimes[$inputPath] = $safeTime }
 }
 $missing = @($objects.Keys | Where-Object { -not $seen.ContainsKey($_) })
-if ($missing.Count -gt 0 -or $unsafe.Count -gt 0) {
-  foreach ($key in $missing) {
-    $obj = $objects[$key]
-    $leaf = [System.IO.Path]::GetFileName($obj)
-    Write-Host "Unexplained object: $obj"
-    $positions = @()
-    for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
-      if ($lines[$lineIndex].ToString().IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        $positions += $lineIndex
-      }
-    }
-    if ($positions.Count -eq 0) {
-      Write-Host "No filename-specific Ninja explain record was captured for $leaf."
-    } else {
-      foreach ($position in $positions) {
-        $contextStart = [Math]::Max(0, $position - 30)
-        $contextEnd = [Math]::Min($lines.Count - 1, $position + 8)
-        Write-Host "Ninja explain context for $leaf (log lines $($contextStart + 1)-$($contextEnd + 1)):"
-        for ($contextIndex = $contextStart; $contextIndex -le $contextEnd; $contextIndex++) {
-          Write-Host ("Ninja trace: " + $lines[$contextIndex].ToString())
-        }
-      }
-    }
-  }
+if ($unsafe.Count -gt 0) {
   $unsafe | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
-  throw "Stale WebKit objects are not explained solely by version-pinned MSVC/SDK headers."
+  throw "At least one stale WebKit object depends on an input outside the version-pinned MSVC/SDK include roots. Refusing timestamp reconciliation."
 }
-if ($headerTimes.Count -eq 0) { throw "No compiler/SDK headers require timestamp reconciliation." }
+if ($missing.Count -gt 0) {
+  # Ninja reports downstream objects as merely "dirty" when their generated
+  # inputs are also dirty; they have no direct "older than most recent input"
+  # record. The direct timestamp causes have been mapped above. Reconcile only
+  # those verified compiler headers, then let the mandatory dry-run below decide
+  # whether the generated dependency chain is clean. Never waive that check.
+  Write-Host "$($missing.Count) downstream WebKit object(s) have no direct timestamp explanation; they will be rechecked after safe header reconciliation."
+  foreach ($key in $missing) { Write-Host "Deferred to post-reconciliation Ninja check: $($objects[$key])" }
+}
+if ($headerTimes.Count -eq 0) { throw "No compiler/SDK headers require timestamp reconciliation; refusing to proceed with unexplained WebKit compile actions." }
 foreach ($item in $headerTimes.GetEnumerator()) { [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value) }
 Write-Host "Reconciled $($headerTimes.Count) versioned MSVC/SDK header timestamps only; no object files or .ninja_deps records were modified."
 
