@@ -667,74 +667,94 @@ jobs:
               throw "The saved WebKit cache is incomplete. Refusing to rebuild WebKit implicitly."
             }
 
-            # A hosted-runner image refresh can reinstall the same side-by-side MSVC
-            # and Windows SDK versions with newer filesystem timestamps. Ninja then
-            # considers cached objects stale even though the cache's versioned toolchain
-            # fingerprint is unchanged. Normalize only those version-pinned header-file
-            # timestamps; never touch cached object files or dependency records.
+            # Hosted Windows images can reinstall the same versioned compiler headers
+            # with fresh timestamps. Normalize only these version-pinned inputs; never
+            # alter cached object files or .ninja_deps records.
             if ($env:AURORA_CACHE_INCREMENTAL_COMPATIBLE -ne "true") {
-              throw "Saved WebKit cache is not an exact toolchain/CMake match. Refusing toolchain timestamp normalization or an implicit WebKit rebuild."
+              throw "Cached toolchain/CMake metadata does not match. Refusing timestamp normalization."
             }
-
-            $actualWebKitSha = (git -C $env:WEBKIT_DIR rev-parse HEAD).Trim()
-            if ($actualWebKitSha -ne $env:WEBKIT_SHA) {
-              throw "WebKit source SHA changed during cache validation. Refusing to reuse cached objects."
-            }
-            if ([string]::IsNullOrWhiteSpace($env:CURRENT_MSVC_VERSION)
-                -or [string]::IsNullOrWhiteSpace($env:CURRENT_SDK_VERSION)) {
-              throw "The exact MSVC/Windows SDK versions were not exported by the compiler fingerprint step."
-            }
-
             $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
             $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
             $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if ($LASTEXITCODE -ne 0 -or -not $vsInstall) {
-              throw "Could not resolve Visual Studio while validating cached compiler headers."
-            }
-            $msvcToolsetRoot = Join-Path $vsInstall ("VC\Tools\MSVC\" + $env:CURRENT_MSVC_VERSION)
-            $msvcIncludeRoot = Join-Path $msvcToolsetRoot "include"
-            $msvcAtlmfcIncludeRoot = Join-Path $msvcToolsetRoot "atlmfc\include"
-            $sdkIncludeRoot = Join-Path (Join-Path $programFilesX86 "Windows Kits\10\Include") $env:CURRENT_SDK_VERSION
-            foreach ($requiredRoot in @($msvcIncludeRoot, $sdkIncludeRoot)) {
-              if (-not (Test-Path -LiteralPath $requiredRoot -PathType Container)) {
-                throw "Version-pinned toolchain include directory is missing: $requiredRoot"
-              }
+            if ($LASTEXITCODE -ne 0 -or -not $vsInstall) { throw "Could not resolve the current MSVC installation." }
+            $msvcRoot = Join-Path $vsInstall ("VC\Tools\MSVC\" + $env:CURRENT_MSVC_VERSION)
+            $roots = @(
+              (Join-Path $msvcRoot "include"),
+              (Join-Path $msvcRoot "atlmfc\include"),
+              (Join-Path (Join-Path $programFilesX86 "Windows Kits\10\Include") $env:CURRENT_SDK_VERSION)
+            )
+            foreach ($root in $roots) {
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Toolchain include path is missing: $root" }
             }
 
-            $plannedObjectLookup = @{}
-            foreach ($relativeObjectPath in $plannedObjectPaths) {
-              $plannedObjectLookup[$relativeObjectPath.Replace('/', [char]92).ToLowerInvariant()] = $true
-            }
+            $outFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain.out"
+            $errFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain.err"
+            Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+            $args = '-C "' + $buildDir + '" -f "' + $manifestName + '" -d explain -n Aurora'
+            $proc = Start-Process -FilePath $ninja -ArgumentList $args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+            if ($proc.ExitCode -ne 0) { throw "Ninja could not explain stale cached WebKit objects." }
 
-            # Capture Ninja's full diagnostic stream through files. PowerShell 5.1
-            # otherwise promotes native stderr diagnostics into NativeCommandError.
-            $explainOutPath = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain.out"
-            $explainErrPath = Join-Path $env:RUNNER_TEMP "aurora-ninja-explain.err"
-            Remove-Item -LiteralPath $explainOutPath, $explainErrPath -Force -ErrorAction SilentlyContinue
-            $explainArgs = '-C "' + $buildDir + '" -f "' + $manifestName + '" -d explain -n Aurora'
-            $explainProcess = Start-Process -FilePath $ninja -ArgumentList $explainArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $explainOutPath -RedirectStandardError $explainErrPath
-            if ($explainProcess.ExitCode -ne 0) {
-              if (Test-Path -LiteralPath $explainErrPath) {
-                Get-Content -LiteralPath $explainErrPath | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
-              }
-              throw "Ninja could not explain the stale cached WebKit outputs. No compilation was started."
-            }
-
-            $explainLines = @()
-            if (Test-Path -LiteralPath $explainOutPath) { $explainLines += @(Get-Content -LiteralPath $explainOutPath) }
-            if (Test-Path -LiteralPath $explainErrPath) { $explainLines += @(Get-Content -LiteralPath $explainErrPath) }
-
-            $ninjaFileTimeOffset = [long]126227704000000000
-            $explainedObjectLookup = @{}
-            $toolchainHeaderTimes = @{}
-            $unsafeDependencyReasons = @()
-            foreach ($explainEntry in $explainLines) {
-              $line = $explainEntry.ToString().Trim()
+            $planned = @{}
+            foreach ($object in $plannedObjectPaths) { $planned[$object.Replace('/', [char]92).ToLowerInvariant()] = $true }
+            $seen = @{}
+            $headerTimes = @{}
+            $unsafe = @()
+            $lines = @()
+            if (Test-Path -LiteralPath $outFile) { $lines += @(Get-Content -LiteralPath $outFile) }
+            if (Test-Path -LiteralPath $errFile) { $lines += @(Get-Content -LiteralPath $errFile) }
+            foreach ($entry in $lines) {
+              $line = $entry.ToString().Trim()
               $marker = $line.IndexOf("ninja explain: ", [StringComparison]::OrdinalIgnoreCase)
-              if ($marker -ge 0) {
-                $line = $line.Substring($marker + "ninja explain: ".Length)
+              if ($marker -ge 0) { $line = $line.Substring($marker + "ninja explain: ".Length) }
+              if ($line -notmatch '^output (?<output>.+) older than most recent input (?<input>.+) \((?<outTime>\d+) vs (?<inTime>\d+)\)$') { continue }
+              $object = $Matches["output"].Trim().Replace('/', [char]92)
+              $key = $object.ToLowerInvariant()
+              if (-not $planned.ContainsKey($key)) { continue }
+              $input = [System.IO.Path]::GetFullPath($Matches["input"].Trim())
+              $seen[$key] = $true
+              $allowed = $false
+              foreach ($root in $roots) {
+                $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd([char]92) + [char]92
+                if ($input.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $allowed = $true; break }
               }
-              if ($line -notmatch '^output (?<output>.+) older than most recent input (?<input>.+) \((?<outputTime>\d+) vs (?<inputTime>\d+)\)
+              if (-not $allowed -or -not (Test-Path -LiteralPath $input -PathType Leaf)) {
+                $unsafe += "$object <= $input"
+                continue
+              }
+              $objectFile = Join-Path $buildDir $object
+              if (-not (Test-Path -LiteralPath $objectFile -PathType Leaf)) { $unsafe += "$object (cached object missing)"; continue }
+              $safeTime = [System.IO.File]::GetLastWriteTimeUtc($objectFile).AddSeconds(-1)
+              if (-not $headerTimes.ContainsKey($input) -or $safeTime -lt $headerTimes[$input]) { $headerTimes[$input] = $safeTime }
+            }
+
+            $unexplained = @($plannedObjectPaths | Where-Object { -not $seen.ContainsKey($_.Replace('/', [char]92).ToLowerInvariant()) })
+            if ($unexplained.Count -gt 0) {
+              Write-Host "WebKit objects without a version-pinned header explanation:"
+              $unexplained | Select-Object -First 16 | ForEach-Object { Write-Host $_ }
+              throw "Stale WebKit objects are not explained solely by version-pinned compiler/SDK headers."
+            }
+            if ($unsafe.Count -gt 0) {
+              Write-Host "Refusing to normalize non-toolchain or missing inputs:"
+              $unsafe | Select-Object -First 16 | ForEach-Object { Write-Host $_ }
+              throw "Ninja reports stale source or non-toolchain dependencies. No implicit WebKit rebuild will be started."
+            }
+            if ($headerTimes.Count -eq 0) { throw "No version-pinned toolchain header timestamps were available to normalize." }
+
+            foreach ($item in $headerTimes.GetEnumerator()) {
+              [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value)
+            }
+            Write-Host "Normalized $($headerTimes.Count) version-pinned MSVC/Windows SDK header timestamps; no object files or dependency records were modified."
+
+            $plan = @(& $ninja -C $buildDir -f $manifestName -n Aurora 2>&1)
+            if ($LASTEXITCODE -ne 0) { Write-Host ($plan -join [Environment]::NewLine); throw "Ninja could not re-check the build after header timestamp normalization." }
+            $webkitCompileLines = @($plan | Where-Object {
+              $_.ToString() -match '^\s*\[\d+/\d+\]\s+Building\s+(?:C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](?:WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
+            })
+            if ($webkitCompileLines.Count -gt 0) {
+              Write-Host "WebKit compile actions remain after version-pinned header normalization:"
+              $webkitCompileLines | Select-Object -First 12 | ForEach-Object { Write-Host $_.ToString() }
+              throw "The cached WebKit graph still requires compilation. Refusing an implicit rebuild."
+            }
           }
 
           Write-Host "Incremental preflight passed: no WebCore, JavaScriptCore, WTF, or WebKit objects need recompilation."
