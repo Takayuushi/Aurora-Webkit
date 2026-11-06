@@ -82,7 +82,127 @@ for ($pass = 1; $pass -le $maxPasses; $pass++) {
   $headerTimes = @{}
   $unsafe = @()
   $matched = 0
-  $explainPattern = '^(?:recorded mtime of )?output?\s*(?<output>.+) older than most recent input (?<input>.+) \((?<outputTicks>\d+) vs (?<inputTicks>\d+)\)
+  $explainPattern = '^(?:recorded mtime of |output )(?<output>.+) older than most recent input (?<input>.+) \((?<outputTicks>\d+) vs (?<inputTicks>\d+)\)\)
+
+  foreach ($entry in $lines) {
+    $line = $entry.ToString().Trim()
+    $markerIndex = $line.IndexOf("ninja explain: ", [StringComparison]::OrdinalIgnoreCase)
+    if ($markerIndex -ge 0) { $line = $line.Substring($markerIndex + 15) }
+    if ($line -notmatch $explainPattern) { continue }
+
+    $object = $Matches["output"].Trim().Replace('/', [char]92)
+    if (-not $objects.ContainsKey($object.ToLowerInvariant())) { continue }
+    $matched++
+
+    $inputPath = [System.IO.Path]::GetFullPath($Matches["input"].Trim())
+    $allowed = $false
+    foreach ($root in $allowedRoots) {
+      $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd([char]92) + [char]92
+      if ($inputPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $allowed = $true
+        break
+      }
+    }
+    if (-not $allowed -or -not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
+      $unsafe += "$object <= $inputPath"
+      continue
+    }
+
+    $safeFileTime = [long]$Matches["outputTicks"] + $ninjaFileTimeOffset - $oneSecond
+    $safeTime = [DateTime]::FromFileTimeUtc($safeFileTime)
+    if (-not $headerTimes.ContainsKey($inputPath) -or $safeTime -lt $headerTimes[$inputPath]) {
+      $headerTimes[$inputPath] = $safeTime
+    }
+  }
+
+  if ($unsafe.Count -gt 0) {
+    $unsafe | Select-Object -First 20 | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
+    throw "Ninja reports stale WebKit objects with dependencies outside the version-pinned MSVC/SDK include roots. Refusing timestamp changes."
+  }
+  if ($headerTimes.Count -eq 0) {
+    Write-Host "Ninja planned $($compile.Count) WebKit object compile actions but exposed no safe, directly explainable toolchain-header dependency on pass $pass."
+    $lines | Select-Object -First 40 | ForEach-Object { Write-Host $_.ToString() }
+    throw "No safe toolchain-header timestamp correction is available."
+  }
+
+  Write-Host "Pass ${pass}: mapped $matched direct object/header cause(s) to $($headerTimes.Count) unique version-pinned header(s)."
+  foreach ($item in $headerTimes.GetEnumerator()) {
+    $before = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+    [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value)
+    $after = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+    Write-Host "Header timestamp: $($item.Key)"
+    Write-Host "  before UTC: $($before.ToString('o'))"
+    Write-Host "  target UTC: $($item.Value.ToString('o'))"
+    Write-Host "  after UTC:  $($after.ToString('o'))"
+    if ($after -gt $item.Value.AddMilliseconds(250)) {
+      throw "Header timestamp update did not persist: $($item.Key)"
+    }
+  }
+  Write-Host "Pass $pass completed without modifying object files or .ninja_deps records."
+}
+
+throw "Ninja still reports WebKit compile actions after $maxPasses safe toolchain-header timestamp repair passes. Refusing implicit rebuild."
+
+
+  foreach ($entry in $lines) {
+    $line = $entry.ToString().Trim()
+    $markerIndex = $line.IndexOf("ninja explain: ", [StringComparison]::OrdinalIgnoreCase)
+    if ($markerIndex -ge 0) { $line = $line.Substring($markerIndex + 15) }
+    if ($line -notmatch $explainPattern) { continue }
+
+    $object = $Matches["output"].Trim().Replace('/', [char]92)
+    if (-not $objects.ContainsKey($object.ToLowerInvariant())) { continue }
+    $matched++
+
+    $inputPath = [System.IO.Path]::GetFullPath($Matches["input"].Trim())
+    $allowed = $false
+    foreach ($root in $allowedRoots) {
+      $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd([char]92) + [char]92
+      if ($inputPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $allowed = $true
+        break
+      }
+    }
+    if (-not $allowed -or -not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
+      $unsafe += "$object <= $inputPath"
+      continue
+    }
+
+    $safeFileTime = [long]$Matches["outputTicks"] + $ninjaFileTimeOffset - $oneSecond
+    $safeTime = [DateTime]::FromFileTimeUtc($safeFileTime)
+    if (-not $headerTimes.ContainsKey($inputPath) -or $safeTime -lt $headerTimes[$inputPath]) {
+      $headerTimes[$inputPath] = $safeTime
+    }
+  }
+
+  if ($unsafe.Count -gt 0) {
+    $unsafe | Select-Object -First 20 | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
+    throw "Ninja reports stale WebKit objects with dependencies outside the version-pinned MSVC/SDK include roots. Refusing timestamp changes."
+  }
+  if ($headerTimes.Count -eq 0) {
+    Write-Host "Ninja planned $($compile.Count) WebKit object compile actions but exposed no safe, directly explainable toolchain-header dependency on pass $pass."
+    $lines | Select-Object -First 40 | ForEach-Object { Write-Host $_.ToString() }
+    throw "No safe toolchain-header timestamp correction is available."
+  }
+
+  Write-Host "Pass ${pass}: mapped $matched direct object/header cause(s) to $($headerTimes.Count) unique version-pinned header(s)."
+  foreach ($item in $headerTimes.GetEnumerator()) {
+    $before = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+    [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value)
+    $after = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+    Write-Host "Header timestamp: $($item.Key)"
+    Write-Host "  before UTC: $($before.ToString('o'))"
+    Write-Host "  target UTC: $($item.Value.ToString('o'))"
+    Write-Host "  after UTC:  $($after.ToString('o'))"
+    if ($after -gt $item.Value.AddMilliseconds(250)) {
+      throw "Header timestamp update did not persist: $($item.Key)"
+    }
+  }
+  Write-Host "Pass $pass completed without modifying object files or .ninja_deps records."
+}
+
+throw "Ninja still reports WebKit compile actions after $maxPasses safe toolchain-header timestamp repair passes. Refusing implicit rebuild."
+\)
 
   foreach ($entry in $lines) {
     $line = $entry.ToString().Trim()
