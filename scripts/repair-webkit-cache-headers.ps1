@@ -66,6 +66,19 @@ $remaining = @($verify | Where-Object { $_.ToString() -match $compilePattern })
 if ($remaining.Count -gt 0) {
   Write-Host "Remaining WebKit compile actions after toolchain-header normalization:"
   $remaining | Select-Object -First 30 | ForEach-Object { Write-Host $_.ToString() }
+
+  # Capture Ninja's dependency explanations rather than assuming every remaining
+  # action is still caused by a version-pinned MSVC/SDK header.
+  $explain = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ($explain -join [Environment]::NewLine)
+    throw "Ninja explanation pass failed while diagnosing remaining WebKit compile actions."
+  }
+  Write-Host "Ninja dependency explanations for the remaining compile plan:"
+  $explain | Where-Object {
+    $_.ToString() -match '(?i)explain:|older than most recent input|recorded mtime|missing|no known input'
+  } | Select-Object -First 160 | ForEach-Object { Write-Host $_.ToString() }
+
   throw "Ninja still reports $($remaining.Count) WebKit source compile actions after version-pinned header timestamp normalization. Refusing implicit rebuild."
 }
 Write-Host "Ninja dry-run passed: no WebKit source compile actions remain. Proceeding with Aurora-only incremental build."
