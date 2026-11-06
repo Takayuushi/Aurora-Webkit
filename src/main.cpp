@@ -4001,6 +4001,11 @@ struct BrowserState {
             if (!PtInRect(&card, point))
                 continue;
             const RECT close = tabOverviewCloseRect(i);
+            logDiagnostic(L"OVERVIEW_CARD_POINTER_DOWN index=" + std::to_wstring(i)
+                + L" close=" + (PtInRect(&close, point) ? L"1" : L"0")
+                + L" x=" + std::to_wstring(point.x)
+                + L" y=" + std::to_wstring(point.y)
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0"));
             if (PtInRect(&close, point))
                 closeTab(i);
             else
@@ -6417,7 +6422,8 @@ search.addEventListener('keydown',e=>{
             invalidateTabStrip();
 
             if (auto* selected = active()) {
-                if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
+                if (selected->thumbnailCaptureNeeded || !selected->previewBitmap
+                    || selected->previewURL != selected->activeUrl)
                     scheduleTabThumbnailCapture(selected, 420);
             }
             // Keep focus on the browser while the overview snapshot animates away.
@@ -6591,7 +6597,8 @@ search.addEventListener('keydown',e=>{
         // Restore the single native overlay stack without changing any WebView's
         // WinCairo in-window state.
         positionOverlayWindows(true);
-        if (tab->thumbnailCaptureNeeded || tab->previewURL != tab->activeUrl)
+        if (tab->thumbnailCaptureNeeded || !tab->previewBitmap
+            || tab->previewURL != tab->activeUrl)
             scheduleTabThumbnailCapture(tab, 420);
         RECT appliedViewRect { };
         const bool appliedRectValid = selectedView && GetClientRect(selectedView, &appliedViewRect);
@@ -7458,23 +7465,20 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (tabOverviewVisible) {
-            if (sidebarOpen) {
-                // The overview state can outlive its visible surface while the
-                // sidebar popup is being raised. A toolbar click in that state
-                // must restore the overview above the selected WebKit host rather
-                // than taking the normal "close the active overview" path.
-                logDiagnostic(std::wstring(L"OVERVIEW_REPRESENT_REQUEST sidebar_open=1")
-                    + L" window_valid=" + (tabOverviewWindow && IsWindow(tabOverviewWindow) ? L"1" : L"0")
-                    + L" window_visible=" + (tabOverviewWindow && IsWindowVisible(tabOverviewWindow) ? L"1" : L"0"));
+            const bool overviewSurfaceVisible = tabOverviewWindow
+                && IsWindow(tabOverviewWindow) && IsWindowVisible(tabOverviewWindow);
+            if (sidebarOpen && !overviewSurfaceVisible) {
+                // Restore only when the sidebar has actually displaced/hidden the
+                // overview surface. If it is already visible, the toolbar remains
+                // a true toggle and must close the overview on the next click.
+                logDiagnostic(L"OVERVIEW_REPRESENT_REQUEST sidebar_open=1 window_visible=0");
                 positionOverlayWindows(true);
-                if (tabOverviewWindow && IsWindow(tabOverviewWindow)) {
-                    // Queue the repaint; RDW_UPDATENOW forced the full card grid
-                    // to render synchronously on the browser input/animation thread.
+                if (tabOverviewWindow && IsWindow(tabOverviewWindow))
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
-                }
                 return;
             }
-            logDiagnostic(L"OVERVIEW_TOGGLE_CLOSE_REQUEST sidebar_open=0");
+            logDiagnostic(std::wstring(L"OVERVIEW_TOGGLE_CLOSE_REQUEST sidebar_open=")
+                + (sidebarOpen ? L"1" : L"0"));
             activateTab(activeTab);
             return;
         }
@@ -13367,6 +13371,19 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     }
                 } else {
                     capturedTab->thumbnailCaptureNeeded = true;
+                    const bool blankSurface = result->captureSummary.find(L"blank=1")
+                        != std::wstring::npos;
+                    if (stillCurrent && blankSurface
+                        && capturedTab->thumbnailCaptureFailures == 0
+                        && !state->windowSurfaceRecoveryActive) {
+                        capturedTab->thumbnailCaptureFailures = 1;
+                        logTabDiagnostic(L"ACTIVE_PAGE_BLANK_SURFACE_RECOVERY",
+                            WKViewGetPage(capturedTab->view.get()), capturedTab,
+                            L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                                + L" sidebar_open=" + (state->sidebarOpen ? L"1" : L"0"));
+                        state->beginWindowSurfaceRecovery(false, true, false,
+                            state->sidebarOpen || state->tabOverviewClosing);
+                    }
                     if (state->active() == capturedTab) {
                         if (capturedTab->thumbnailCaptureFailures < 16) {
                             ++capturedTab->thumbnailCaptureFailures;
@@ -13926,6 +13943,10 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         } else if (overlay == state->tabOverviewWindow && !state->tabOverviewClosing) {
             ClientToScreen(overlay, &point);
             ScreenToClient(state->window, &point);
+            logDiagnostic(L"OVERVIEW_MOUSE_DOWN x=" + std::to_wstring(point.x)
+                + L" y=" + std::to_wstring(point.y)
+                + L" visible=" + (state->tabOverviewVisible ? L"1" : L"0")
+                + L" sidebar_open=" + (state->sidebarOpen ? L"1" : L"0"));
             state->handleTabOverviewHit(point);
         }
         SetFocus(state->window);
