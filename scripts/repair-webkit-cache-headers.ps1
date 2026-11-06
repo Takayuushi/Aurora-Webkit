@@ -52,7 +52,73 @@ foreach ($entry in $lines) {
   $line = $entry.ToString().Trim()
   $marker = $line.IndexOf("ninja explain: ", [StringComparison]::OrdinalIgnoreCase)
   if ($marker -ge 0) { $line = $line.Substring($marker + 15) }
-  if ($line -notmatch '^output (?<output>.+) older than most recent input (?<input>.+) \(\d+ vs \d+\)$') { continue }
+  if ($line -notmatch '^output (?<output>.+) older than most recent input (?<input>.+) \((?<outputTicks>\d+) vs (?<inputTicks>\d+)\)
+  $obj = $Matches["output"].Trim().Replace('/', [char]92)
+  $key = $obj.ToLowerInvariant()
+  if (-not $objects.ContainsKey($key)) { continue }
+  $seen[$key] = $true
+  $inputPath = [System.IO.Path]::GetFullPath($Matches["input"].Trim())
+  $allowed = $false
+  foreach ($root in $allowedRoots) {
+    $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd([char]92) + [char]92
+    if ($inputPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $allowed = $true; break }
+  }
+  if (-not $allowed -or -not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { $unsafe += "$obj <= $inputPath"; continue }
+  # Use Ninja's own FILETIME-derived output timestamp, not a separately sampled
+  # filesystem timestamp. This keeps the normalization in the same clock domain
+  # as Ninja's "older than" comparison.
+  $ninjaFileTimeOffset = [long]126227704000000000
+  $oneSecond = [long]10000000
+  $safeTime = [DateTime]::FromFileTimeUtc(([long]$Matches["outputTicks"] + $ninjaFileTimeOffset - $oneSecond))
+  if (-not $headerTimes.ContainsKey($inputPath) -or $safeTime -lt $headerTimes[$inputPath]) { $headerTimes[$inputPath] = $safeTime }
+}
+$missing = @($objects.Keys | Where-Object { -not $seen.ContainsKey($_) })
+if ($unsafe.Count -gt 0) {
+  $unsafe | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
+  throw "At least one stale WebKit object depends on an input outside the version-pinned MSVC/SDK include roots. Refusing timestamp reconciliation."
+}
+if ($missing.Count -gt 0) {
+  # Ninja reports downstream objects as merely "dirty" when their generated
+  # inputs are also dirty; they have no direct "older than most recent input"
+  # record. The direct timestamp causes have been mapped above. Reconcile only
+  # those verified compiler headers, then let the mandatory dry-run below decide
+  # whether the generated dependency chain is clean. Never waive that check.
+  Write-Host "$($missing.Count) downstream WebKit object(s) have no direct timestamp explanation; they will be rechecked after safe header reconciliation."
+  foreach ($key in $missing) { Write-Host "Deferred to post-reconciliation Ninja check: $($objects[$key])" }
+}
+if ($headerTimes.Count -eq 0) { throw "No compiler/SDK headers require timestamp reconciliation; refusing to proceed with unexplained WebKit compile actions." }
+foreach ($item in $headerTimes.GetEnumerator()) {
+  $before = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+  [System.IO.File]::SetLastWriteTimeUtc($item.Key, $item.Value)
+  $after = [System.IO.File]::GetLastWriteTimeUtc($item.Key)
+  Write-Host "Header timestamp: $($item.Key)"
+  Write-Host "  before UTC: $($before.ToString('o'))"
+  Write-Host "  target UTC: $($item.Value.ToString('o'))"
+  Write-Host "  after UTC:  $($after.ToString('o'))"
+  if ($after -gt $item.Value.AddMilliseconds(250)) { throw "Header timestamp update did not persist: $($item.Key)" }
+}
+Write-Host "Reconciled $($headerTimes.Count) versioned MSVC/SDK header timestamps only; no object files or .ninja_deps records were modified."
+
+$verify = @(& $ninja -C $buildDir -f $manifest -n Aurora 2>&1)
+if ($LASTEXITCODE -ne 0) { throw "Ninja verification failed after header reconciliation." }
+$remaining = @($verify | Where-Object {
+  $_.ToString() -match '^\s*\[\d+/\d+\]\s+Building\s+(?:C|CXX|ASM|OBJCXX)\s+object\s+Source[\\/](?:WebCore|JavaScriptCore|WTF|WebKit)[\\/]'
+})
+if ($remaining.Count -gt 0) {
+  Write-Host "WebKit compile actions remain after timestamp reconciliation:"
+  $remaining | Select-Object -First 16 | ForEach-Object { Write-Host $_ }
+  $outFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-post-explain.out"
+  $errFile = Join-Path $env:RUNNER_TEMP "aurora-ninja-post-explain.err"
+  Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+  $args = '-C "' + $buildDir + '" -f "' + $manifest + '" -d explain -n Aurora'
+  $proc = Start-Process -FilePath $ninja -ArgumentList $args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+  $details = @()
+  if (Test-Path $outFile) { $details += @(Get-Content -LiteralPath $outFile) }
+  if (Test-Path $errFile) { $details += @(Get-Content -LiteralPath $errFile) }
+  $details | Where-Object { $_.ToString() -match '(?i)(older than most recent input| is dirty$)' } | Select-Object -First 40 | ForEach-Object { Write-Host $_.ToString() }
+  throw "WebKit compile actions remain. Refusing implicit rebuild."
+}
+) { continue }
   $obj = $Matches["output"].Trim().Replace('/', [char]92)
   $key = $obj.ToLowerInvariant()
   if (-not $objects.ContainsKey($key)) { continue }
