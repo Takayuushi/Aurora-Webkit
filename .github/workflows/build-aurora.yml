@@ -665,12 +665,24 @@ jobs:
               throw "The saved WebKit cache is incomplete. Refusing to rebuild WebKit implicitly."
             }
 
-            $reconciledTimestamp = [DateTime]::UtcNow.AddSeconds(2)
+            # Touching thousands of cached object files can take several seconds on
+            # a hosted Windows runner. Keep the repaired timestamps safely ahead of
+            # the entire reconciliation pass so Ninja does not immediately mark them
+            # stale again while the loop is still running.
+            $reconciledTimestamp = [DateTime]::UtcNow.AddMinutes(10)
             foreach ($relativeObjectPath in $plannedObjectPaths) {
               $objectPath = Join-Path $buildDir $relativeObjectPath
               [System.IO.File]::SetLastWriteTimeUtc($objectPath, $reconciledTimestamp)
             }
             Write-Host "Refreshed timestamps for $($plannedObjectPaths.Count) existing WebKit objects from the exact pinned cache; no object contents were changed."
+
+            # Keep Ninja's build log in sync with the intentionally refreshed
+            # object timestamps before checking the incremental plan again.
+            $restat = @(& $ninja -C $buildDir -t restat 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ($restat -join "`n")
+              throw "Could not reconcile Ninja's recorded output timestamps. No WebKit compilation was started."
+            }
 
             $plan = @(& $ninja -C $buildDir -f $manifestName -n Aurora 2>&1)
             if ($LASTEXITCODE -ne 0) {
@@ -683,6 +695,9 @@ jobs:
             if ($webkitCompileLines.Count -gt 0) {
               Write-Host "WebKit compile actions remain after timestamp reconciliation:"
               $webkitCompileLines | Select-Object -First 12 | ForEach-Object { Write-Host $_.ToString() }
+              Write-Host "Ninja's explanation for the remaining stale targets:"
+              $explain = @(& $ninja -C $buildDir -f $manifestName -d explain -n Aurora 2>&1)
+              $explain | Select-Object -First 40 | ForEach-Object { Write-Host $_.ToString() }
               throw "The saved WebKit graph requires more than timestamp reconciliation. Refusing an implicit WebKit rebuild."
             }
           }
