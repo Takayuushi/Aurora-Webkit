@@ -39,7 +39,7 @@ foreach ($entry in $compile) {
 
 $ninjaFileTimeOffset = [long]126227704000000000
 $oneSecond = [long]10000000
-$maxPasses = 16
+$maxPasses = 128
 
 for ($pass = 1; $pass -le $maxPasses; $pass++) {
   $plan = @(& $ninja -C $buildDir -f $manifest -n Aurora 2>&1)
