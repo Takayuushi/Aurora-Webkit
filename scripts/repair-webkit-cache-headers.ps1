@@ -64,8 +64,19 @@ for ($pass = 1; $pass -le $maxPasses; $pass++) {
   # Capture Ninja diagnostics through PowerShell's native stderr merge. Start-Process
   # redirected output inconsistently on the hosted Windows runner and left the
   # reconciliation loop without the dependency explanations needed to proceed.
-  $explainOutput = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
-  if ($LASTEXITCODE -ne 0) { throw "Ninja explain failed with exit code $LASTEXITCODE during pass $pass." }
+  # Windows PowerShell 5.1 promotes native stderr records to terminating errors
+  # when ErrorActionPreference is Stop. Ninja writes its -d explain diagnostics
+  # to stderr by design, so temporarily allow those records into the merged
+  # output stream while still checking Ninja's real process exit code.
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $explainOutput = @(& $ninja -C $buildDir -f $manifest -d explain -n Aurora 2>&1)
+    $explainExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($explainExitCode -ne 0) { throw "Ninja explain failed with exit code $explainExitCode during pass $pass." }
   $lines = @($explainOutput | ForEach-Object { $_.ToString() })
 
   $headerTimes = @{}
