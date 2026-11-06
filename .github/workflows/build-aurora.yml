@@ -196,7 +196,7 @@ jobs:
             $fingerprint = [System.BitConverter]::ToString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source))).Replace("-", "").ToLowerInvariant().Substring(0,20)
           } finally { $hash.Dispose() }
           Write-Host "WebKit compiler fingerprint: $fingerprint (MSVC $($msvc.Name), clang $clangVersion, SDK $($sdk.Name))"
-          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)sdk_version=$($sdk.Name)$([Environment]::NewLine)cmake_version=$cmakeVersion$([Environment]::NewLine)ninja_version=$ninjaVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "fingerprint=$fingerprint$([Environment]::NewLine)msvc_version=$($msvc.Name)$([Environment]::NewLine)clang_version=$clangVersion$([Environment]::NewLine)sdk_version=$($sdk.Name)$([Environment]::NewLine)cmake_version=$cmakeVersion$([Environment]::NewLine)ninja_version=$ninjaVersion$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
 
       # The key changes only when the engine, compiler toolchain, or CMake graph changes.
       # Fallback restore lets the last good engine be migrated without throwing it away.
