@@ -539,9 +539,9 @@ jobs:
       - name: Reconcile version-pinned toolchain headers before cache guard
         if: steps.build_mode.outputs.rebuild_webkit != 'true' && steps.cache-webkit-src.outputs.cache-matched-key != ''
         env:
-          WEBKIT_SHA: \${{ steps.webkit-sha.outputs.sha }}
-          CURRENT_MSVC_VERSION: \${{ steps.build-fingerprint.outputs.msvc_version }}
-          CURRENT_SDK_VERSION: \${{ steps.build-fingerprint.outputs.sdk_version }}
+          WEBKIT_SHA: ${{ steps.webkit-sha.outputs.sha }}
+          CURRENT_MSVC_VERSION: ${{ steps.build-fingerprint.outputs.msvc_version }}
+          CURRENT_SDK_VERSION: ${{ steps.build-fingerprint.outputs.sdk_version }}
         shell: powershell
         run: |
           $script = Join-Path $env:GITHUB_WORKSPACE "scripts\repair-webkit-cache-headers.ps1"
