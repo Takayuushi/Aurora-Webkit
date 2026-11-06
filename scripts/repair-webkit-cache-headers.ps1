@@ -70,7 +70,19 @@ foreach ($entry in $lines) {
 }
 $missing = @($objects.Keys | Where-Object { -not $seen.ContainsKey($_) })
 if ($missing.Count -gt 0 -or $unsafe.Count -gt 0) {
-  $missing | ForEach-Object { Write-Host "Unexplained object: $_" }
+  foreach ($key in $missing) {
+    $obj = $objects[$key]
+    $leaf = [System.IO.Path]::GetFileName($obj)
+    Write-Host "Unexplained object: $obj"
+    $related = @($lines | Where-Object {
+      $_.ToString().IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+    if ($related.Count -eq 0) {
+      Write-Host "No filename-specific Ninja explain record was captured for $leaf."
+    } else {
+      $related | ForEach-Object { Write-Host ("Ninja explain detail: " + $_.ToString()) }
+    }
+  }
   $unsafe | ForEach-Object { Write-Host "Non-toolchain dependency: $_" }
   throw "Stale WebKit objects are not explained solely by version-pinned MSVC/SDK headers."
 }
