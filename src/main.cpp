@@ -3196,10 +3196,30 @@ struct BrowserState {
             }
         }
         if (nextOverviewTab != hoveredOverviewTab || nextOverviewNewTab != hoveredOverviewNewTab) {
+            const int previousOverviewTab = hoveredOverviewTab;
+            const bool previousOverviewNewTab = hoveredOverviewNewTab;
             hoveredOverviewTab = nextOverviewTab;
             hoveredOverviewNewTab = nextOverviewNewTab;
-            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
-                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
+
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
+                const auto invalidateOverviewRegion = [this](RECT dirty) {
+                    if (!tabOverviewWindow || !IsWindowVisible(tabOverviewWindow))
+                        return;
+                    MapWindowPoints(window, tabOverviewWindow,
+                        reinterpret_cast<POINT*>(&dirty), 2);
+                    InflateRect(&dirty, scaleForDpi(window, 2), scaleForDpi(window, 2));
+                    InvalidateRect(tabOverviewWindow, &dirty, FALSE);
+                };
+
+                if (previousOverviewTab >= 0 && previousOverviewTab != nextOverviewTab)
+                    invalidateOverviewRegion(tabOverviewCardRect(
+                        static_cast<size_t>(previousOverviewTab)));
+                if (nextOverviewTab >= 0 && nextOverviewTab != previousOverviewTab)
+                    invalidateOverviewRegion(tabOverviewCardRect(
+                        static_cast<size_t>(nextOverviewTab)));
+                if (previousOverviewNewTab != nextOverviewNewTab)
+                    invalidateOverviewRegion(tabOverviewNewTabRect());
+            }
         }
 
         const bool mainChromeHoverChanged = previousToolbarHover != hoveredToolbarButton
@@ -13807,6 +13827,14 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         if (bufferDC && cachedBitmap) {
             HGDIOBJ oldBitmap = SelectObject(bufferDC, cachedBitmap);
             if (!reuseOverlayFrame) {
+                // The paint DC is clipped to PAINTSTRUCT::rcPaint. Apply the same
+                // clip to the cached back buffer so hovering one overview card does
+                // not redraw every card and the complete sidebar composition.
+                if (paint.rcPaint.right > paint.rcPaint.left
+                    && paint.rcPaint.bottom > paint.rcPaint.top) {
+                    IntersectClipRect(bufferDC, paint.rcPaint.left, paint.rcPaint.top,
+                        paint.rcPaint.right, paint.rcPaint.bottom);
+                }
                 RECT bufferRect { 0, 0, width, height };
                 const bool sidebarSurface = overlay == state->sidebarOverlayWindow;
                 const COLORREF backgroundColor = sidebarSurface
