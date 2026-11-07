@@ -3018,8 +3018,7 @@ struct BrowserState {
         // A normal invalidation can remain queued while the owned sidebar
         // popup is active. These are tiny chrome-only regions, so present them
         // immediately instead of waiting for an unrelated window repaint.
-        if (sidebarOpen && !sidebarAnimating
-            && !tabOverviewVisible && !tabOverviewAnimating && !tabOverviewClosing) {
+        if (sidebarOpen && !sidebarAnimating) {
             RedrawWindow(window, &rect, nullptr,
                 RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
         }
@@ -3196,30 +3195,10 @@ struct BrowserState {
             }
         }
         if (nextOverviewTab != hoveredOverviewTab || nextOverviewNewTab != hoveredOverviewNewTab) {
-            const int previousOverviewTab = hoveredOverviewTab;
-            const bool previousOverviewNewTab = hoveredOverviewNewTab;
             hoveredOverviewTab = nextOverviewTab;
             hoveredOverviewNewTab = nextOverviewNewTab;
-
-            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow)) {
-                const auto invalidateOverviewRegion = [this](RECT dirty) {
-                    if (!tabOverviewWindow || !IsWindowVisible(tabOverviewWindow))
-                        return;
-                    MapWindowPoints(window, tabOverviewWindow,
-                        reinterpret_cast<POINT*>(&dirty), 2);
-                    InflateRect(&dirty, scaleForDpi(window, 2), scaleForDpi(window, 2));
-                    InvalidateRect(tabOverviewWindow, &dirty, FALSE);
-                };
-
-                if (previousOverviewTab >= 0 && previousOverviewTab != nextOverviewTab)
-                    invalidateOverviewRegion(tabOverviewCardRect(
-                        static_cast<size_t>(previousOverviewTab)));
-                if (nextOverviewTab >= 0 && nextOverviewTab != previousOverviewTab)
-                    invalidateOverviewRegion(tabOverviewCardRect(
-                        static_cast<size_t>(nextOverviewTab)));
-                if (previousOverviewNewTab != nextOverviewNewTab)
-                    invalidateOverviewRegion(tabOverviewNewTabRect());
-            }
+            if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
+                InvalidateRect(tabOverviewWindow, nullptr, FALSE);
         }
 
         const bool mainChromeHoverChanged = previousToolbarHover != hoveredToolbarButton
@@ -4036,8 +4015,7 @@ struct BrowserState {
         return true;
     }
 
-    void drawTabOverviewTransitionSnapshot(HDC dc, const TabState& tab, const RECT& destination,
-        HDC cachedOverviewSource = nullptr) const
+    void drawTabOverviewTransitionSnapshot(HDC dc, const TabState& tab, const RECT& destination) const
     {
         if (destination.right <= destination.left || destination.bottom <= destination.top)
             return;
@@ -4062,32 +4040,6 @@ struct BrowserState {
                 SelectObject(previewDC, oldPreview);
                 DeleteDC(previewDC);
                 return;
-            }
-        }
-
-        // If this tab has no captured WebKit pixels yet, animate the exact preview
-        // rectangle already rendered in the overview card. This keeps the transition
-        // visually continuous for sites whose capture is delayed or unavailable.
-        if (cachedOverviewSource && cachedOverviewSource != dc && tabOverviewBitmap) {
-            const auto tabIt = std::find_if(tabs.begin(), tabs.end(),
-                [&tab](const std::unique_ptr<TabState>& candidate) {
-                    return candidate.get() == &tab;
-                });
-            if (tabIt != tabs.end()) {
-                const size_t index = static_cast<size_t>(std::distance(tabs.begin(), tabIt));
-                const RECT source = tabOverviewZoomCardRect(index);
-                const int sourceWidth = static_cast<int>(source.right - source.left);
-                const int sourceHeight = static_cast<int>(source.bottom - source.top);
-                if (sourceWidth > 0 && sourceHeight > 0) {
-                    SetStretchBltMode(dc, HALFTONE);
-                    SetBrushOrgEx(dc, 0, 0, nullptr);
-                    if (StretchBlt(dc, destination.left, destination.top,
-                            destination.right - destination.left,
-                            destination.bottom - destination.top,
-                            cachedOverviewSource, source.left, source.top,
-                            sourceWidth, sourceHeight, SRCCOPY))
-                        return;
-                }
             }
         }
 
@@ -4188,28 +4140,40 @@ struct BrowserState {
         };
     }
 
-    void drawTabOverviewClosingTransition(HDC dc, HDC cachedOverviewSource = nullptr)
+    void drawTabOverviewClosingTransition(HDC dc)
     {
         if (!tabOverviewClosing || tabOverviewClosingTab < 0
             || static_cast<size_t>(tabOverviewClosingTab) >= tabs.size())
             return;
         const TabState& tab = *tabs[static_cast<size_t>(tabOverviewClosingTab)];
         drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(
-            static_cast<size_t>(tabOverviewClosingTab)), cachedOverviewSource);
+            static_cast<size_t>(tabOverviewClosingTab)));
         if (tabOverviewClosingSettling)
             ++tabOverviewClosingSettleFramesRendered;
         else
             ++tabOverviewClosingFramesRendered;
     }
 
-    void drawTabOverviewOpeningTransition(HDC dc, HDC cachedOverviewSource = nullptr)
+    void drawTabOverviewOpeningTransition(HDC dc)
     {
         if (!tabOverviewAnimating || tabs.empty() || activeTab >= tabs.size())
             return;
 
         const TabState& tab = *tabs[activeTab];
-        drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(activeTab),
-            cachedOverviewSource);
+        const bool hasCapturedPreview = tab.previewBitmap
+            && tab.previewWidth > 0 && tab.previewHeight > 0
+            && tab.previewURL == tab.activeUrl;
+        const bool hasNativePreview = tab.internalPage == L"start"
+            || tab.internalPage == L"settings";
+        if (!hasCapturedPreview && !hasNativePreview) {
+            // Never zoom a fabricated skeleton into the full browser window. When
+            // a website has no real cached pixels, keep the overview grid visible
+            // while its cards show their small placeholders.
+            ++tabOverviewOpeningFramesRendered;
+            return;
+        }
+
+        drawTabOverviewTransitionSnapshot(dc, tab, tabOverviewZoomDestination(activeTab));
         ++tabOverviewOpeningFramesRendered;
     }
 
@@ -6409,14 +6373,14 @@ search.addEventListener('keydown',e=>{
         const bool hasNativeInternalSnapshot = overviewTarget
             && (overviewTarget->internalPage == L"start"
                 || overviewTarget->internalPage == L"settings");
-        const bool animateOverviewClose = switchingFromOverview;
+        const bool animateOverviewClose = switchingFromOverview
+            && (hasOverviewPreview || hasNativeInternalSnapshot);
         if (switchingFromOverview) {
             logDiagnostic(L"OVERVIEW_CLOSE_REQUEST target_index=" + std::to_wstring(index)
                 + L" active_url=" + safeDiagnosticUrl(overviewTarget->activeUrl)
                 + L" internal_page=" + overviewTarget->internalPage
                 + L" initial_pending=" + (overviewTarget->initialPageLoadPending ? L"1" : L"0")
                 + L" preview_valid=" + (hasOverviewPreview ? L"1" : L"0")
-                + L" native_snapshot=" + (hasNativeInternalSnapshot ? L"1" : L"0")
                 + L" animate_close=" + (animateOverviewClose ? L"1" : L"0")
                 + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
                 + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0"));
@@ -13294,7 +13258,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // Force the native WebView WM_PAINT now, on the UI thread, instead of
         // leaving only a queued invalid region that may wait for unrelated input.
         RedrawWindow(viewWindow, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
         logTabDiagnostic(L"ACTIVE_PAGE_PRESENT_REPAINT_COMPLETED",
             page, selected,
             L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
@@ -13827,14 +13791,6 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
         if (bufferDC && cachedBitmap) {
             HGDIOBJ oldBitmap = SelectObject(bufferDC, cachedBitmap);
             if (!reuseOverlayFrame) {
-                // The paint DC is clipped to PAINTSTRUCT::rcPaint. Apply the same
-                // clip to the cached back buffer so hovering one overview card does
-                // not redraw every card and the complete sidebar composition.
-                if (paint.rcPaint.right > paint.rcPaint.left
-                    && paint.rcPaint.bottom > paint.rcPaint.top) {
-                    IntersectClipRect(bufferDC, paint.rcPaint.left, paint.rcPaint.top,
-                        paint.rcPaint.right, paint.rcPaint.bottom);
-                }
                 RECT bufferRect { 0, 0, width, height };
                 const bool sidebarSurface = overlay == state->sidebarOverlayWindow;
                 const COLORREF backgroundColor = sidebarSurface
@@ -13881,9 +13837,9 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
                     HGDIOBJ oldFrame = SelectObject(frameDC, state->tabOverviewFrameBitmap);
                     if (BitBlt(frameDC, 0, 0, width, height, bufferDC, 0, 0, SRCCOPY)) {
                         if (state->tabOverviewClosing)
-                            state->drawTabOverviewClosingTransition(frameDC, bufferDC);
+                            state->drawTabOverviewClosingTransition(frameDC);
                         else
-                            state->drawTabOverviewOpeningTransition(frameDC, bufferDC);
+                            state->drawTabOverviewOpeningTransition(frameDC);
                         // Present the complete background+snapshot as one screen write.
                         frameComposited = BitBlt(dc, 0, 0, width, height,
                             frameDC, 0, 0, SRCCOPY) != FALSE;
