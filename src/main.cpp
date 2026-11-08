@@ -740,41 +740,72 @@ class DiagnosticLogger {
 public:
     DiagnosticLogger()
     {
+        std::vector<std::wstring> basePaths;
         wchar_t localAppData[32768] { };
-        DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
+        DWORD localLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
             static_cast<DWORD>(std::size(localAppData)));
-        if (!length || length >= std::size(localAppData)) {
-            PWSTR knownFolder = nullptr;
-            if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &knownFolder))
-                && knownFolder) {
-                rootPath_ = knownFolder;
-                CoTaskMemFree(knownFolder);
+        if (localLength && localLength < std::size(localAppData))
+            basePaths.emplace_back(localAppData, localLength);
+
+        PWSTR knownFolder = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &knownFolder))
+            && knownFolder) {
+            const std::wstring knownPath(knownFolder);
+            if (std::find(basePaths.begin(), basePaths.end(), knownPath) == basePaths.end())
+                basePaths.push_back(knownPath);
+            CoTaskMemFree(knownFolder);
+        }
+
+        wchar_t tempPath[32768] { };
+        const DWORD tempLength = GetTempPathW(static_cast<DWORD>(std::size(tempPath)), tempPath);
+        if (tempLength && tempLength < std::size(tempPath))
+            basePaths.emplace_back(tempPath, tempLength);
+
+        const auto tryInitializeAt = [this](std::wstring basePath) {
+            while (!basePath.empty()
+                && (basePath.back() == L'\\' || basePath.back() == L'/'))
+                basePath.pop_back();
+            if (basePath.empty())
+                return false;
+
+            const std::wstring directory = basePath + L"\\Aurora";
+            if (!CreateDirectoryW(directory.c_str(), nullptr)) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_ALREADY_EXISTS) {
+                    OutputDebugStringW((L"Aurora diagnostics: cannot create candidate directory. error="
+                        + std::to_wstring(error) + L"\n").c_str());
+                    return false;
+                }
             }
-        } else {
-            rootPath_.assign(localAppData, length);
-        }
 
-        if (rootPath_.empty()) {
-            OutputDebugStringW(L"Aurora diagnostics: Local AppData path is unavailable.\n");
+            const DWORD attributes = GetFileAttributesW(directory.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                OutputDebugStringW(L"Aurora diagnostics: candidate path is not a directory.\n");
+                return false;
+            }
+
+            rootPath_ = directory;
+            path_ = rootPath_ + L"\\diagnostics.log";
+            if (!appendDirect(L"LOGGER_SESSION_START path=" + path_)) {
+                OutputDebugStringW(L"Aurora diagnostics: candidate log file is not writable.\n");
+                rootPath_.clear();
+                path_.clear();
+                return false;
+            }
+            return true;
+        };
+
+        bool initialized = false;
+        for (const auto& basePath : basePaths) {
+            if (tryInitializeAt(basePath)) {
+                initialized = true;
+                break;
+            }
+        }
+        if (!initialized) {
+            OutputDebugStringW(L"Aurora diagnostics: no writable Local AppData or temporary log directory.\n");
             return;
         }
-
-        rootPath_ += L"\\Aurora";
-        if (!CreateDirectoryW(rootPath_.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-            const DWORD error = GetLastError();
-            OutputDebugStringW((L"Aurora diagnostics: cannot create data directory. error="
-                + std::to_wstring(error) + L"\n").c_str());
-            return;
-        }
-
-        const DWORD attributes = GetFileAttributesW(rootPath_.c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            OutputDebugStringW(L"Aurora diagnostics: data path is not a directory.\n");
-            return;
-        }
-
-        path_ = rootPath_ + L"\\diagnostics.log";
-        appendDirect(L"LOGGER_SESSION_START path=" + path_);
 
         worker_ = CreateThread(nullptr, 0, workerEntry, this, 0, nullptr);
         if (!worker_) {
@@ -855,24 +886,25 @@ private:
             != FALSE && written == utf8.size();
     }
 
-    void appendDirect(const std::wstring& message)
+    bool appendDirect(const std::wstring& message)
     {
         if (path_.empty())
-            return;
+            return false;
         HANDLE file = CreateFileW(path_.c_str(), FILE_APPEND_DATA,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) {
             const DWORD error = GetLastError();
             OutputDebugStringW((L"Aurora diagnostics: cannot open log file. error="
-                + std::to_wstring(error) + L"\n").c_str());
-            return;
+                + std::to_wstring(error) + L"\\n").c_str());
+            return false;
         }
         const bool written = writeLine(file, makeLine(message));
-        FlushFileBuffers(file);
+        const bool flushed = FlushFileBuffers(file) != FALSE;
         CloseHandle(file);
-        if (!written)
-            OutputDebugStringW(L"Aurora diagnostics: startup log write failed.\n");
+        if (!written || !flushed)
+            OutputDebugStringW(L"Aurora diagnostics: startup log write or flush failed.\\n");
+        return written && flushed;
     }
 
     static DWORD WINAPI workerEntry(LPVOID context)
@@ -3356,9 +3388,13 @@ struct BrowserState {
                 tabOverviewClosingSettleStart = now;
                 tabOverviewClosingSettleFramesRendered = 0;
                 if (!tabOverviewClosingWaitingForRepaint) {
+                    // Do not treat an unrequested repaint as ready. Arm a real
+                    // callback now and keep the overview covering the WebKit page.
                     tabOverviewClosingWaitingForRepaint = true;
-                    tabOverviewClosingRepaintReady = true;
-                    tabOverviewClosingRepaintReadyAt = now;
+                    tabOverviewClosingRepaintReady = false;
+                    tabOverviewClosingRepaintReadyAt = 0;
+                    requestActivePageRepaint(false, false, true, true);
+                    logDiagnostic(L"OVERVIEW_REPAINT_WAIT_RECOVERED missing_initial_request=1");
                 }
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
@@ -3367,21 +3403,23 @@ struct BrowserState {
                 // Require both WebKit's repaint-completion signal and several
                 // composed overlay frames after it. Keep a bounded fallback so a
                 // failed renderer callback cannot strand the browser in overview.
-                const ULONGLONG repaintWaitLimit = tabOverviewNoPreviewHandoff ? 1200 : 260;
+                const ULONGLONG repaintWaitLimit = 1200;
                 const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= repaintWaitLimit;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
-                const ULONGLONG postRepaintSettleMs = tabOverviewNoPreviewHandoff ? 420 : 32;
+                const ULONGLONG postRepaintSettleMs = tabOverviewNoPreviewHandoff ? 120 : 48;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
                     && now - tabOverviewClosingRepaintReadyAt < postRepaintSettleMs;
                 const bool settleStillActive = repaintPending || postRepaintSettle;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
+                    const bool pageRepaintReady = tabOverviewClosingRepaintReady;
                     logDiagnostic(L"OVERVIEW_CLOSE_COMPLETE frames="
                         + std::to_wstring(tabOverviewClosingFramesRendered)
                         + L" settle_frames=" + std::to_wstring(tabOverviewClosingSettleFramesRendered)
                         + L" elapsed_ms=" + std::to_wstring(now - tabOverviewClosingStart)
                         + L" repaint_timed_out=" + (repaintTimedOut ? L"1" : L"0")
+                        + L" page_repaint_ready=" + (pageRepaintReady ? L"1" : L"0")
                         + L" no_preview_handoff=" + (tabOverviewNoPreviewHandoff ? L"1" : L"0")
                         + L" active_index=" + std::to_wstring(activeTab));
                     tabOverviewClosing = false;
@@ -3404,14 +3442,17 @@ struct BrowserState {
                         if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             if (!IsWindowVisible(viewWindow))
                                 ShowWindow(viewWindow, SW_SHOWNA);
-                            RedrawWindow(viewWindow, nullptr, nullptr,
-                                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+                            const UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN
+                                | RDW_NOERASE | (pageRepaintReady ? RDW_UPDATENOW : 0);
+                            RedrawWindow(viewWindow, nullptr, nullptr, redrawFlags);
                         }
                     }
-                    // The page was deliberately kept covered during the zoom.
-                    // Present it as soon as the native overview popup is gone.
+                    // A successful callback already forced a native WebView paint
+                    // while the overview covered it. Only queue a second handoff
+                    // when the bounded callback wait expired.
                     SetFocus(window);
-                    queueActivePagePresentation(active(), L"overview-animation-finished");
+                    if (!pageRepaintReady)
+                        queueActivePagePresentation(active(), L"overview-repaint-timeout-fallback");
                     updateToolbarHover(POINT { -1, -1 });
                 }
             }
@@ -6375,6 +6416,7 @@ search.addEventListener('keydown',e=>{
                 || overviewTarget->internalPage == L"settings");
         const bool animateOverviewClose = switchingFromOverview
             && (hasOverviewPreview || hasNativeInternalSnapshot);
+        const bool holdOverviewForHandoff = switchingFromOverview && !animateOverviewClose;
         if (switchingFromOverview) {
             logDiagnostic(L"OVERVIEW_CLOSE_REQUEST target_index=" + std::to_wstring(index)
                 + L" active_url=" + safeDiagnosticUrl(overviewTarget->activeUrl)
@@ -6407,9 +6449,10 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            // Do not wait on a renderer callback while the overview popup is
-            // covering the selected page. The transition uses its cached snapshot.
-            tabOverviewClosingWaitingForRepaint = false;
+            // Keep the overview snapshot above WebKit until its real repaint
+            // callback is received. The cached page remains visible during handoff.
+            tabOverviewNoPreviewHandoff = false;
+            tabOverviewClosingWaitingForRepaint = true;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
 
@@ -6417,8 +6460,7 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
-            // Leave the renderer untouched during the native overview zoom.
-            // The selected view will receive a queued paint after the popup closes.
+            requestActivePageRepaint(false, false, true, true);
             invalidateTabStrip();
 
             if (auto* selected = active()) {
@@ -6437,19 +6479,19 @@ search.addEventListener('keydown',e=>{
         if (!animateOverviewClose) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
-            // A no-preview page cannot produce a fresh frame while the overview
-            // popup covers its accelerated surface. Close the popup directly,
-            // then repaint the selected WebKit child in the unobscured window.
-            tabOverviewClosing = false;
-            tabOverviewNoPreviewHandoff = false;
-            tabOverviewClosingTab = -1;
+            // A tab without cached pixels must not expose its accelerated surface
+            // immediately. Keep the complete overview above it while WebKit creates
+            // a fresh frame; the selected card remains at its grid position.
+            tabOverviewClosing = holdOverviewForHandoff;
+            tabOverviewNoPreviewHandoff = holdOverviewForHandoff;
+            tabOverviewClosingTab = holdOverviewForHandoff ? static_cast<int>(index) : -1;
             tabOverviewClosingSettling = false;
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewTransitionDuration = 0;
             tabOverviewZoomFrom = 0.0f;
             tabOverviewZoomTo = 0.0f;
-            tabOverviewClosingWaitingForRepaint = false;
+            tabOverviewClosingWaitingForRepaint = holdOverviewForHandoff;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewClosingFramesRendered = 0;
@@ -6571,9 +6613,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewZoomTo = 1.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
-            // Do not wait on a renderer callback while the overview popup is
-            // covering the selected page. The transition uses its cached snapshot.
-            tabOverviewClosingWaitingForRepaint = false;
+            // The overview remains above the live page until WebKit confirms
+            // the replacement frame has completed its repaint callback.
+            tabOverviewClosingWaitingForRepaint = true;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewAnimating = false;
@@ -6585,18 +6627,28 @@ search.addEventListener('keydown',e=>{
             // This replaces stale skeleton previews after a tab was selected mid-load.
             scheduleTabThumbnailCapture(tab, 420);
             startChromeAnimationTimer();
-        } else if (switchingFromOverview) {
-            // No cached preview exists. Do not keep the native popup over WebKit
-            // waiting for a renderer callback that may never arrive.
-            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_DIRECT_CLOSE",
+        } else if (holdOverviewForHandoff) {
+            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_HOLD_FOR_FRAME",
                 WKViewGetPage(tab->view.get()), tab,
                 L"selected_index=" + std::to_wstring(index)
                     + L" preview_url=" + safeDiagnosticUrl(tab->previewURL)
-                    + L" overview_hidden=1 repaint_after_focus=1");
+                    + L" overview_kept_visible=1");
         }
         // Restore the single native overlay stack without changing any WebView's
-        // WinCairo in-window state.
+        // WinCairo in-window state. When selecting from overview, request WebKit's
+        // repaint while the overview is still covering the accelerated surface.
         positionOverlayWindows(true);
+        if (switchingFromOverview && tabOverviewClosing
+            && tabOverviewClosingWaitingForRepaint) {
+            logTabDiagnostic(L"OVERVIEW_PAGE_REPAINT_REQUESTED",
+                WKViewGetPage(tab->view.get()), tab,
+                L"activation_generation=" + std::to_wstring(tabActivationGeneration)
+                    + L" preview_valid=" + (hasOverviewPreview ? L"1" : L"0")
+                    + L" no_preview_handoff=" + (holdOverviewForHandoff ? L"1" : L"0"));
+            requestActivePageRepaint(false, false, true, true);
+            if (holdOverviewForHandoff)
+                startChromeAnimationTimer();
+        }
         if (tab->thumbnailCaptureNeeded || !tab->previewBitmap
             || tab->previewURL != tab->activeUrl)
             scheduleTabThumbnailCapture(tab, 420);
@@ -6626,9 +6678,9 @@ search.addEventListener('keydown',e=>{
                     : L"error=" + std::to_wstring(GetLastError()));
         }
 
-        if (window && !animateOverviewClose && !tab->initialPageLoadPending)
-            queueActivePagePresentation(tab, switchingFromOverview
-                ? L"overview-no-preview-selection" : L"tab-activation");
+        if (window && !animateOverviewClose && !holdOverviewForHandoff
+            && !tab->initialPageLoadPending)
+            queueActivePagePresentation(tab, L"tab-activation");
 
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -13232,17 +13284,46 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             logDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED reason=stale_activation");
             return 0;
         }
-        if (state->tabOverviewVisible || state->tabOverviewAnimating || state->tabOverviewClosing) {
+        if (state->tabOverviewVisible || state->tabOverviewAnimating) {
             logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
                 WKViewGetPage(selected->view.get()), selected,
-                L"reason=overview_overlay_active");
+                L"reason=overview_opening_or_visible");
             return 0;
         }
 
         WKPageRef page = WKViewGetPage(selected->view.get());
         const double progress = page ? WKPageGetEstimatedProgress(page) : 0.0;
         HWND viewWindow = WKViewGetWindow(selected->view.get());
-        if (!viewWindow || !IsWindow(viewWindow) || progress < 1.0) {
+        if (!viewWindow || !IsWindow(viewWindow)) {
+            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
+                page, selected, L"reason=invalid_view");
+            return 0;
+        }
+        if (state->tabOverviewClosing && state->tabOverviewClosingWaitingForRepaint) {
+            if (!IsWindowVisible(viewWindow))
+                ShowWindow(viewWindow, SW_SHOWNA);
+            RedrawWindow(viewWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
+            state->tabOverviewClosingRepaintReady = true;
+            state->tabOverviewClosingRepaintReadyAt = GetTickCount64();
+            logTabDiagnostic(L"OVERVIEW_PAGE_REPAINT_READY",
+                page, selected,
+                L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
+                    + L" progress=" + std::to_wstring(progress)
+                    + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
+            if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
+                InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
+            state->startChromeAnimationTimer();
+            if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
+                state->scheduleTabThumbnailCapture(selected, 180);
+            return 0;
+        }
+        if (state->tabOverviewClosing) {
+            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
+                page, selected, L"reason=overview_closing_without_pending_handoff");
+            return 0;
+        }
+        if (progress < 1.0) {
             logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
                 page, selected,
                 L"reason=" + std::wstring(!viewWindow || !IsWindow(viewWindow)
@@ -13971,7 +14052,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=sidebar-toolbar-action-routing-v20");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=overview-frame-handoff-and-log-fallback-v21");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
