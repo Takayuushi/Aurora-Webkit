@@ -900,11 +900,15 @@ private:
             return false;
         }
         const bool written = writeLine(file, makeLine(message));
-        const bool flushed = FlushFileBuffers(file) != FALSE;
+        // FILE_APPEND_DATA is sufficient for WriteFile, but FlushFileBuffers
+        // may require broader GENERIC_WRITE access. Do not reject a writable
+        // log path solely because this best-effort flush is unavailable.
+        if (!FlushFileBuffers(file))
+            OutputDebugStringW(L"Aurora diagnostics: startup log flush was unavailable.\\n");
         CloseHandle(file);
-        if (!written || !flushed)
-            OutputDebugStringW(L"Aurora diagnostics: startup log write or flush failed.\\n");
-        return written && flushed;
+        if (!written)
+            OutputDebugStringW(L"Aurora diagnostics: startup log write failed.\\n");
+        return written;
     }
 
     static DWORD WINAPI workerEntry(LPVOID context)
