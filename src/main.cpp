@@ -278,6 +278,7 @@ std::wstring applicationDataDirectory();
 void requestFavicon(BrowserState*, const std::wstring&, bool forStartPage = false);
 
 int gLiveBrowserWindows = 0;
+std::atomic<unsigned> gThumbnailCaptureWorkersInFlight { 0 };
 bool openNewBrowserWindow(BrowserState*, bool privateMode = false);
 
 void didChangeIsLoading(const void*);
@@ -1638,6 +1639,8 @@ struct TabState {
     std::wstring previewURL;
     bool thumbnailCaptureNeeded { true };
     bool thumbnailCaptureInFlight { false };
+    ULONGLONG thumbnailCaptureStartTick { 0 };
+    unsigned long long thumbnailCaptureAttemptId { 0 };
     unsigned thumbnailCaptureFailures { 0 };
     bool initialPageLoadPending { false };
     bool initialPageShouldLoadHomepage { false };
@@ -1660,6 +1663,7 @@ struct ThumbnailCaptureLifetime {
 
 struct ThumbnailCaptureResult {
     ULONG_PTR tabIdentity { 0 };
+    unsigned long long attemptId { 0 };
     unsigned long long activationGeneration { 0 };
     std::wstring url;
     HBITMAP bitmap { nullptr };
@@ -3392,13 +3396,9 @@ struct BrowserState {
                 tabOverviewClosingSettleStart = now;
                 tabOverviewClosingSettleFramesRendered = 0;
                 if (!tabOverviewClosingWaitingForRepaint) {
-                    // Do not treat an unrequested repaint as ready. Arm a real
-                    // callback now and keep the overview covering the WebKit page.
                     tabOverviewClosingWaitingForRepaint = true;
-                    tabOverviewClosingRepaintReady = false;
-                    tabOverviewClosingRepaintReadyAt = 0;
-                    requestActivePageRepaint(false, false, true, true);
-                    logDiagnostic(L"OVERVIEW_REPAINT_WAIT_RECOVERED missing_initial_request=1");
+                    tabOverviewClosingRepaintReady = true;
+                    tabOverviewClosingRepaintReadyAt = now;
                 }
                 if (tabOverviewWindow && IsWindowVisible(tabOverviewWindow))
                     InvalidateRect(tabOverviewWindow, nullptr, FALSE);
@@ -3407,23 +3407,21 @@ struct BrowserState {
                 // Require both WebKit's repaint-completion signal and several
                 // composed overlay frames after it. Keep a bounded fallback so a
                 // failed renderer callback cannot strand the browser in overview.
-                const ULONGLONG repaintWaitLimit = 1200;
+                const ULONGLONG repaintWaitLimit = tabOverviewNoPreviewHandoff ? 1200 : 260;
                 const bool repaintTimedOut = now - tabOverviewClosingSettleStart >= repaintWaitLimit;
                 const bool repaintPending = !tabOverviewClosingRepaintReady && !repaintTimedOut;
-                const ULONGLONG postRepaintSettleMs = tabOverviewNoPreviewHandoff ? 120 : 48;
+                const ULONGLONG postRepaintSettleMs = tabOverviewNoPreviewHandoff ? 420 : 32;
                 const bool postRepaintSettle = tabOverviewClosingRepaintReady
                     && now - tabOverviewClosingRepaintReadyAt < postRepaintSettleMs;
                 const bool settleStillActive = repaintPending || postRepaintSettle;
                 if (settleStillActive) {
                     continueAnimation = true;
                 } else {
-                    const bool pageRepaintReady = tabOverviewClosingRepaintReady;
                     logDiagnostic(L"OVERVIEW_CLOSE_COMPLETE frames="
                         + std::to_wstring(tabOverviewClosingFramesRendered)
                         + L" settle_frames=" + std::to_wstring(tabOverviewClosingSettleFramesRendered)
                         + L" elapsed_ms=" + std::to_wstring(now - tabOverviewClosingStart)
                         + L" repaint_timed_out=" + (repaintTimedOut ? L"1" : L"0")
-                        + L" page_repaint_ready=" + (pageRepaintReady ? L"1" : L"0")
                         + L" no_preview_handoff=" + (tabOverviewNoPreviewHandoff ? L"1" : L"0")
                         + L" active_index=" + std::to_wstring(activeTab));
                     tabOverviewClosing = false;
@@ -3446,17 +3444,14 @@ struct BrowserState {
                         if (HWND viewWindow = WKViewGetWindow(selected->view.get())) {
                             if (!IsWindowVisible(viewWindow))
                                 ShowWindow(viewWindow, SW_SHOWNA);
-                            const UINT redrawFlags = RDW_INVALIDATE | RDW_ALLCHILDREN
-                                | RDW_NOERASE | (pageRepaintReady ? RDW_UPDATENOW : 0);
-                            RedrawWindow(viewWindow, nullptr, nullptr, redrawFlags);
+                            RedrawWindow(viewWindow, nullptr, nullptr,
+                                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
                         }
                     }
-                    // A successful callback already forced a native WebView paint
-                    // while the overview covered it. Only queue a second handoff
-                    // when the bounded callback wait expired.
+                    // The page was deliberately kept covered during the zoom.
+                    // Present it as soon as the native overview popup is gone.
                     SetFocus(window);
-                    if (!pageRepaintReady)
-                        queueActivePagePresentation(active(), L"overview-repaint-timeout-fallback");
+                    queueActivePagePresentation(active(), L"overview-animation-finished");
                     updateToolbarHover(POINT { -1, -1 });
                 }
             }
@@ -3605,12 +3600,28 @@ struct BrowserState {
         const unsigned long long activationGeneration = tabActivationGeneration;
         const std::wstring capturedURL = tab.activeUrl;
         const auto lifetime = thumbnailCaptureLifetime;
+        unsigned workerCount = gThumbnailCaptureWorkersInFlight.load();
+        while (workerCount < 2
+            && !gThumbnailCaptureWorkersInFlight.compare_exchange_weak(workerCount, workerCount + 1)) { }
+        if (workerCount >= 2) {
+            logTabDiagnostic(L"THUMBNAIL_CAPTURE_DEFERRED", page, &tab,
+                L"reason=worker_limit worker_count=" + std::to_wstring(workerCount));
+            return false;
+        }
+        tab.thumbnailCaptureAttemptId++;
+        const unsigned long long attemptId = tab.thumbnailCaptureAttemptId;
         tab.thumbnailCaptureInFlight = true;
+        tab.thumbnailCaptureStartTick = GetTickCount64();
 
-        std::thread([ownerWindow, viewWindow, tabIdentity, activationGeneration, capturedURL,
+        try {
+        std::thread([ownerWindow, viewWindow, tabIdentity, activationGeneration, attemptId, capturedURL,
             lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
+                struct WorkerCounterRelease {
+                    ~WorkerCounterRelease() { gThumbnailCaptureWorkersInFlight.fetch_sub(1); }
+                } workerCounterRelease;
                 auto result = std::make_unique<ThumbnailCaptureResult>();
                 result->tabIdentity = tabIdentity;
+                result->attemptId = attemptId;
                 result->activationGeneration = activationGeneration;
                 result->url = capturedURL;
 
@@ -3738,6 +3749,17 @@ struct BrowserState {
                         reinterpret_cast<LPARAM>(rawResult)))
                     delete rawResult;
         }).detach();
+        } catch (...) {
+            gThumbnailCaptureWorkersInFlight.fetch_sub(1);
+            tab.thumbnailCaptureInFlight = false;
+            tab.thumbnailCaptureStartTick = 0;
+            logTabDiagnostic(L"THUMBNAIL_CAPTURE_WORKER_START_FAILED", page, &tab,
+                L"attempt_id=" + std::to_wstring(attemptId));
+            return false;
+        }
+        logTabDiagnostic(L"THUMBNAIL_CAPTURE_WORKER_STARTED", page, &tab,
+            L"attempt_id=" + std::to_wstring(attemptId)
+                + L" worker_count=" + std::to_wstring(gThumbnailCaptureWorkersInFlight.load()));
         return true;
     }
 
@@ -3745,14 +3767,21 @@ struct BrowserState {
     {
         if (!window || !tab)
             return;
-        if (tab->thumbnailCaptureInFlight)
-            return;
         pendingThumbnailCaptureTab = tab;
         tab->thumbnailCaptureNeeded = true;
-        pendingThumbnailCaptureAttempts = 0;
+        if (pendingThumbnailCaptureURL != tab->activeUrl)
+            pendingThumbnailCaptureAttempts = 0;
         pendingThumbnailCaptureURL = tab->activeUrl;
-        SetTimer(window, kDeferredThumbnailCaptureTimerId,
-            std::max<UINT>(1, delayMilliseconds), nullptr);
+        const ULONGLONG age = tab->thumbnailCaptureInFlight && tab->thumbnailCaptureStartTick
+            ? GetTickCount64() - tab->thumbnailCaptureStartTick : 0;
+        const UINT delay = tab->thumbnailCaptureInFlight && age < 2200
+            ? static_cast<UINT>(std::max<ULONGLONG>(100, 2200 - age))
+            : std::max<UINT>(1, delayMilliseconds);
+        SetTimer(window, kDeferredThumbnailCaptureTimerId, delay, nullptr);
+        logTabDiagnostic(L"THUMBNAIL_CAPTURE_SCHEDULED", WKViewGetPage(tab->view.get()), tab,
+            L"delay_ms=" + std::to_wstring(delay)
+                + L" in_flight=" + (tab->thumbnailCaptureInFlight ? L"1" : L"0")
+                + L" worker_count=" + std::to_wstring(gThumbnailCaptureWorkersInFlight.load()));
     }
 
     void clearPendingThumbnailCapture()
@@ -3770,6 +3799,8 @@ struct BrowserState {
         if (!window || !pending)
             return;
         if (active() != pending) {
+            logTabDiagnostic(L"THUMBNAIL_CAPTURE_CANCELLED", WKViewGetPage(pending->view.get()),
+                pending, L"reason=tab_no_longer_active");
             clearPendingThumbnailCapture();
             return;
         }
@@ -3782,17 +3813,41 @@ struct BrowserState {
         const auto retryCapture = [this]() {
             ++pendingThumbnailCaptureAttempts;
             if (pendingThumbnailCaptureAttempts >= 24) {
+                logDiagnostic(L"THUMBNAIL_CAPTURE_RETRY_LIMIT attempts="
+                    + std::to_wstring(pendingThumbnailCaptureAttempts));
                 clearPendingThumbnailCapture();
                 return;
             }
-            // Load completion can precede the final GPU presentation. Retry rather
-            // than leaving a failed capture as a permanent skeleton preview.
             SetTimer(window, kDeferredThumbnailCaptureTimerId,
                 pendingThumbnailCaptureAttempts < 3 ? 100 : 180, nullptr);
         };
 
+        if (pending->thumbnailCaptureInFlight) {
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG age = pending->thumbnailCaptureStartTick
+                ? now - pending->thumbnailCaptureStartTick : 0;
+            if (age < 2200) {
+                SetTimer(window, kDeferredThumbnailCaptureTimerId,
+                    static_cast<UINT>(std::max<ULONGLONG>(100, 2200 - age)), nullptr);
+                return;
+            }
+            logTabDiagnostic(L"THUMBNAIL_CAPTURE_WORKER_TIMEOUT",
+                WKViewGetPage(pending->view.get()), pending,
+                L"age_ms=" + std::to_wstring(age)
+                    + L" attempt_id=" + std::to_wstring(pending->thumbnailCaptureAttemptId)
+                    + L" worker_count=" + std::to_wstring(gThumbnailCaptureWorkersInFlight.load()));
+            // Invalidate the timed-out worker's result. It may still return later,
+            // but it cannot clear or overwrite a newer capture attempt.
+            pending->thumbnailCaptureInFlight = false;
+            pending->thumbnailCaptureStartTick = 0;
+            ++pending->thumbnailCaptureAttemptId;
+            pending->thumbnailCaptureNeeded = true;
+            ++pending->thumbnailCaptureFailures;
+        }
+
         auto page = WKViewGetPage(pending->view.get());
-        if (!page || WKPageGetEstimatedProgress(page) < 1.0) {
+        const double progress = page ? WKPageGetEstimatedProgress(page) : 0.0;
+        if (!page || progress < 1.0) {
             retryCapture();
             return;
         }
@@ -3807,11 +3862,24 @@ struct BrowserState {
             || (downloadsPopoverWindow && IsWindowVisible(downloadsPopoverWindow))
             || (sharePopoverWindow && IsWindowVisible(sharePopoverWindow));
         if (overlayBusy) {
+            logTabDiagnostic(L"THUMBNAIL_CAPTURE_DEFERRED", page, pending,
+                L"reason=overlay_busy overview=" + (tabOverviewVisible ? L"1" : L"0")
+                    + L" closing=" + (tabOverviewClosing ? L"1" : L"0")
+                    + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0"));
             SetTimer(window, kDeferredThumbnailCaptureTimerId, 120, nullptr);
             return;
         }
 
+        logTabDiagnostic(L"THUMBNAIL_CAPTURE_ATTEMPT", page, pending,
+            L"attempt=" + std::to_wstring(pendingThumbnailCaptureAttempts + 1)
+                + L" progress=" + std::to_wstring(progress));
         if (captureTabThumbnail(*pending)) {
+            if (pending->thumbnailCaptureInFlight) {
+                // Keep the pending record alive while the worker is running. This
+                // same timer is also the watchdog if GDI/driver capture stops returning.
+                SetTimer(window, kDeferredThumbnailCaptureTimerId, 2200, nullptr);
+                return;
+            }
             clearPendingThumbnailCapture();
             return;
         }
@@ -6420,7 +6488,6 @@ search.addEventListener('keydown',e=>{
                 || overviewTarget->internalPage == L"settings");
         const bool animateOverviewClose = switchingFromOverview
             && (hasOverviewPreview || hasNativeInternalSnapshot);
-        const bool holdOverviewForHandoff = switchingFromOverview && !animateOverviewClose;
         if (switchingFromOverview) {
             logDiagnostic(L"OVERVIEW_CLOSE_REQUEST target_index=" + std::to_wstring(index)
                 + L" active_url=" + safeDiagnosticUrl(overviewTarget->activeUrl)
@@ -6453,10 +6520,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewAnimationFrameReady = false;
             tabOverviewClosingStart = GetTickCount64();
-            // Keep the overview snapshot above WebKit until its real repaint
-            // callback is received. The cached page remains visible during handoff.
-            tabOverviewNoPreviewHandoff = false;
-            tabOverviewClosingWaitingForRepaint = true;
+            // Do not wait on a renderer callback while the overview popup is
+            // covering the selected page. The transition uses its cached snapshot.
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
 
@@ -6464,7 +6530,8 @@ search.addEventListener('keydown',e=>{
             hoveredOverviewTab = -1;
             hoveredOverviewNewTab = false;
             positionOverlayWindows(true);
-            requestActivePageRepaint(false, false, true, true);
+            // Leave the renderer untouched during the native overview zoom.
+            // The selected view will receive a queued paint after the popup closes.
             invalidateTabStrip();
 
             if (auto* selected = active()) {
@@ -6483,19 +6550,19 @@ search.addEventListener('keydown',e=>{
         if (!animateOverviewClose) {
             tabOverviewVisible = false;
             tabOverviewAnimating = false;
-            // A tab without cached pixels must not expose its accelerated surface
-            // immediately. Keep the complete overview above it while WebKit creates
-            // a fresh frame; the selected card remains at its grid position.
-            tabOverviewClosing = holdOverviewForHandoff;
-            tabOverviewNoPreviewHandoff = holdOverviewForHandoff;
-            tabOverviewClosingTab = holdOverviewForHandoff ? static_cast<int>(index) : -1;
+            // A no-preview page cannot produce a fresh frame while the overview
+            // popup covers its accelerated surface. Close the popup directly,
+            // then repaint the selected WebKit child in the unobscured window.
+            tabOverviewClosing = false;
+            tabOverviewNoPreviewHandoff = false;
+            tabOverviewClosingTab = -1;
             tabOverviewClosingSettling = false;
             tabOverviewClosingSettleFramesRendered = 0;
             tabOverviewClosingStart = GetTickCount64();
             tabOverviewTransitionDuration = 0;
             tabOverviewZoomFrom = 0.0f;
             tabOverviewZoomTo = 0.0f;
-            tabOverviewClosingWaitingForRepaint = holdOverviewForHandoff;
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewClosingFramesRendered = 0;
@@ -6617,9 +6684,9 @@ search.addEventListener('keydown',e=>{
             tabOverviewZoomTo = 1.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(overviewZoom, 1.0f);
             tabOverviewClosingStart = GetTickCount64();
-            // The overview remains above the live page until WebKit confirms
-            // the replacement frame has completed its repaint callback.
-            tabOverviewClosingWaitingForRepaint = true;
+            // Do not wait on a renderer callback while the overview popup is
+            // covering the selected page. The transition uses its cached snapshot.
+            tabOverviewClosingWaitingForRepaint = false;
             tabOverviewClosingRepaintReady = false;
             tabOverviewClosingRepaintReadyAt = 0;
             tabOverviewAnimating = false;
@@ -6631,28 +6698,18 @@ search.addEventListener('keydown',e=>{
             // This replaces stale skeleton previews after a tab was selected mid-load.
             scheduleTabThumbnailCapture(tab, 420);
             startChromeAnimationTimer();
-        } else if (holdOverviewForHandoff) {
-            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_HOLD_FOR_FRAME",
+        } else if (switchingFromOverview) {
+            // No cached preview exists. Do not keep the native popup over WebKit
+            // waiting for a renderer callback that may never arrive.
+            logTabDiagnostic(L"OVERVIEW_NO_PREVIEW_DIRECT_CLOSE",
                 WKViewGetPage(tab->view.get()), tab,
                 L"selected_index=" + std::to_wstring(index)
                     + L" preview_url=" + safeDiagnosticUrl(tab->previewURL)
-                    + L" overview_kept_visible=1");
+                    + L" overview_hidden=1 repaint_after_focus=1");
         }
         // Restore the single native overlay stack without changing any WebView's
-        // WinCairo in-window state. When selecting from overview, request WebKit's
-        // repaint while the overview is still covering the accelerated surface.
+        // WinCairo in-window state.
         positionOverlayWindows(true);
-        if (switchingFromOverview && tabOverviewClosing
-            && tabOverviewClosingWaitingForRepaint) {
-            logTabDiagnostic(L"OVERVIEW_PAGE_REPAINT_REQUESTED",
-                WKViewGetPage(tab->view.get()), tab,
-                L"activation_generation=" + std::to_wstring(tabActivationGeneration)
-                    + L" preview_valid=" + (hasOverviewPreview ? L"1" : L"0")
-                    + L" no_preview_handoff=" + (holdOverviewForHandoff ? L"1" : L"0"));
-            requestActivePageRepaint(false, false, true, true);
-            if (holdOverviewForHandoff)
-                startChromeAnimationTimer();
-        }
         if (tab->thumbnailCaptureNeeded || !tab->previewBitmap
             || tab->previewURL != tab->activeUrl)
             scheduleTabThumbnailCapture(tab, 420);
@@ -6682,9 +6739,9 @@ search.addEventListener('keydown',e=>{
                     : L"error=" + std::to_wstring(GetLastError()));
         }
 
-        if (window && !animateOverviewClose && !holdOverviewForHandoff
-            && !tab->initialPageLoadPending)
-            queueActivePagePresentation(tab, L"tab-activation");
+        if (window && !animateOverviewClose && !tab->initialPageLoadPending)
+            queueActivePagePresentation(tab, switchingFromOverview
+                ? L"overview-no-preview-selection" : L"tab-activation");
 
         invalidateTabChrome(tab);
         if (previouslyActive < tabs.size() && previouslyActive != index)
@@ -13288,46 +13345,17 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             logDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED reason=stale_activation");
             return 0;
         }
-        if (state->tabOverviewVisible || state->tabOverviewAnimating) {
+        if (state->tabOverviewVisible || state->tabOverviewAnimating || state->tabOverviewClosing) {
             logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
                 WKViewGetPage(selected->view.get()), selected,
-                L"reason=overview_opening_or_visible");
+                L"reason=overview_overlay_active");
             return 0;
         }
 
         WKPageRef page = WKViewGetPage(selected->view.get());
         const double progress = page ? WKPageGetEstimatedProgress(page) : 0.0;
         HWND viewWindow = WKViewGetWindow(selected->view.get());
-        if (!viewWindow || !IsWindow(viewWindow)) {
-            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
-                page, selected, L"reason=invalid_view");
-            return 0;
-        }
-        if (state->tabOverviewClosing && state->tabOverviewClosingWaitingForRepaint) {
-            if (!IsWindowVisible(viewWindow))
-                ShowWindow(viewWindow, SW_SHOWNA);
-            RedrawWindow(viewWindow, nullptr, nullptr,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
-            state->tabOverviewClosingRepaintReady = true;
-            state->tabOverviewClosingRepaintReadyAt = GetTickCount64();
-            logTabDiagnostic(L"OVERVIEW_PAGE_REPAINT_READY",
-                page, selected,
-                L"activation_generation=" + std::to_wstring(state->tabActivationGeneration)
-                    + L" progress=" + std::to_wstring(progress)
-                    + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
-            if (state->tabOverviewWindow && IsWindowVisible(state->tabOverviewWindow))
-                InvalidateRect(state->tabOverviewWindow, nullptr, FALSE);
-            state->startChromeAnimationTimer();
-            if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
-                state->scheduleTabThumbnailCapture(selected, 180);
-            return 0;
-        }
-        if (state->tabOverviewClosing) {
-            logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
-                page, selected, L"reason=overview_closing_without_pending_handoff");
-            return 0;
-        }
-        if (progress < 1.0) {
+        if (!viewWindow || !IsWindow(viewWindow) || progress < 1.0) {
             logTabDiagnostic(L"ACTIVE_PAGE_REPAINT_COMPLETION_SKIPPED",
                 page, selected,
                 L"reason=" + std::wstring(!viewWindow || !IsWindow(viewWindow)
@@ -13430,12 +13458,24 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
             }
             if (capturedTab) {
+                const bool matchingAttempt = result->attemptId == capturedTab->thumbnailCaptureAttemptId;
+                if (!matchingAttempt) {
+                    logTabDiagnostic(L"THUMBNAIL_CAPTURE_LATE_RESULT_IGNORED",
+                        WKViewGetPage(capturedTab->view.get()), capturedTab,
+                        L"result_attempt_id=" + std::to_wstring(result->attemptId)
+                            + L" current_attempt_id=" + std::to_wstring(capturedTab->thumbnailCaptureAttemptId));
+                    return 0;
+                }
                 capturedTab->thumbnailCaptureInFlight = false;
+                capturedTab->thumbnailCaptureStartTick = 0;
+                if (state->pendingThumbnailCaptureTab == capturedTab)
+                    state->clearPendingThumbnailCapture();
                 const bool stillCurrent = state->active() == capturedTab
                     && result->activationGeneration == state->tabActivationGeneration
                     && result->url == capturedTab->activeUrl;
                 logTabDiagnostic(L"THUMBNAIL_CAPTURE_RESULT", WKViewGetPage(capturedTab->view.get()),
                     capturedTab, L"accepted=" + std::wstring(stillCurrent && result->bitmap ? L"1" : L"0")
+                        + L" attempt_id=" + std::to_wstring(result->attemptId)
                         + L" has_bitmap=" + (result->bitmap ? L"1" : L"0")
                         + L" size=" + std::to_wstring(result->width) + L"x" + std::to_wstring(result->height)
                         + L" " + result->captureSummary);
@@ -13470,10 +13510,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             state->sidebarOpen || state->tabOverviewClosing);
                     }
                     if (state->active() == capturedTab) {
-                        if (capturedTab->thumbnailCaptureFailures < 16) {
-                            ++capturedTab->thumbnailCaptureFailures;
+                        if (capturedTab->thumbnailCaptureFailures < 16)
                             state->scheduleTabThumbnailCapture(capturedTab, 240);
-                        }
                     }
                 }
             }
@@ -14056,7 +14094,7 @@ LRESULT CALLBACK overlayWindowProcedure(HWND overlay, UINT message, WPARAM wPara
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     logDiagnostic(L"APPLICATION_START");
-    logDiagnostic(L"DIAGNOSTIC_SCHEMA=overview-frame-handoff-and-log-fallback-v21");
+    logDiagnostic(L"DIAGNOSTIC_SCHEMA=overview-direct-close-thumbnail-watchdog-v22");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
