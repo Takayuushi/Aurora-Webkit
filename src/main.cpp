@@ -3613,8 +3613,7 @@ struct BrowserState {
         tab.thumbnailCaptureInFlight = true;
         tab.thumbnailCaptureStartTick = GetTickCount64();
 
-        try {
-        std::thread([ownerWindow, viewWindow, tabIdentity, activationGeneration, attemptId, capturedURL,
+        std::thread([ownerWindow, tabIdentity, activationGeneration, attemptId, capturedURL,
             lifetime, captureLeft, captureTop, sourceWidth, sourceHeight] {
                 struct WorkerCounterRelease {
                     ~WorkerCounterRelease() { gThumbnailCaptureWorkersInFlight.fetch_sub(1); }
@@ -3749,14 +3748,6 @@ struct BrowserState {
                         reinterpret_cast<LPARAM>(rawResult)))
                     delete rawResult;
         }).detach();
-        } catch (...) {
-            gThumbnailCaptureWorkersInFlight.fetch_sub(1);
-            tab.thumbnailCaptureInFlight = false;
-            tab.thumbnailCaptureStartTick = 0;
-            logTabDiagnostic(L"THUMBNAIL_CAPTURE_WORKER_START_FAILED", page, &tab,
-                L"attempt_id=" + std::to_wstring(attemptId));
-            return false;
-        }
         logTabDiagnostic(L"THUMBNAIL_CAPTURE_WORKER_STARTED", page, &tab,
             L"attempt_id=" + std::to_wstring(attemptId)
                 + L" worker_count=" + std::to_wstring(gThumbnailCaptureWorkersInFlight.load()));
@@ -3863,7 +3854,7 @@ struct BrowserState {
             || (sharePopoverWindow && IsWindowVisible(sharePopoverWindow));
         if (overlayBusy) {
             logTabDiagnostic(L"THUMBNAIL_CAPTURE_DEFERRED", page, pending,
-                L"reason=overlay_busy overview=" + (tabOverviewVisible ? L"1" : L"0")
+                std::wstring(L"reason=overlay_busy overview=") + (tabOverviewVisible ? L"1" : L"0")
                     + L" closing=" + (tabOverviewClosing ? L"1" : L"0")
                     + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0"));
             SetTimer(window, kDeferredThumbnailCaptureTimerId, 120, nullptr);
