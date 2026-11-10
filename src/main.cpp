@@ -13577,8 +13577,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 + L" force_repaint_callback=1 hwnd_redraw_requested=1 immediate_paint=1"
                 + L" surface_presentation_verified=0"
                 + L" view_visible=" + (IsWindowVisible(viewWindow) ? L"1" : L"0"));
-        if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl)
-            state->scheduleTabThumbnailCapture(selected, 180);
+        if (selected->thumbnailCaptureNeeded || selected->previewURL != selected->activeUrl) {
+            // Do not race the WebKit-to-DWM presentation handoff. The shorter
+            // 180 ms capture could accept the previous tab/page surface as a
+            // valid image for the new URL. Start Page also needs its tile images
+            // to decode before the first overview snapshot is taken.
+            const UINT captureDelay = selected->internalPage == L"start" ? 760 : 700;
+            state->scheduleTabThumbnailCapture(selected, captureDelay);
+        }
         return 0;
     }
 
