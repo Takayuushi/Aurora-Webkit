@@ -3534,6 +3534,7 @@ struct BrowserState {
                     // Present it as soon as the native overview popup is gone.
                     SetFocus(window);
                     queueActivePagePresentation(active(), L"overview-animation-finished");
+                    resumePendingTabThumbnailCapture(L"overview-close-complete");
                     updateToolbarHover(POINT { -1, -1 });
                 }
             }
@@ -3556,6 +3557,7 @@ struct BrowserState {
                 logDiagnostic(L"SIDEBAR_ANIMATION_COMPLETE open="
                     + std::wstring(sidebarOpen ? L"1" : L"0")
                     + L" inset=" + (sidebarContentInsetActive ? L"1" : L"0"));
+                resumePendingTabThumbnailCapture(L"sidebar-animation-complete");
                 const RECT buttonRect = sidebarButtonRect();
                 InvalidateRect(window, &buttonRect, FALSE);
             }
@@ -3874,6 +3876,22 @@ struct BrowserState {
         pendingThumbnailCaptureURL.clear();
         if (window)
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
+    }
+
+    void resumePendingTabThumbnailCapture(const wchar_t* reason)
+    {
+        TabState* pending = pendingThumbnailCaptureTab;
+        if (!window || !pending || pending->thumbnailCaptureInFlight)
+            return;
+
+        const bool posted = PostMessageW(window, WM_AURORA_THUMBNAIL_CAPTURE_REQUEST, 0, 0) != FALSE;
+        logTabDiagnostic(posted ? L"THUMBNAIL_CAPTURE_RESUME_POSTED"
+                                : L"THUMBNAIL_CAPTURE_RESUME_POST_FAILED",
+            WKViewGetPage(pending->view.get()), pending,
+            L"reason=" + std::wstring(reason ? reason : L"overlay-settled")
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+                + L" overview_visible=" + (tabOverviewVisible ? L"1" : L"0")
+                + L" overview_closing=" + (tabOverviewClosing ? L"1" : L"0"));
     }
 
     void servicePendingTabThumbnailCapture()
