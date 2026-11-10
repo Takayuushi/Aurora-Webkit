@@ -247,6 +247,7 @@ constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 constexpr UINT WM_AURORA_ACTIVE_PAGE_REPAINT_READY = WM_APP + 28;
 constexpr UINT WM_AURORA_INITIAL_TAB_LOAD_READY = WM_APP + 29;
 constexpr UINT WM_AURORA_THUMBNAIL_CAPTURE_REQUEST = WM_APP + 30;
+constexpr UINT WM_AURORA_CHROME_ANIMATION_TICK = WM_APP + 31;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -1788,6 +1789,8 @@ struct BrowserState {
     unsigned long long mainChromePaintGeneration { 0 };
     unsigned long long tabBarChromePaintGeneration { 0 };
     bool chromeAnimationTimerActive { false };
+    PTP_TIMER chromeAnimationTimer { nullptr };
+    std::atomic<bool> chromeAnimationMessagePending { false };
     bool tabSwitchAnimating { false };
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
@@ -2574,6 +2577,26 @@ struct BrowserState {
         return { 0, 0, 0, 0 };
     }
 
+    static void CALLBACK chromeAnimationTimerFired(
+        PTP_CALLBACK_INSTANCE, void* context, PTP_TIMER)
+    {
+        auto* state = static_cast<BrowserState*>(context);
+        if (!state)
+            return;
+
+        bool expected = false;
+        if (!state->chromeAnimationMessagePending.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+            return;
+
+        // Run all animation and HWND work on Aurora's UI thread. The timer only
+        // posts a normal application message, which is not subject to WM_TIMER's
+        // low-priority dispatch and starvation under sustained WebKit input/paint.
+        HWND target = state->window;
+        if (!target || !PostMessageW(target, WM_AURORA_CHROME_ANIMATION_TICK, 0, 0))
+            state->chromeAnimationMessagePending.store(false, std::memory_order_release);
+    }
+
     void startChromeAnimationTimer()
     {
         if (!window) {
@@ -2581,18 +2604,46 @@ struct BrowserState {
             return;
         }
 
-        // Re-arm even when the cached flag says the timer is active. A timer can
-        // be removed by native window transitions while this flag remains set;
-        // refusing to call SetTimer again leaves overview/sidebar transitions
-        // permanently stuck until another unrelated state change.
-        const bool wasActive = chromeAnimationTimerActive;
-        const UINT_PTR timer = SetTimer(window, kChromeAnimationTimerId, 16, nullptr);
-        chromeAnimationTimerActive = timer != 0;
-        if (!timer) {
-            logDiagnostic(L"CHROME_ANIMATION_TIMER_ARM_FAILED");
-        } else if (!wasActive) {
-            logDiagnostic(L"CHROME_ANIMATION_TIMER_ARMED interval_ms=16");
+        if (!chromeAnimationTimer)
+            chromeAnimationTimer = CreateThreadpoolTimer(chromeAnimationTimerFired, this, nullptr);
+
+        if (!chromeAnimationTimer) {
+            // Keep the browser functional if Windows cannot allocate a thread-pool
+            // timer. This is a fallback only; normal animation uses posted messages.
+            const UINT_PTR timer = SetTimer(window, kChromeAnimationTimerId, 16, nullptr);
+            chromeAnimationTimerActive = timer != 0;
+            if (!timer)
+                logDiagnostic(L"CHROME_ANIMATION_TIMER_ARM_FAILED");
+            else
+                logDiagnostic(L"CHROME_ANIMATION_TIMER_FALLBACK source=wm_timer interval_ms=16");
+            return;
         }
+
+        if (chromeAnimationTimerActive)
+            return;
+
+        LARGE_INTEGER relativeDue { };
+        relativeDue.QuadPart = -160000; // 16 ms, in 100-nanosecond units.
+        FILETIME dueTime {
+            static_cast<DWORD>(relativeDue.LowPart),
+            static_cast<DWORD>(relativeDue.HighPart)
+        };
+        SetThreadpoolTimer(chromeAnimationTimer, &dueTime, 16, 0);
+        chromeAnimationTimerActive = true;
+        logDiagnostic(L"CHROME_ANIMATION_TIMER_ARMED source=threadpool-post interval_ms=16");
+    }
+
+    void stopChromeAnimationTimer()
+    {
+        if (window)
+            KillTimer(window, kChromeAnimationTimerId);
+        if (chromeAnimationTimer) {
+            SetThreadpoolTimer(chromeAnimationTimer, nullptr, 0, 0);
+            // The callback only posts a message; waiting here cannot block on the
+            // UI thread and prevents it from touching BrowserState during teardown.
+            WaitForThreadpoolTimerCallbacks(chromeAnimationTimer, TRUE);
+        }
+        chromeAnimationTimerActive = false;
     }
 
     float sidebarProgress() const
@@ -3512,10 +3563,8 @@ struct BrowserState {
 
         // Do not invalidate the whole chrome band here: it includes Smart Search,
         // whose surface was visibly flashing during unrelated hover transitions.
-        if (!continueAnimation) {
-            KillTimer(window, kChromeAnimationTimerId);
-            chromeAnimationTimerActive = false;
-        }
+        if (!continueAnimation)
+            stopChromeAnimationTimer();
     }
 
     RECT tabOverviewAreaRect() const
@@ -5218,6 +5267,11 @@ struct BrowserState {
 
     ~BrowserState()
     {
+        stopChromeAnimationTimer();
+        if (chromeAnimationTimer) {
+            CloseThreadpoolTimer(chromeAnimationTimer);
+            chromeAnimationTimer = nullptr;
+        }
         if (initialTabLoadContext.timer) {
             SetThreadpoolTimer(initialTabLoadContext.timer, nullptr, 0, 0);
             WaitForThreadpoolTimerCallbacks(initialTabLoadContext.timer, TRUE);
@@ -7637,10 +7691,15 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         }
 
         if (sidebarAnimating) {
-            // Settle the drawer at its target state; the overlay layout below will
-            // place it once, without a redundant hide/show in the middle of overview entry.
+            // Settle the drawer at its target state before computing overview card
+            // bounds. Without committing the logical inset here, opening overview
+            // mid-slide leaves its first column underneath the still-open drawer.
             sidebarAnimating = false;
+            sidebarContentInsetActive = sidebarOpen;
             sidebarOverlayAnimationFrameReady = false;
+            logDiagnostic(L"SIDEBAR_ANIMATION_SETTLED_FOR_OVERVIEW open="
+                + std::wstring(sidebarOpen ? L"1" : L"0")
+                + L" inset=" + (sidebarContentInsetActive ? L"1" : L"0"));
         }
 
         if (addressEditing)
@@ -12903,6 +12962,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_AURORA_CHROME_ANIMATION_TICK:
+        if (state) {
+            state->chromeAnimationMessagePending.store(false, std::memory_order_release);
+            if (state->chromeAnimationTimerActive)
+                state->animateChrome();
+        }
+        return 0;
+
     case WM_TIMER:
         if (state && wParam == kDeferredThumbnailCaptureTimerId) {
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
@@ -12929,7 +12996,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->animateDownloadsPopup();
             return 0;
         }
-        if (state && wParam == kChromeAnimationTimerId) {
+        if (state && !state->chromeAnimationTimer && wParam == kChromeAnimationTimerId) {
             state->animateChrome();
             return 0;
         }
@@ -13757,6 +13824,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     case WM_DESTROY:
         if (state) {
+            state->stopChromeAnimationTimer();
             KillTimer(window, kWindowSurfaceRecoveryTimerId);
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             KillTimer(window, kDeferredPageTintTimerId);
