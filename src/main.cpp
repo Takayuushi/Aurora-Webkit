@@ -246,6 +246,7 @@ constexpr UINT WM_AURORA_ACTIVE_PAGE_PRESENT = WM_APP + 25;
 constexpr UINT WM_AURORA_SETTINGS_PAGE_READY = WM_APP + 26;
 constexpr UINT WM_AURORA_ACTIVE_PAGE_REPAINT_READY = WM_APP + 28;
 constexpr UINT WM_AURORA_INITIAL_TAB_LOAD_READY = WM_APP + 29;
+constexpr UINT WM_AURORA_THUMBNAIL_CAPTURE_REQUEST = WM_APP + 30;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -2575,10 +2576,23 @@ struct BrowserState {
 
     void startChromeAnimationTimer()
     {
-        if (!window || chromeAnimationTimerActive)
+        if (!window) {
+            chromeAnimationTimerActive = false;
             return;
-        if (SetTimer(window, kChromeAnimationTimerId, 16, nullptr))
-            chromeAnimationTimerActive = true;
+        }
+
+        // Re-arm even when the cached flag says the timer is active. A timer can
+        // be removed by native window transitions while this flag remains set;
+        // refusing to call SetTimer again leaves overview/sidebar transitions
+        // permanently stuck until another unrelated state change.
+        const bool wasActive = chromeAnimationTimerActive;
+        const UINT_PTR timer = SetTimer(window, kChromeAnimationTimerId, 16, nullptr);
+        chromeAnimationTimerActive = timer != 0;
+        if (!timer) {
+            logDiagnostic(L"CHROME_ANIMATION_TIMER_ARM_FAILED");
+        } else if (!wasActive) {
+            logDiagnostic(L"CHROME_ANIMATION_TIMER_ARMED interval_ms=16");
+        }
     }
 
     float sidebarProgress() const
@@ -2734,7 +2748,11 @@ struct BrowserState {
                         || previous.left != 0 || previous.top != toolbarBottom
                         || previous.right - previous.left != client.right
                         || previous.bottom - previous.top != tabHeight;
-                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+                    // Do not suppress the system's redraw of the old popup
+                    // rectangle. When this shaped window moves, SWP_NOREDRAW
+                    // leaves its former capsule pixels behind as a second,
+                    // displaced tab strip until the page happens to repaint.
+                    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
                     HWND insertAfter = nullptr;
                     if (!alreadyVisible || forceTop)
                         insertAfter = HWND_TOP;
@@ -2750,6 +2768,19 @@ struct BrowserState {
                     }
                     const bool regionChanged = updateTabBarOverlayRegion(
                         static_cast<int>(client.right), tabHeight);
+                    if (geometryChanged && alreadyVisible && havePrevious) {
+                        // The old popup rectangle is now exposed. Repaint its
+                        // underlying child surface as well as the new overlay;
+                        // this prevents a stale tab-capsule image from lingering
+                        // after DPI/size/position changes.
+                        RedrawWindow(window, &previous, nullptr,
+                            RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+                        logDiagnostic(L"TAB_BAR_OVERLAY_OLD_RECT_INVALIDATED left="
+                            + std::to_wstring(previous.left)
+                            + L" top=" + std::to_wstring(previous.top)
+                            + L" right=" + std::to_wstring(previous.right)
+                            + L" bottom=" + std::to_wstring(previous.bottom));
+                    }
                     if (!alreadyVisible)
                         ShowWindow(tabBarOverlayWindow, SW_SHOWNOACTIVATE);
                     if (geometryChanged || regionChanged) {
@@ -3768,9 +3799,21 @@ struct BrowserState {
         const UINT delay = tab->thumbnailCaptureInFlight && age < 2200
             ? static_cast<UINT>(std::max<ULONGLONG>(100, 2200 - age))
             : std::max<UINT>(1, delayMilliseconds);
-        SetTimer(window, kDeferredThumbnailCaptureTimerId, delay, nullptr);
-        logTabDiagnostic(L"THUMBNAIL_CAPTURE_SCHEDULED", WKViewGetPage(tab->view.get()), tab,
+        const BOOL timerScheduled = SetTimer(window, kDeferredThumbnailCaptureTimerId, delay, nullptr);
+        const auto page = WKViewGetPage(tab->view.get());
+        const double progress = page ? WKPageGetEstimatedProgress(page) : 0.0;
+        bool requestPosted = false;
+        // WM_TIMER is a low-priority queue message and can be starved by a busy
+        // WebKit/input message stream. Once the selected page has finished,
+        // post a normal application message as the primary dispatch path; keep
+        // the timer as the retry/watchdog path for loading pages and overlays.
+        if (active() == tab && progress >= 1.0 && !tab->thumbnailCaptureInFlight)
+            requestPosted = PostMessageW(window, WM_AURORA_THUMBNAIL_CAPTURE_REQUEST, 0, 0) != FALSE;
+        logTabDiagnostic(L"THUMBNAIL_CAPTURE_SCHEDULED", page, tab,
             L"delay_ms=" + std::to_wstring(delay)
+                + L" timer_scheduled=" + (timerScheduled ? L"1" : L"0")
+                + L" request_posted=" + (requestPosted ? L"1" : L"0")
+                + L" progress=" + std::to_wstring(progress)
                 + L" in_flight=" + (tab->thumbnailCaptureInFlight ? L"1" : L"0")
                 + L" worker_count=" + std::to_wstring(gThumbnailCaptureWorkersInFlight.load()));
     }
@@ -7543,6 +7586,12 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
 
         if (tabOverviewClosing) {
             const float currentZoom = tabOverviewZoomProgress();
+            logDiagnostic(L"OVERVIEW_TOGGLE_REOPEN_FROM_CLOSING zoom="
+                + std::to_wstring(currentZoom)
+                + L" sidebar_open=" + (sidebarOpen ? L"1" : L"0")
+                + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0")
+                + L" timer_flag=" + (chromeAnimationTimerActive ? L"1" : L"0")
+                + L" overlay_visible=" + (tabOverviewWindow && IsWindowVisible(tabOverviewWindow) ? L"1" : L"0"));
             tabOverviewZoomFrom = currentZoom;
             tabOverviewZoomTo = 0.0f;
             tabOverviewTransitionDuration = tabOverviewDurationForDistance(currentZoom, 0.0f);
@@ -7616,6 +7665,10 @@ body{margin:0;background:#f5f6f7;color:#202428;font-family:-apple-system,BlinkMa
         tabOverviewAnimationStart = GetTickCount64();
         hoveredOverviewTab = -1;
         hoveredOverviewNewTab = false;
+        logDiagnostic(L"OVERVIEW_OPEN_REQUEST sidebar_open="
+            + std::wstring(sidebarOpen ? L"1" : L"0")
+            + L" sidebar_animating=" + (sidebarAnimating ? L"1" : L"0")
+            + L" tabs=" + std::to_wstring(tabs.size()));
         startChromeAnimationTimer();
         // Lay out only the overlay. resize() would invalidate and relayout the
         // accelerated page underneath, which is unnecessary for an overlay transition.
@@ -13437,6 +13490,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_AURORA_THUMBNAIL_CAPTURE_REQUEST:
+        if (state)
+            state->servicePendingTabThumbnailCapture();
+        return 0;
+
     case WM_AURORA_THUMBNAIL_READY:
         if (state && lParam) {
             std::unique_ptr<ThumbnailCaptureResult> result(
@@ -13459,11 +13517,22 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 capturedTab->thumbnailCaptureInFlight = false;
                 capturedTab->thumbnailCaptureStartTick = 0;
-                if (state->pendingThumbnailCaptureTab == capturedTab)
-                    state->clearPendingThumbnailCapture();
                 const bool stillCurrent = state->active() == capturedTab
                     && result->activationGeneration == state->tabActivationGeneration
                     && result->url == capturedTab->activeUrl;
+                const bool pendingMatchesResult = state->pendingThumbnailCaptureTab == capturedTab
+                    && state->pendingThumbnailCaptureURL == result->url
+                    && stillCurrent;
+                if (pendingMatchesResult) {
+                    state->clearPendingThumbnailCapture();
+                } else if (state->pendingThumbnailCaptureTab == capturedTab) {
+                    logTabDiagnostic(L"THUMBNAIL_CAPTURE_PRESERVE_NEWER_PENDING",
+                        WKViewGetPage(capturedTab->view.get()), capturedTab,
+                        L"result_url_matches_pending="
+                            + std::wstring(state->pendingThumbnailCaptureURL == result->url ? L"1" : L"0")
+                            + L" result_generation=" + std::to_wstring(result->activationGeneration)
+                            + L" current_generation=" + std::to_wstring(state->tabActivationGeneration));
+                }
                 logTabDiagnostic(L"THUMBNAIL_CAPTURE_RESULT", WKViewGetPage(capturedTab->view.get()),
                     capturedTab, L"accepted=" + std::wstring(stillCurrent && result->bitmap ? L"1" : L"0")
                         + L" attempt_id=" + std::to_wstring(result->attemptId)
