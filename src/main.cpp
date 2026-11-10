@@ -248,6 +248,7 @@ constexpr UINT WM_AURORA_ACTIVE_PAGE_REPAINT_READY = WM_APP + 28;
 constexpr UINT WM_AURORA_INITIAL_TAB_LOAD_READY = WM_APP + 29;
 constexpr UINT WM_AURORA_THUMBNAIL_CAPTURE_REQUEST = WM_APP + 30;
 constexpr UINT WM_AURORA_CHROME_ANIMATION_TICK = WM_APP + 31;
+constexpr UINT WM_AURORA_SURFACE_RECOVERY_TICK = WM_APP + 32;
 
 constexpr int kTitleBarHeight = 0;
 constexpr int kToolbarHeight = 36;
@@ -1791,6 +1792,8 @@ struct BrowserState {
     bool chromeAnimationTimerActive { false };
     PTP_TIMER chromeAnimationTimer { nullptr };
     std::atomic<bool> chromeAnimationMessagePending { false };
+    PTP_TIMER surfaceRecoveryTimer { nullptr };
+    std::atomic<bool> surfaceRecoveryMessagePending { false };
     bool tabSwitchAnimating { false };
     size_t previousActiveTab { 0 };
     ULONGLONG tabSwitchAnimationStart { 0 };
@@ -2961,6 +2964,63 @@ struct BrowserState {
         }
     }
 
+    static void CALLBACK surfaceRecoveryTimerFired(
+        PTP_CALLBACK_INSTANCE, void* context, PTP_TIMER)
+    {
+        auto* state = static_cast<BrowserState*>(context);
+        if (!state)
+            return;
+
+        bool expected = false;
+        if (!state->surfaceRecoveryMessagePending.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+            return;
+
+        HWND target = state->window;
+        if (!target || !PostMessageW(target, WM_AURORA_SURFACE_RECOVERY_TICK, 0, 0))
+            state->surfaceRecoveryMessagePending.store(false, std::memory_order_release);
+    }
+
+    void startWindowSurfaceRecoveryTimer()
+    {
+        if (!window)
+            return;
+
+        if (!surfaceRecoveryTimer)
+            surfaceRecoveryTimer = CreateThreadpoolTimer(surfaceRecoveryTimerFired, this, nullptr);
+
+        if (!surfaceRecoveryTimer) {
+            windowSurfaceRecoveryActive = SetTimer(
+                window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
+            if (!windowSurfaceRecoveryActive)
+                logDiagnostic(L"SURFACE_RECOVERY_TIMER_ARM_FAILED");
+            else
+                logDiagnostic(L"SURFACE_RECOVERY_TIMER_FALLBACK source=wm_timer interval_ms=48");
+            return;
+        }
+
+        LARGE_INTEGER relativeDue { };
+        relativeDue.QuadPart = -480000; // 48 ms, in 100-nanosecond units.
+        FILETIME dueTime {
+            static_cast<DWORD>(relativeDue.LowPart),
+            static_cast<DWORD>(relativeDue.HighPart)
+        };
+        SetThreadpoolTimer(surfaceRecoveryTimer, &dueTime, 48, 0);
+        windowSurfaceRecoveryActive = true;
+        logDiagnostic(L"SURFACE_RECOVERY_TIMER_ARMED source=threadpool-post interval_ms=48");
+    }
+
+    void stopWindowSurfaceRecoveryTimer()
+    {
+        if (window)
+            KillTimer(window, kWindowSurfaceRecoveryTimerId);
+        if (surfaceRecoveryTimer) {
+            SetThreadpoolTimer(surfaceRecoveryTimer, nullptr, 0, 0);
+            WaitForThreadpoolTimerCallbacks(surfaceRecoveryTimer, TRUE);
+        }
+        windowSurfaceRecoveryActive = false;
+    }
+
     void beginWindowSurfaceRecovery(bool refreshBackingScale = false, bool refreshWebView = true,
         bool refreshLayout = true, bool preserveOverlayStack = false)
     {
@@ -2971,8 +3031,7 @@ struct BrowserState {
         windowSurfaceRecoveryRefreshView = refreshWebView;
         windowSurfaceRecoveryRefreshLayout = refreshLayout;
         windowSurfaceRecoveryPreserveOverlayStack = preserveOverlayStack;
-        windowSurfaceRecoveryActive = SetTimer(
-            window, kWindowSurfaceRecoveryTimerId, 48, nullptr) != 0;
+        startWindowSurfaceRecoveryTimer();
         recoverWindowSurfaceFrame();
     }
 
@@ -2981,8 +3040,7 @@ struct BrowserState {
         if (!window)
             return;
         if (IsIconic(window)) {
-            KillTimer(window, kWindowSurfaceRecoveryTimerId);
-            windowSurfaceRecoveryActive = false;
+            stopWindowSurfaceRecoveryTimer();
             return;
         }
 
@@ -3061,8 +3119,7 @@ struct BrowserState {
         // Bounded asynchronous retries allow the compositor to publish its new
         // backing surface without monopolising the UI thread for several seconds.
         if (windowSurfaceRecoveryTicks >= 18) {
-            KillTimer(window, kWindowSurfaceRecoveryTimerId);
-            windowSurfaceRecoveryActive = false;
+            stopWindowSurfaceRecoveryTimer();
             windowSurfaceRecoveryRefreshScale = false;
             windowSurfaceRecoveryRefreshView = true;
             windowSurfaceRecoveryRefreshLayout = true;
@@ -5289,6 +5346,11 @@ struct BrowserState {
         if (chromeAnimationTimer) {
             CloseThreadpoolTimer(chromeAnimationTimer);
             chromeAnimationTimer = nullptr;
+        }
+        stopWindowSurfaceRecoveryTimer();
+        if (surfaceRecoveryTimer) {
+            CloseThreadpoolTimer(surfaceRecoveryTimer);
+            surfaceRecoveryTimer = nullptr;
         }
         if (initialTabLoadContext.timer) {
             SetThreadpoolTimer(initialTabLoadContext.timer, nullptr, 0, 0);
@@ -12988,6 +13050,14 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         return 0;
 
+    case WM_AURORA_SURFACE_RECOVERY_TICK:
+        if (state) {
+            state->surfaceRecoveryMessagePending.store(false, std::memory_order_release);
+            if (state->windowSurfaceRecoveryActive)
+                state->recoverWindowSurfaceFrame();
+        }
+        return 0;
+
     case WM_TIMER:
         if (state && wParam == kDeferredThumbnailCaptureTimerId) {
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
@@ -13003,7 +13073,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             state->animateWindowTransition();
             return 0;
         }
-        if (state && wParam == kWindowSurfaceRecoveryTimerId) {
+        if (state && !state->surfaceRecoveryTimer && wParam == kWindowSurfaceRecoveryTimerId) {
             if (state->windowSurfaceRecoveryActive)
                 state->recoverWindowSurfaceFrame();
             else
@@ -13843,7 +13913,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_DESTROY:
         if (state) {
             state->stopChromeAnimationTimer();
-            KillTimer(window, kWindowSurfaceRecoveryTimerId);
+            state->stopWindowSurfaceRecoveryTimer();
             KillTimer(window, kDeferredThumbnailCaptureTimerId);
             KillTimer(window, kDeferredPageTintTimerId);
             {
